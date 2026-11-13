@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>课堂共享 · 全量界面设计稿</title>
+<style>
+:root{
+ --bg:#EDF1F6;--line:#E2E8F0;--ink:#0F172A;--sub:#64748B;--weak:#94A3B8;
+ --blue:#2563EB;--blue-d:#1E40AF;--blue-l:#EFF6FF;
+ --teal:#0D9488;--teal-d:#0F766E;--teal-l:#F0FDFA;
+ --amber:#B45309;--amber-l:#FFFBEB;--red:#DC2626;--red-l:#FEF2F2;
+ --green:#059669;--green-l:#ECFDF5;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.canvas{width:2400px;padding:40px 48px 56px;background:var(--bg)}
+.hd{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:22px;border-bottom:2px solid #CBD5E1;margin-bottom:24px}
+.hd h1{font-size:38px;font-weight:700;letter-spacing:-.5px}
+.hd .sub{font-size:17px;color:var(--sub);margin-top:10px}
+.hd .meta{font-size:14px;color:var(--weak);margin-top:8px}
+.decisions{width:1000px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 20px}
+.decisions .t{font-size:14px;font-weight:600;color:var(--sub);margin-bottom:10px}
+.dgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px 22px;font-size:14px;color:#334155}
+.dgrid div:before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue);margin-right:9px;vertical-align:2px}
+.legend{display:flex;gap:10px;margin:18px 0 6px;flex-wrap:wrap}
+.lg{font-size:13px;padding:5px 12px;border-radius:20px;background:#fff;border:1px solid var(--line);color:var(--sub)}
+.lg b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:7px}
+.band{margin-top:26px}
+.bh{display:flex;align-items:baseline;gap:14px;margin-bottom:14px}
+.bh .n{font-size:14px;font-weight:700;color:#fff;background:#334155;border-radius:6px;padding:4px 10px}
+.bh h2{font-size:22px;font-weight:600}
+.bh .d{font-size:14px;color:var(--sub)}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;align-items:stretch}
+.s3{grid-column:span 3}.s4{grid-column:span 4}.s6{grid-column:span 6}.s12{grid-column:span 12}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+.ch{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.ch .num{font-size:12px;font-weight:700;color:var(--blue-d);background:var(--blue-l);border-radius:5px;padding:3px 7px}
+.ch h3{font-size:17px;font-weight:600;flex:1}
+.ch .tag{font-size:11px;color:var(--sub);background:#F1F5F9;border-radius:4px;padding:3px 7px;white-space:nowrap}
+.stage{flex:1;background:#F8FAFC;border:1px dashed #D8E0EA;border-radius:10px;padding:16px;position:relative;overflow:hidden}
+.a .stage{min-height:330px}.b .stage{min-height:310px}.c .stage,.d .stage{min-height:410px}.e .stage{min-height:340px}.f .stage{min-height:380px}
+.note{font-size:12.5px;color:var(--sub);line-height:1.6;margin-top:11px}
+.win{background:#fff;border:1px solid #CBD5E1;border-radius:9px;overflow:hidden;box-shadow:0 4px 14px rgba(15,23,42,.07)}
+.wb{height:36px;background:#F1F5F9;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:9px;font-size:13px;color:#334155;font-weight:600}
+.wb .dots{display:flex;gap:5px;margin-left:auto}
+.wb .dots i{width:9px;height:9px;border-radius:50%;background:#CBD5E1;display:block}
+.wb .who{font-weight:400;color:var(--sub);font-size:12px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:0 12px}
+.tab{padding:10px 15px;font-size:14px;color:var(--sub);border-bottom:2px solid transparent}
+.tab.on{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.tab.on.t2{color:var(--teal);border-bottom-color:var(--teal)}
+.toolbar{display:flex;gap:8px;align-items:center;padding:11px 12px}
+.btn{font-size:12.5px;padding:6px 12px;border-radius:6px;border:1px solid #CBD5E1;background:#fff;color:#334155;white-space:nowrap}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.teal{background:var(--teal);border-color:var(--teal);color:#fff}
+.btn.dg{color:var(--red);border-color:#FECACA}
+.btn.mini{padding:3px 9px;font-size:12px}
+.input{border:1px solid #CBD5E1;border-radius:6px;padding:7px 10px;font-size:13px;color:#334155;background:#fff;flex:1}
+.tbl{font-size:13px}
+.tr{display:grid;grid-template-columns:var(--cols);align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid #F1F5F9;min-height:38px}
+.tr.th{background:#F8FAFC;color:var(--weak);font-size:12px;min-height:32px}
+.tr.new{background:#F5F9FF}
+.badge{display:inline-flex;padding:2px 8px;border-radius:4px;font-size:12px;white-space:nowrap}
+.badge.file{background:var(--blue-l);color:var(--blue-d)}
+.badge.text{background:var(--amber-l);color:var(--amber)}
+.nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ops{color:var(--blue);font-size:12px;white-space:nowrap}
+.ops span{margin-right:9px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.dot.ok{background:#10B981}.dot.warn{background:#F59E0B}.dot.off{background:#CBD5E1}.dot.err{background:#EF4444}
+.chip{font-size:11.5px;padding:2px 8px;border-radius:10px;background:#F1F5F9;color:var(--sub);white-space:nowrap}
+.chip.b{background:var(--blue-l);color:var(--blue-d)}
+.chip.t{background:var(--teal-l);color:var(--teal-d)}
+.chip.a{background:var(--amber-l);color:var(--amber)}
+.chip.g{background:var(--green-l);color:var(--green)}
+.chip.r{background:var(--red-l);color:var(--red)}
+.float{width:72px;height:72px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;border:4px solid #fff;box-shadow:0 6px 18px rgba(37,99,235,.32);flex:none}
+.float.big{width:124px;height:124px;border:3px dashed var(--blue);background:var(--blue-l);color:var(--blue);box-shadow:none;font-size:16px;text-align:center;line-height:1.5}
+.tip{background:#fff;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:10px 12px;box-shadow:0 4px 12px rgba(15,23,42,.09);font-size:13px}
+.tip .ttl{font-weight:600;margin-bottom:4px}
+.tip .ss{color:var(--sub);font-size:12px;display:flex;justify-content:space-between}
+.tip .bar{height:3px;background:#E2E8F0;border-radius:2px;margin-top:8px;overflow:hidden}
+.tip .bar i{display:block;height:100%;background:var(--blue)}
+.tip.t2{border-left-color:var(--teal)}.tip.t2 .bar i{background:var(--teal)}
+.menu{background:#fff;border:1px solid #CBD5E1;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.16);padding:6px;font-size:13px;width:100%}
+.menu .mi{padding:8px 10px;border-radius:5px;display:flex;justify-content:space-between;align-items:center;color:#334155}
+.menu .mi.hl{background:var(--blue-l);color:var(--blue-d);font-weight:600}
+.menu .mi small{font-size:11px;color:var(--weak);font-weight:400}
+.menu .sep{height:1px;background:var(--line);margin:5px 2px}
+.modal{background:#fff;border:1px solid #CBD5E1;border-radius:9px;box-shadow:0 10px 30px rgba(15,23,42,.13);overflow:hidden}
+.mh{padding:12px 15px;font-size:15px;font-weight:600;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+.mb{padding:14px 15px;font-size:13px}
+.mf{padding:11px 15px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.fl{font-size:12px;color:var(--sub);margin:0 0 6px}
+.area{border:1px solid #CBD5E1;border-radius:6px;padding:10px;font-size:12.5px;line-height:1.75;color:#334155;background:#fff;min-height:76px}
+.sw{width:38px;height:21px;border-radius:11px;background:#CBD5E1;position:relative;display:inline-block;flex:none}
+.sw:after{content:"";position:absolute;width:15px;height:15px;border-radius:50%;background:#fff;top:3px;left:3px}
+.sw.on{background:var(--blue)}.sw.on:after{left:20px}
+.row{display:flex;align-items:center;gap:10px}
+.between{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.srow{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid #F1F5F9;font-size:13px}
+.srow:last-child{border-bottom:none}
+.kv{font-size:12px;color:var(--sub)}
+.tree{width:190px;border-right:1px solid var(--line);padding:10px 8px;flex:none}
+.tree .ti{padding:8px 10px;border-radius:6px;font-size:13px;display:flex;justify-content:space-between;margin-bottom:2px;color:#334155}
+.tree .ti.on{background:var(--teal-l);color:var(--teal-d);font-weight:600}
+.tree .ti.sub{padding-left:24px}
+.split{display:flex;min-height:238px}
+.split .right{flex:1;min-width:0}
+.info{font-size:12px;color:var(--sub);background:#F8FAFC;border:1px solid var(--line);border-radius:6px;padding:8px 10px;line-height:1.6}
+.info.blue{background:var(--blue-l);border-color:#BFDBFE;color:var(--blue-d)}
+.info.teal{background:var(--teal-l);border-color:#99F6E4;color:var(--teal-d)}
+.info.amber{background:var(--amber-l);border-color:#FDE68A;color:var(--amber)}
+.info.red{background:var(--red-l);border-color:#FECACA;color:var(--red)}
+.info.green{background:var(--green-l);border-color:#A7F3D0;color:var(--green)}
+.label{font-size:11.5px;color:var(--sub);background:#fff;border:1px solid var(--line);padding:4px 8px;border-radius:5px;position:absolute;white-space:nowrap}
+.desktop{background:#D6E3F3;border-radius:8px;position:relative;height:196px;overflow:hidden}
+.desktop .fw{position:absolute;background:#fff;border:1px solid #C7D6E8;border-radius:6px;opacity:.85}
+.desktop .taskbar{position:absolute;bottom:0;left:0;right:0;height:26px;background:#F8FAFC;border-top:1px solid #C7D6E8;display:flex;align-items:center;justify-content:flex-end;padding:0 9px;gap:7px}
+.desktop .taskbar i{width:11px;height:11px;border-radius:3px;background:#CBD5E1;display:block}
+.drag{width:100%;border:1px dashed #93C5FD;border-radius:7px;background:#F5F9FF;text-align:center;padding:9px;font-size:12.5px;color:var(--blue-d)}
+.pill{font-size:12px;padding:5px 10px;border-radius:6px;background:#F1F5F9;color:#334155;display:inline-flex;align-items:center;gap:6px}
+.foot{margin-top:30px;padding-top:18px;border-top:2px solid #CBD5E1;display:flex;justify-content:space-between;font-size:13px;color:var(--sub)}
+.foot .tags span{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:20px;padding:4px 11px;margin-left:7px}
+h4{font-size:12px;color:var(--weak);font-weight:600;margin:12px 0 6px;letter-spacing:1px}
+.mini-tbl{font-size:12.5px}
+.mini-tbl .r{display:grid;grid-template-columns:var(--cols);padding:6px 8px;border-bottom:1px solid #F1F5F9;gap:8px}
+.mini-tbl .r.h{background:#F8FAFC;color:var(--weak);font-size:12px}
+.step{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:#334155;margin-bottom:7px;line-height:1.5}
+.step b{width:19px;height:19px;border-radius:50%;background:var(--blue-l);color:var(--blue-d);font-size:11px;display:flex;align-items:center;justify-content:center;flex:none}
+</style>
+</head>
+<body>
+<div class="canvas">
+
+<div class="hd">
+  <div>
+    <h1>课堂共享 · 桌面小工具</h1>
+    <div class="sub">全量界面设计稿 v1.0　|　教师端 / 学员端　|　Windows · Tauri</div>
+    <div class="meta">2026-11-13　·　依据已确认需求绘制：仅局域网、学生互不可见、删除同步、同名覆盖保留 .bak、文本走复制粘贴、后台服务开机自启</div>
+  </div>
+  <div class="decisions">
+    <div class="t">本版已确认的产品决策</div>
+    <div class="dgrid">
+      <div>学生提交对其他学生不可见</div><div>教师删除时同步移除学员副本</div>
+      <div>不做跨网段 / 不做云端中继</div><div>先做 Windows，Tauri 技术栈</div>
+      <div>同名直接覆盖 + 保留 1 份 .bak</div><div>取消全局热键，文本用复制粘贴</div>
+      <div>后台注册为服务，开机自动启动</div><div>离线无法即时删除时延后补删</div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span class="lg"><b style="background:#2563EB"></b>教师端 / 广播</span>
+  <span class="lg"><b style="background:#0D9488"></b>学员端 / 定向回传</span>
+  <span class="lg"><b style="background:#B45309"></b>提示与覆盖</span>
+  <span class="lg"><b style="background:#DC2626"></b>删除与危险操作</span>
+  <span class="lg"><b style="background:#059669"></b>已同步 / 成功</span>
+  <span class="lg"><b style="background:#94A3B8"></b>通用与只读</span>
+</div>
+
+<!-- A -->
+<div class="band a">
+  <div class="bh"><span class="n">A</span><h2>桌面浮动层与系统入口</h2><span class="d">教师端 / 学员端完全一致的交互骨架</span></div>
+  <div class="grid">
+
+    <div class="card s3">
+      <div class="ch"><span class="num">A1</span><h3>桌面常态</h3><span class="tag">通用</span></div>
+      <div class="stage">
+        <div class="desktop">
+          <div class="fw" style="left:18px;top:20px;width:220px;height:110px"></div>
+          <div class="fw" style="left:28px;top:32px;width:200px;height:20px;background:#F1F5F9"></div>
+          <div class="fw" style="left:265px;top:52px;width:150px;height:86px"></div>
+          <div style="position:absolute;right:22px;top:16px;display:flex;flex-direction:column;align-items:center;gap:8px">
+            <div class="float">共享</div>
+            <div style="font-size:11px;color:#475569;background:#fff;padding:3px 7px;border-radius:4px">置顶浮动图标</div>
+          </div>
+          <div class="label" style="left:16px;bottom:38px">双击 → 打开主界面</div>
+          <div class="label" style="right:18px;bottom:38px">可拖动 · 边缘吸附</div>
+          <div class="taskbar"><i></i><i></i><i style="background:#2563EB"></i></div>
+        </div>
+        <div style="margin-top:12px" class="row"><span class="chip b">TOPMOST</span><span class="chip">不占任务栏</span><span class="chip">多屏 / DPI 位置记忆</span></div>
+        <div style="margin-top:9px" class="info">全屏放映被遮盖时，可通过托盘图标或「上课常驻」开关重新唤起。</div>
+      </div>
+      <p class="note">图标常驻于屏幕工作区，位置按屏幕百分比持久化，重启自动恢复；右键菜单含退出。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">A2</span><h3>收到共享 · 浮动 tips</h3><span class="tag">15 秒</span></div>
+      <div class="stage">
+        <div class="tip" style="margin-bottom:10px">
+          <div class="ttl">收到文件：第 3 章课件.pdf</div>
+          <div class="ss"><span>来自 教师　·　2.4 MB</span><span>15s</span></div>
+          <div class="bar"><i style="width:72%"></i></div>
+        </div>
+        <div class="tip t2" style="margin-bottom:10px">
+          <div class="ttl">收到文本：请完成 P42 练习题</div>
+          <div class="ss"><span>来自 教师　·　点击可复制</span><span>15s</span></div>
+          <div class="bar"><i style="width:90%"></i></div>
+        </div>
+        <div class="info amber" style="margin-bottom:10px">还有 2 条新共享　·　点击展开全部</div>
+        <div class="row" style="justify-content:center;margin-top:16px"><div class="float" style="width:58px;height:58px;font-size:14px">共享</div></div>
+        <div style="margin-top:12px" class="row"><span class="chip a">最多堆叠 3 条</span><span class="chip a">悬停暂停倒计时</span><span class="chip">点击直达条目</span></div>
+      </div>
+      <p class="note">收到时弹出，15 秒自动消失；多条第 3 条起合并为「还有 N 条」；点击直达主界面对应条目，退出程序即清空、不落盘。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">A3</span><h3>浮动图标右键菜单</h3><span class="tag">文本主入口</span></div>
+      <div class="stage">
+        <div class="row" style="align-items:flex-start;gap:14px">
+          <div class="float" style="width:60px;height:60px;font-size:14px">共享</div>
+          <div class="menu" style="flex:1">
+            <div class="mi hl"><span>粘贴并共享</span><small>Ctrl+V</small></div>
+            <div class="mi"><span>粘贴为文本草稿…</span><small></small></div>
+            <div class="sep"></div>
+            <div class="mi"><span>打开「课堂共享」</span><small>双击同效</small></div>
+            <div class="mi"><span>暂停接收提醒</span><small></small></div>
+            <div class="sep"></div>
+            <div class="mi"><span>设置</span><small></small></div>
+            <div class="mi" style="color:#DC2626"><span>退出课堂共享</span><small></small></div>
+          </div>
+        </div>
+        <div class="info blue" style="margin-top:14px">剪贴板已检测到 <b>128 字文本</b>：任意界面复制后，右键此处即可发送，无需全局热键。</div>
+        <h4>文本共享路径</h4>
+        <div class="step"><b>1</b><span>在任意界面选中文字 → Ctrl+C 复制</span></div>
+        <div class="step"><b>2</b><span>右键浮动图标 → 「粘贴并共享」，或主界面点「+ 粘贴文本」</span></div>
+        <div class="step"><b>3</b><span>确认标题与内容 → 发送；接收端可一键复制全文</span></div>
+      </div>
+      <p class="note">已移除全局热键方案；复制粘贴同时覆盖发送侧（粘贴即共享）与接收侧（全文复制）。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">A4</span><h3>拖拽投放 + 资源管理器右键</h3><span class="tag">文件主入口</span></div>
+      <div class="stage">
+        <div style="display:flex;align-items:center;justify-content:center;gap:18px;background:#fff;border:1px dashed #93C5FD;border-radius:8px;padding:12px">
+          <div class="float big">松手<br>即共享</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="pill"><span class="badge file">文件</span> 实验素材.zip</div>
+            <div class="pill"><span class="badge text">文本</span> 选中的一段文字</div>
+            <div style="font-size:11.5px;color:var(--sub)">图标自动放大为投放区</div>
+          </div>
+        </div>
+        <h4>文件管理器多选 → 右键</h4>
+        <div class="menu">
+          <div class="mi"><span>打开</span><small></small></div>
+          <div class="mi"><span>复制到…</span><small></small></div>
+          <div class="sep"></div>
+          <div class="mi hl"><span>课堂共享</span><small>发送 2 个文件</small></div>
+          <div class="mi"><span>属性</span><small></small></div>
+        </div>
+        <div class="info" style="margin-top:10px">注册表 Shell 扩展（HKCU，免管理员）；选中文本拖到图标同样支持。</div>
+      </div>
+      <p class="note">文件走右键菜单或拖拽；文本走拖拽或复制粘贴。两条入口最终汇入同一条发送链路。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- B -->
+<div class="band b">
+  <div class="bh"><span class="n">B</span><h2>首次运行 · 身份 · 连接与自启</h2><span class="d">同一局域网自动发现，无需账号体系</span></div>
+  <div class="grid">
+
+    <div class="card s4">
+      <div class="ch"><span class="num">B1</span><h3>学员端首次运行 · 设置昵称</h3><span class="tag">仅首次</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh">欢迎使用课堂共享 <span class="chip t">学员端</span></div>
+          <div class="mb">
+            <div class="fl">设置一个昵称，教师端将按昵称对提交内容分类</div>
+            <div class="row"><input class="input" value="小林" style="font-size:14px"><button class="btn">检查可用</button></div>
+            <div class="info green" style="margin-top:9px">昵称可用　·　已自动发现教师机「XK-204」</div>
+            <div class="info red" style="margin-top:9px">异常态：该昵称已被使用，请换一个（昵称是分组主键，不允许重复）</div>
+            <div class="between" style="margin-top:14px"><span style="font-size:12.5px;color:var(--sub)">本机角色</span><span class="chip t">学员 · 仅教师可见我的共享</span></div>
+          </div>
+          <div class="mf"><button class="btn pri">进入课堂</button></div>
+        </div>
+      </div>
+      <p class="note">昵称本地持久化，下次启动直接使用；重复时教师端拒绝并要求改名。</p>
+    </div>
+
+    <div class="card s4">
+      <div class="ch"><span class="num">B2</span><h3>教师端首次启动 · 创建本节课</h3><span class="tag">Host</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh">创建本节课 <span class="chip b">教师端 · 服务端</span></div>
+          <div class="mb">
+            <div class="between" style="margin-bottom:12px"><div><div class="fl">房间码（局域网内自动广播）</div><div style="font-size:19px;font-weight:600;letter-spacing:2px;color:var(--blue-d)">XK-204</div></div><button class="btn">换一个</button></div>
+            <div class="srow"><span>访问 PIN（防同网段误连）</span><span class="row"><span class="sw on"></span><span class="kv">已开启</span></span></div>
+            <div class="srow"><span>允许学员自动发现</span><span class="row"><span class="sw on"></span><span class="kv">已开启</span></span></div>
+            <div class="srow"><span>后台服务</span><span class="chip g">● 已启动 · 端口 47821</span></div>
+            <div class="info blue" style="margin-top:12px">仅局域网，不接入云端；教师机持有全量权威数据。</div>
+          </div>
+          <div class="mf"><button class="btn pri">开始上课</button></div>
+        </div>
+      </div>
+      <p class="note">教师机为唯一 Host；房间码/PIN 避免隔壁教室误连，不做跨网段与中继。</p>
+    </div>
+
+    <div class="card s4">
+      <div class="ch"><span class="num">B3</span><h3>连接状态 · 服务与在线学员</h3><span class="tag">常驻状态</span></div>
+      <div class="stage">
+        <div class="info blue" style="margin-bottom:10px"><b>教师端</b>　后台服务 运行中　·　开机自启 已开启　·　在线学员 <b>28</b>　·　房间 XK-204</div>
+        <div class="info teal" style="margin-bottom:12px"><b>学员端</b>　已连接 教师机 XK-204　·　本地缓存 已同步　·　离线待发 <b>2 条</b></div>
+        <div class="win">
+          <div class="wb">在线学员 <span class="who">教师端 · 实时</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div class="tbl" style="--cols:1fr 90px 100px">
+            <div class="tr th"><span>昵称</span><span>连接</span><span>同步</span></div>
+            <div class="tr"><span><i class="dot ok"></i>小林</span><span>在线</span><span class="chip g">已同步</span></div>
+            <div class="tr"><span><i class="dot ok"></i>小周</span><span>在线</span><span class="chip g">已同步</span></div>
+            <div class="tr"><span><i class="dot warn"></i>小陈</span><span>重连中</span><span class="chip a">待发 2 条</span></div>
+            <div class="tr"><span><i class="dot off"></i>小吴</span><span>离线</span><span class="chip">待上线</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="note">离线期间学生提交进入本地待发队列，重连按时间戳补发；教师端离线时学员只读本地缓存。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- C -->
+<div class="band c">
+  <div class="bh"><span class="n">C</span><h2>教师端「课堂共享」主界面</h2><span class="d">我共享的 / 学生提交（按昵称分组） / 收发记录</span></div>
+  <div class="grid">
+
+    <div class="card s6">
+      <div class="ch"><span class="num">C1</span><h3>我共享的 · 广播给全体学员</h3><span class="tag">增删改查</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="wb">课堂共享 <span class="who">教师端 · 已连接 28 名学员</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div class="tabs"><span class="tab on">我共享的 (12)</span><span class="tab">学生提交 (7)</span><span class="tab">收发记录</span></div>
+          <div class="toolbar">
+            <input class="input" placeholder="搜索名称 / 内容" style="max-width:230px">
+            <button class="btn">全部类型</button>
+            <span style="flex:1"></span>
+            <button class="btn">+ 添加文件</button>
+            <button class="btn pri">+ 粘贴文本</button>
+            <button class="btn">重命名</button>
+            <button class="btn dg">删除</button>
+          </div>
+          <div class="tbl" style="--cols:76px minmax(0,1fr) 90px 110px 96px 132px">
+            <div class="tr th"><span>类型</span><span>名称 / 内容</span><span>大小</span><span>时间</span><span>状态</span><span>操作</span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">第 3 章课件.pdf</span><span>2.4 MB</span><span>16:02</span><span class="chip g">已同步</span><span class="ops"><span>打开</span><span>更多</span></span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">请完成 P42 练习题</span><span>128 字</span><span>16:05</span><span class="chip g">已同步</span><span class="ops"><span>复制</span><span>编辑</span></span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">实验素材.zip</span><span>18.6 MB</span><span>16:11</span><span class="chip g">已同步</span><span class="ops"><span>打开</span><span>更多</span></span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">下课前提交实验结果</span><span>42 字</span><span>16:20</span><span class="chip a">2 台待同步</span><span class="ops"><span>复制</span><span>编辑</span></span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">参考答案.pdf</span><span>860 KB</span><span>16:26</span><span class="chip g">已同步</span><span class="ops"><span>打开</span><span>更多</span></span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">补充：第 3 题不计分</span><span>31 字</span><span>16:31</span><span class="chip g">已同步</span><span class="ops"><span>复制</span><span>编辑</span></span></div>
+          </div>
+          <div style="padding:11px 12px"><div class="drag">把文件拖到此处 / 拖到桌面浮动图标　·　文本可直接 Ctrl+V 粘贴后共享</div></div>
+        </div>
+      </div>
+      <p class="note">文件双击用系统默认程序打开；文本一键复制全文。删除会广播删除事件，同步移除所有学员端副本。</p>
+    </div>
+
+    <div class="card s6">
+      <div class="ch"><span class="num">C2</span><h3>学生提交 · 按昵称分类</h3><span class="tag">仅教师可见</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="wb">课堂共享 <span class="who">教师端 · 学生提交</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div class="tabs"><span class="tab">我共享的 (12)</span><span class="tab on t2">学生提交 (7)</span><span class="tab">收发记录</span></div>
+          <div style="padding:10px 12px 0"><div class="info teal">学生之间互不可见，仅教师可查看全部提交；此处为只读，不可代学生修改。</div></div>
+          <div class="split" style="margin-top:10px">
+            <div class="tree">
+              <div style="font-size:11px;color:var(--weak);padding:4px 10px 8px">按学生分类</div>
+              <div class="ti on"><span>全部提交</span><span>7</span></div>
+              <div class="ti sub"><span>小林</span><span>3</span></div>
+              <div class="ti sub"><span>小周</span><span>2</span></div>
+              <div class="ti sub"><span>小陈</span><span>2</span></div>
+              <div class="ti sub" style="color:var(--weak)"><span>小吴（离线）</span><span>0</span></div>
+            </div>
+            <div class="right">
+              <div class="tbl" style="--cols:70px minmax(0,1fr) 70px 90px 84px">
+                <div class="tr th"><span>类型</span><span>名称 / 内容</span><span>来源</span><span>时间</span><span>状态</span></div>
+                <div class="tr new"><span class="badge file">文件</span><span class="nm">作业.docx</span><span>小林</span><span>16:08</span><span class="chip b">未读</span></div>
+                <div class="tr"><span class="badge text">文本</span><span class="nm">第三题的疑问</span><span>小林</span><span>16:14</span><span class="chip b">未读</span></div>
+                <div class="tr"><span class="badge file">文件</span><span class="nm">实验截图.png</span><span>小周</span><span>16:19</span><span class="chip">已读</span></div>
+                <div class="tr"><span class="badge file">文件</span><span class="nm">笔记.md</span><span>小陈</span><span>16:23</span><span class="chip">已读</span></div>
+                <div class="tr"><span class="badge text">文本</span><span class="nm">已提交，请查收</span><span>小林</span><span>16:28</span><span class="chip b">未读</span></div>
+              </div>
+              <div style="padding:10px 12px" class="row"><button class="btn mini">打开选中文件</button><button class="btn mini">复制选中文本</button><span style="flex:1"></span><span class="chip">共 7 条 · 3 人</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note">学生提交为定向发送（学生 → 教师），不广播；离线学员上线后自动补齐，教师端按昵称分组即时刷新。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- D -->
+<div class="band d">
+  <div class="bh"><span class="n">D</span><h2>学员端「课堂共享」主界面</h2><span class="d">教师共享只读 / 我共享的可增删改查 / 发送对象固定为教师</span></div>
+  <div class="grid">
+
+    <div class="card s6">
+      <div class="ch"><span class="num">D1</span><h3>教师共享 · 只读列表</h3><span class="tag">学员 · 小林</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="wb" style="background:#F0FDFA">课堂共享 <span class="who">学员端 · 小林 · 已连接 XK-204</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div class="tabs"><span class="tab on t2">教师共享 (12)</span><span class="tab">我共享的 (3)</span></div>
+          <div class="toolbar">
+            <input class="input" placeholder="搜索教师共享内容" style="max-width:250px">
+            <span class="chip">只读</span>
+            <span style="flex:1"></span>
+            <button class="btn teal">复制选中文本</button>
+            <button class="btn">打开选中文件</button>
+          </div>
+          <div class="tbl" style="--cols:76px minmax(0,1fr) 92px 100px 100px">
+            <div class="tr th"><span>类型</span><span>名称 / 内容</span><span>大小</span><span>时间</span><span>状态</span></div>
+            <div class="tr new"><span class="badge file">文件</span><span class="nm">第 3 章课件.pdf</span><span>2.4 MB</span><span>16:02</span><span class="chip b">新</span></div>
+            <div class="tr new"><span class="badge text">文本</span><span class="nm">请完成 P42 练习题</span><span>128 字</span><span>16:05</span><span class="chip b">新</span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">实验素材.zip</span><span>18.6 MB</span><span>16:11</span><span class="chip g">已下载</span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">下课前提交实验结果</span><span>42 字</span><span>16:20</span><span class="chip g">已下载</span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">参考答案.pdf</span><span>860 KB</span><span>16:26</span><span class="chip a">下载中 64%</span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">补充：第 3 题不计分</span><span>31 字</span><span>16:31</span><span class="chip g">已下载</span></div>
+          </div>
+          <div style="padding:10px 12px"><div class="info teal">教师删除某条共享后，本机副本将同步移除；若当前离线，将在下次连上教师机时自动删除。</div></div>
+        </div>
+      </div>
+      <p class="note">文件双击打开本地缓存副本，文本一键复制到剪贴板；学员不能修改或删除教师共享的内容。</p>
+    </div>
+
+    <div class="card s6">
+      <div class="ch"><span class="num">D2</span><h3>我共享的 · 可增删改查</h3><span class="tag">定向仅教师</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="wb" style="background:#F0FDFA">课堂共享 <span class="who">学员端 · 小林</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div class="tabs"><span class="tab">教师共享 (12)</span><span class="tab on t2">我共享的 (3)</span></div>
+          <div class="toolbar">
+            <button class="btn">+ 添加文件</button>
+            <button class="btn teal">+ 粘贴文本</button>
+            <button class="btn">重命名</button>
+            <button class="btn dg">删除</button>
+            <span style="flex:1"></span>
+            <span class="chip a">发送对象：仅教师</span>
+          </div>
+          <div class="tbl" style="--cols:76px minmax(0,1fr) 92px 100px 110px">
+            <div class="tr th"><span>类型</span><span>名称 / 内容</span><span>大小</span><span>时间</span><span>状态</span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">作业.docx</span><span>436 KB</span><span>16:08</span><span class="chip g">已送达</span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">第三题的疑问</span><span>86 字</span><span>16:14</span><span class="chip g">已送达</span></div>
+            <div class="tr"><span class="badge file">文件</span><span class="nm">课堂笔记.md</span><span>12 KB</span><span>16:35</span><span class="chip a">待发送</span></div>
+            <div class="tr"><span class="badge text">文本</span><span class="nm">补充问题</span><span>54 字</span><span>16:36</span><span class="chip a">待发送</span></div>
+          </div>
+          <div style="padding:10px 12px" class="row">
+            <div class="drag" style="flex:1">拖入文件 / 文本，或 Ctrl+V 粘贴一段文字直接共享</div>
+          </div>
+          <div style="padding:0 12px 12px"><div class="info amber">离线待发队列：2 条　·　重新连上教师机后按时间戳自动补发，不会丢失。</div></div>
+        </div>
+      </div>
+      <p class="note">同名文件直接覆盖并保留 1 份 .bak；删除自己的共享会同步从教师端移除该条目。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- E -->
+<div class="band e">
+  <div class="bh"><span class="n">E</span><h2>关键弹窗与流程</h2><span class="d">复制粘贴 / 复制全文 / 同名覆盖 / 删除同步</span></div>
+  <div class="grid">
+
+    <div class="card s3">
+      <div class="ch"><span class="num">E1</span><h3>粘贴文本并共享</h3><span class="tag">发送侧</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh">粘贴文本并共享 <span class="chip b">Ctrl+V</span></div>
+          <div class="mb">
+            <div class="fl">标题（必填，同名文本按标题覆盖）</div>
+            <input class="input" value="第 3 章重点" style="width:100%;margin-bottom:12px">
+            <div class="fl">内容（来自剪贴板 · 128 字）</div>
+            <div class="area">本章重点：1. 掌握共享链路的三层结构；2. 理解同名覆盖的作用域键；3. 下课前完成 P42 练习并回传…</div>
+            <div class="row" style="margin-top:10px"><button class="btn mini">重新粘贴</button><button class="btn mini">清空</button><span style="flex:1"></span><span class="kv">已自动净化格式</span></div>
+            <div class="srow" style="margin-top:10px"><span>接收对象</span><span class="chip b">全体学员 / 仅教师</span></div>
+          </div>
+          <div class="mf"><button class="btn">取消</button><button class="btn pri">共享</button></div>
+        </div>
+      </div>
+      <p class="note">完全替代全局热键：任意界面复制 → 右键图标「粘贴并共享」→ 确认标题内容 → 发送。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">E2</span><h3>文本详情与一键复制</h3><span class="tag">接收侧</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh">请完成 P42 练习题 <span class="badge text">文本</span></div>
+          <div class="mb">
+            <div class="kv" style="margin-bottom:9px">来自 教师　·　16:05　·　128 字</div>
+            <div class="area">请完成教材 P42 的第 1、2、3 题，并将结果以文件形式通过课堂共享回传。注意第 3 题不计分，但需写出推导过程。</div>
+            <div class="info green" style="margin-top:12px">已复制到剪贴板，可直接粘贴到任意位置</div>
+            <div class="info" style="margin-top:9px">文本条目在列表中也提供「复制」快捷操作，无需打开详情。</div>
+          </div>
+          <div class="mf"><button class="btn">关闭</button><button class="btn pri">复制全文</button></div>
+        </div>
+      </div>
+      <p class="note">教师端与学员端一致：文本内容始终可一键复制，文件始终可双击打开。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">E3</span><h3>同名覆盖与 .bak</h3><span class="tag">直接覆盖</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh">同名文件已覆盖 <span class="chip a">version 2</span></div>
+          <div class="mb">
+            <div class="info amber" style="margin-bottom:12px">检测到同名文件「作业.docx」，已按需求直接覆盖旧版本。</div>
+            <div class="srow"><span>作用域键</span><span class="kv">发送者 + 接收范围 + 文件名</span></div>
+            <div class="srow"><span>新版本</span><span class="kv">492 KB · 16:41</span></div>
+            <div class="srow"><span>旧版本备份</span><span class="chip a">作业.docx.bak ×1</span></div>
+            <div class="srow"><span>同步状态</span><span class="chip g">28 / 28 已更新</span></div>
+            <div class="info red" style="margin-top:12px">异常：目标文件正被程序占用，原子替换失败 → 已加入重试队列，稍后自动覆盖。</div>
+          </div>
+        </div>
+      </div>
+      <p class="note">先写 .part → SHA-256 校验 → 原子替换 → version+1 → 广播幂等 upsert；只保留 1 份 .bak，避免跨学生误覆盖。</p>
+    </div>
+
+    <div class="card s3">
+      <div class="ch"><span class="num">E4</span><h3>删除与同步移除</h3><span class="tag">尽力即时</span></div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mh" style="color:var(--red)">删除共享内容</div>
+          <div class="mb">
+            <div class="info red" style="margin-bottom:12px">删除「实验素材.zip」后，将从所有学员端同步移除本地副本，此操作不可撤销。</div>
+            <div class="fl">同步进度</div>
+            <div class="srow"><span>已删除</span><span class="chip g">24 / 28 台</span></div>
+            <div class="srow"><span>延迟删除</span><span class="chip a">4 台离线 · 上线后自动删除</span></div>
+            <div class="srow"><span>教师端</span><span class="chip g">索引已软删</span></div>
+            <div class="info" style="margin-top:12px">学员端记录为「待删除墓碑」，重连后比对版本清单并清理文件与索引。</div>
+          </div>
+          <div class="mf"><button class="btn">取消</button><button class="btn dg" style="background:var(--red);color:#fff;border-color:var(--red)">确认删除</button></div>
+        </div>
+      </div>
+      <p class="note">在线的即时删除；离线的记录延迟删除任务，等可连上的时机补删，不无限重试弹窗打扰。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- F -->
+<div class="band f">
+  <div class="bh"><span class="n">F</span><h2>设置 · 服务自启 · 规则速查</h2><span class="d">Tauri 双进程模型与全局规则</span></div>
+  <div class="grid">
+
+    <div class="card s6">
+      <div class="ch"><span class="num">F1</span><h3>设置面板 · 后台服务与开机自启</h3><span class="tag">Tauri</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="wb">设置 <span class="who">课堂共享 · v1.0</span><span class="dots"><i></i><i></i><i></i></span></div>
+          <div style="padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:0 26px">
+            <div>
+              <h4>身份与连接</h4>
+              <div class="srow"><span>昵称 / 角色</span><span class="kv">小林 · 学员端</span></div>
+              <div class="srow"><span>教师机 / 房间</span><span class="kv">XK-204 · 192.168.1.20</span></div>
+              <div class="srow"><span>连接状态</span><span class="chip g">● 已连接</span></div>
+              <h4>后台服务（随系统启动，无需登录）</h4>
+              <div class="srow"><span>Windows 服务状态</span><span class="chip g">● 运行中</span></div>
+              <div class="srow"><span>开机自动启动</span><span class="row"><span class="sw on"></span><span class="kv">已开启</span></span></div>
+              <div class="srow"><span>服务管理</span><span class="row"><button class="btn mini">重启</button><button class="btn mini">查看日志</button></span></div>
+            </div>
+            <div>
+              <h4>同步与文件</h4>
+              <div class="srow"><span>本地仓库</span><span class="kv">%APPDATA%\ClassShare\</span></div>
+              <div class="srow"><span>单文件上限</span><span class="kv">100 MB · 1 MB 分块</span></div>
+              <div class="srow"><span>同名覆盖</span><span class="row"><span class="sw on"></span><span class="kv">保留 1 份 .bak</span></span></div>
+              <div class="srow"><span>风险类型拦截</span><span class="kv">exe / bat / lnk</span></div>
+              <h4>提醒</h4>
+              <div class="srow"><span>tips 显示时长</span><span class="kv">15 秒</span></div>
+              <div class="srow"><span>最多堆叠 / 悬停暂停</span><span class="row"><span class="kv">3 条</span><span class="sw on"></span></span></div>
+              <div class="srow"><span>上课常驻（抗全屏遮盖）</span><span class="row"><span class="sw on"></span><span class="kv">已开启</span></span></div>
+            </div>
+          </div>
+          <div style="padding:0 16px 14px"><div class="info blue">实现说明：Windows 服务运行在 Session 0，不能直接显示界面。因此拆为 <b>无界面的后台服务</b>（网络、收发、文件同步、开机随系统启动）+ <b>用户会话的 GUI 进程</b>（浮动图标、主界面，由登录自启项拉起），两者通过本地 IPC 通信。这样未登录时也能收文件，登录后立刻看到。</div></div>
+        </div>
+      </div>
+      <p class="note">服务状态、开机自启、存储路径、覆盖策略、提醒时长均可在设置中查看与调整。</p>
+    </div>
+
+    <div class="card s6">
+      <div class="ch"><span class="num">F2</span><h3>规则与状态速查</h3><span class="tag">验收依据</span></div>
+      <div class="stage">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 26px">
+          <div>
+            <h4>共享方向与权限</h4>
+            <div class="mini-tbl" style="--cols:1fr 1fr 1fr">
+              <div class="r h"><span>能力</span><span>教师端</span><span>学员端</span></div>
+              <div class="r"><span>自己共享</span><span>增删改查</span><span>增删改查</span></div>
+              <div class="r"><span>教师共享</span><span>源</span><span>只读</span></div>
+              <div class="r"><span>学生提交</span><span>按昵称查看</span><span>仅自己</span></div>
+              <div class="r"><span>他人内容</span><span>可删（同步）</span><span>不可见</span></div>
+            </div>
+            <h4>同名覆盖流程</h4>
+            <div class="step"><b>1</b><span>作用域键：发送者 + 接收范围 + 文件名</span></div>
+            <div class="step"><b>2</b><span>写 .part → 哈希校验 → 原子替换</span></div>
+            <div class="step"><b>3</b><span>旧版转 .bak（只留 1 份），version + 1</span></div>
+            <div class="step"><b>4</b><span>广播幂等 upsert，各端列表只保留一条</span></div>
+          </div>
+          <div>
+            <h4>状态色例</h4>
+            <div class="row" style="flex-wrap:wrap;gap:7px;margin-bottom:6px">
+              <span class="chip g">已同步</span><span class="chip b">未读 / 新</span><span class="chip a">待发送 / 待同步</span>
+              <span class="chip a">延迟删除</span><span class="chip r">被占用重试</span><span class="chip">离线</span>
+            </div>
+            <h4>统一发送链路</h4>
+            <div class="info" style="margin-bottom:10px">右键菜单 / 拖拽投放 / 复制粘贴 / 主界面新增 → 统一接入 → 归一化校验 → 同名判定与原子覆盖 → 落盘写索引 → 分发 + 15 秒 tips</div>
+            <h4>本版相对初版的变化</h4>
+            <div class="info teal" style="line-height:1.9">
+              · 移除全局热键，文本共享改为复制粘贴（发送侧粘贴即共享，接收侧一键复制）<br>
+              · 学生提交确认对其他学生不可见；教师删除同步移除学员副本，离线则延迟补删<br>
+              · 确认不做跨网段、不做云端中继；技术栈定 Tauri，仅 Windows<br>
+              · 同名直接覆盖 + 保留 1 份 .bak；后台注册服务并开机自启（服务 + GUI 双进程）
+            </div>
+            <div class="info amber" style="margin-top:10px">建议验收：30 台同网段，教师发 10 MB 文件，全员 5 秒内收到 tips 且可双击打开；同名二次发送后列表仍只有一条、内容为新版。</div>
+          </div>
+        </div>
+      </div>
+      <p class="note">本页为开发、测试与验收的共同依据；所有文案、状态与交互以此稿为准。</p>
+    </div>
+
+  </div>
+</div>
+
+<div class="foot">
+  <div>课堂共享 · 全量界面设计稿 v1.0　|　共 6 组、16 个界面 / 状态　|　2026-11-13</div>
+  <div class="tags"><span>Tauri</span><span>Windows</span><span>局域网 C/S</span><span>SQLite</span><span>Windows 服务 + GUI 双进程</span><span>无账号 / 无云端</span></div>
+</div>
+
+</div>
+</body>
+</html>
