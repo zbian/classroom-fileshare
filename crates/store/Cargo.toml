@@ -2,3 +2,14 @@
 name = "classroom-store"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+classroom-protocol = { path = "../protocol" }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
