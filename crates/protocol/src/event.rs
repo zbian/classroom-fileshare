@@ -1,0 +1,60 @@
+//! 同步事件与幂等合并决策（PRD 3.6）。
+
+use std::cmp::Ordering;
+
+use serde::{Deserialize, Serialize};
+
+use crate::item::ShareItem;
+
+/// 事件类型：网络层只传递四类事件（PRD 3.6）。
+#[derive(Serialize, Deserialize, Clone)]
+pub enum EventKind {
+    /// 新增或覆盖。
+    Upsert,
+    /// 删除（离线端转墓碑记录）。
+    Delete,
+    /// 重命名。
+    Rename,
+    /// 确认。
+    Ack,
+}
+
+/// 同步事件：携带全局唯一 `event_id` 与条目 `version`。
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Event {
+    /// 全局唯一事件标识，接收端按其去重。
+    pub event_id: String,
+    /// 事件类型。
+    pub kind: EventKind,
+    /// 事件载荷（对应版本的条目快照）。
+    pub item: ShareItem,
+    /// 仅 Rename：新名称。
+    pub new_name: Option<String>,
+    /// 仅 Ack：确认方标识。
+    pub acked_by: Option<String>,
+    /// 事件时间戳（Unix 秒）。
+    pub ts: i64,
+}
+
+/// 幂等合并决策。
+#[derive(Debug, PartialEq)]
+pub enum MergeDecision {
+    /// 本地无此条目或事件版本更高：覆盖为事件携带的条目。
+    Overwrite(Box<ShareItem>),
+    /// 事件重复（同 version 重放）：忽略，不产生第二条记录。
+    IgnoreDuplicate,
+    /// 事件版本更旧：丢弃。
+    IgnoreStale,
+}
+
+/// 幂等合并：None(本地无) 或 version 较高 → Overwrite；event 重复/旧版 → Ignore*。
+pub fn merge(local: Option<&ShareItem>, ev: &Event) -> MergeDecision {
+    let Some(local) = local else {
+        return MergeDecision::Overwrite(Box::new(ev.item.clone()));
+    };
+    match ev.item.version.cmp(&local.version) {
+        Ordering::Greater => MergeDecision::Overwrite(Box::new(ev.item.clone())),
+        Ordering::Less => MergeDecision::IgnoreStale,
+        Ordering::Equal => MergeDecision::IgnoreDuplicate,
+    }
+}
