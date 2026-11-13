@@ -1,0 +1,58 @@
+/* ============================================================
+   课堂共享 GUI 设计 tokens —— 唯一颜色/字号/圆角来源
+   依据：PRD V1.0 §4.6 全局 UI 规范 + 《全量界面设计稿 v1.0》:root 原值
+   仅存放 CSS 变量；reset 与通用类见 base.css
+   ============================================================ */
+
+:root {
+  /* —— 中性色（设计稿原值）—— */
+  --bg: #EDF1F6; /* 页面/画布底 */
+  --line: #E2E8F0; /* 分隔线 */
+  --ink: #0F172A; /* 主文字 */
+  --sub: #64748B; /* 次文字 */
+  --weak: #94A3B8; /* 弱文字/占位 */
+
+  /* —— 语义色（PRD 4.6：琥珀=提示与覆盖，红=删除，绿=已同步）—— */
+  --amber: #B45309;
+  --amber-l: #FFFBEB;
+  --red: #DC2626;
+  --red-l: #FEF2F2;
+  --green: #059669;
+  --green-l: #ECFDF5;
+
+  /* 新 / 未读 = 蓝（PRD 7.6 状态字典），数值与教师蓝一致 */
+  --new: #2563EB;
+  --new-l: #EFF6FF;
+
+  /* —— 圆角：窗口 12 / 卡片 10 / 按钮 6（PRD 4.6）—— */
+  --r-window: 12px;
+  --r-card: 10px;
+  --r-btn: 6px;
+
+  /* —— 字体与字号：中文微软雅黑，正文 13–14px（PRD 4.6）—— */
+  --font-ui: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-17: 17px;
+
+  /* —— 布局常量 —— */
+  --float-size: 72px; /* 浮动图标常态（PRD 4.1） */
+  --float-drop-size: 124px; /* 拖拽投放态（PRD 4.1） */
+}
+
+/* —— 主题主色：教师蓝 / 学员青，按 <html data-role> 切换 ——
+   role 由 Rust 启动时注入（T9 起）；缺省按教师端渲染 */
+:root,
+html[data-role='teacher'] {
+  --primary: #2563EB;
+  --primary-d: #1E40AF;
+  --primary-l: #EFF6FF;
+}
+
+html[data-role='student'] {
+  --primary: #0D9488;
+  --primary-d: #0F766E;
+  --primary-l: #F0FDFA;
+}

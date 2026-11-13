@@ -8,8 +8,8 @@ members = [
     "crates/agent",
     "crates/ipc",
     "apps/classroom-svc",
+    "apps/classroom-gui/src-tauri",
 ]
-# apps/classroom-gui/src-tauri 由 Task 1b（dev-gui）加入后再追加到 members。
 
 [workspace.package]
 version = "0.1.0"

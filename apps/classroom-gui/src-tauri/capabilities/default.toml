@@ -1,0 +1,13 @@
+# 默认能力：三个窗口共享基础权限（GUI 技术方案已采纳 windows=["icon","main","tips"]）
+# T8/T9/T11 按需追加 core:window:* 与插件权限
+identifier = "default"
+windows = ["icon", "main", "tips"]
+permissions = [
+  "core:default",
+  "core:window:allow-start-dragging",
+  "core:window:allow-set-size",
+  "core:window:allow-set-position",
+  "core:window:allow-show",
+  "core:window:allow-hide",
+  "core:window:allow-set-focus",
+]
