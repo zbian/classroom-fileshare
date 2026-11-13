@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::item::ShareItem;
 
 /// 事件类型：网络层只传递四类事件（PRD 3.6）。
-#[derive(Serialize, Deserialize, Clone)]
+///
+/// 说明：`Debug, PartialEq` 为接口修订 #3 的必要传导（`Event` 需派生，见下）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum EventKind {
     /// 新增或覆盖。
     Upsert,
@@ -20,7 +22,10 @@ pub enum EventKind {
 }
 
 /// 同步事件：携带全局唯一 `event_id` 与条目 `version`。
-#[derive(Serialize, Deserialize, Clone)]
+///
+/// 说明：`Debug, PartialEq` 为接口修订 #3（lead 批准）——net 层 `Frame`
+/// 需要帧往返断言，与 T-2 的 `ShareItem` 补 `Debug` 同理。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Event {
     /// 全局唯一事件标识，接收端按其去重。
     pub event_id: String,
