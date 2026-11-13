@@ -1,0 +1,4 @@
+[package]
+name = "classroom-svc"
+version.workspace = true
+edition.workspace = true

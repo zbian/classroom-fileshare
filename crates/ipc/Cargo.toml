@@ -1,0 +1,4 @@
+[package]
+name = "classroom-ipc"
+version.workspace = true
+edition.workspace = true
