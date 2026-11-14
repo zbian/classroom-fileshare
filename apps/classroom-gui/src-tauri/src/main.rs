@@ -32,6 +32,8 @@ fn main() {
                 a.strip_prefix("--demo-tips=")
                     .and_then(|v| v.parse::<u32>().ok())
             }) {
+                #[cfg(debug_assertions)]
+                eprintln!("[t11] demo-tips 启动参数命中：n={n}");
                 tips::demo_tips(app.handle(), n);
             }
             Ok(())

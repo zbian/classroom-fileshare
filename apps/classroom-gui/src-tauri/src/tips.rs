@@ -56,6 +56,8 @@ pub fn ensure_tips_window(app: &AppHandle) -> tauri::Result<()> {
 /// 数据永远下发；「暂停接收提醒」只抑制窗口显示，不影响接收（PRD 4.3）。
 pub fn push_tip(app: &AppHandle, tip: TipDto) {
     if let Some(w) = app.get_webview_window(TIPS_LABEL) {
+        #[cfg(debug_assertions)]
+        eprintln!("[t11] push_tip: {}", tip.name);
         let _ = app.emit_to(TIPS_LABEL, "svc://share-received", tip);
         let paused = app
             .state::<AppState>()
