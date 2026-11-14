@@ -25,3 +25,5 @@ thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 仅供测试（临时目录）：store/后续集成测试使用
+tempfile = "3"
