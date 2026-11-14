@@ -6,8 +6,9 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.1（Lead 已评审：TC-02 规模口径批准方案 B，见 §5.2；§6 余项待答复） |
-| 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录 |
+| 状态 | v1.1（Lead 已评审：TC-02 规模口径批准方案 B，见 §5.2；PR #25 评审中） |
+| 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
+| 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
 > 判定口径总原则：每条结论必须可追溯到 PRD 用例编号 / FR 编号与实际证据（截图、命令输出、日志、录屏）。凡与 PRD 文字冲突的实现表现，一律按缺陷登记，不做口头放行。
 
@@ -62,7 +63,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 ### 3.4 安装方式与版本记录（M1 无安装包）
 
-- M1 交付形态：仓库 release 产物 + Task 13 的 `scripts/install.ps1`（注册服务 + 开机自启 + GUI HKCU Run + 右键注册）。NSIS 安装包属 M3。
+- M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + 开机自启 + GUI HKCU Run + 右键注册）。NSIS 安装包属 M3。
 - 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与命令。
 - 若执行时 `install.ps1` 未就绪：允许以「手工等效安装」（`sc.exe create` + HKCU Run + 手工注册表右键项）替代，**必须在报告中登记环境偏差**，且该项在 install.ps1 合并后复验一次。
 
@@ -417,7 +418,7 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 - TC-01/03/06/11/12「通过」；TC-02 按 §5.2 已批准的方案 B 以「有条件通过」计入（报告与 release note 注明口径）。
 - `M1-report.md` 完成、证据齐备、缺陷清单与 issue 对应齐全 → 建议 Lead 打 `v0.1.0`（release note 注明 TC-02 缩减口径与 M3 压测计划）。
 
-## 6 执行前确认清单（需 Lead / 研发答复）
+## 6 执行前确认清单（跟踪中：第 1–5 项已写入 issue #14 验收标准，待 T-13 PR 回写；第 6/8 项已关闭）
 
 | # | 问题 | 影响 | 建议答复方 |
 | --- | --- | --- | --- |
@@ -428,7 +429,7 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 | 5 | 多 agent 同机多实例（不同 data_root/昵称）是否被支持 | §5.2 方案 B 压测代理 | dev-backend |
 | 6 | TC-02 规模口径 | 放行结论 | ✅ 已关闭：批准方案 B（2026-11-13，见 §5.2） |
 | 7 | 可用真机台数与 OS 版本（Win10/11 各几台）、是否有 Hyper-V 主机 | §3.1 矩阵落地 | **Lead**（向用户收集信息中，不阻塞方案） |
-| 8 | Task 14 的验收 issue 编号（本方案提交信息 `Refs` 待补） | 流程合规 | **Lead** |
+| 8 | Task 14 验收 issue 编号 | 流程合规 | ✅ 已关闭：issue #15（2026-11-14），本方案执行以其跟踪 |
 
 ## 附录 A 命令速查
 
