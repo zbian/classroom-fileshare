@@ -17,6 +17,8 @@
 - 仓库：`git@github.com:zbian/classroom-fileshare.git`（SSH 推拉已验证）
 - Rust：用户级安装，命令在 `$env:USERPROFILE\.cargo\bin\`；新进程若找不到 cargo，先执行
   `$env:Path += ";$env:USERPROFILE\.cargo\bin"`
+- rustfmt / clippy 组件缺失（报 `'cargo-fmt.exe' is not installed` 之类）时执行
+  `rustup component add rustfmt clippy`（stable 工具链默认不含，本地首次 fmt/clippy 前需安装）
 - 前端：Node 24 + pnpm 11；WebView2 Runtime 已就绪
 - git 身份：仓库级 `.git/config` 已配置（zbian / 685101+zbian@users.noreply.github.com），无需全局配置
 - gh CLI：可用；若遇到 `Resource not accessible by personal access token` 说明令牌权限未就绪，报告 Lead
