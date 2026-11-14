@@ -14,17 +14,7 @@
     "security": {
       "csp": null
     },
-    "windows": [
-      {
-        "label": "main",
-        "title": "课堂共享",
-        "url": "main.html",
-        "width": 1024,
-        "height": 680,
-        "minWidth": 960,
-        "minHeight": 640
-      }
-    ]
+    "windows": []
   },
   "bundle": {
     "active": true,

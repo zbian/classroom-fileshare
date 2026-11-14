@@ -1,20 +1,82 @@
-//! 课堂共享 GUI 入口（Task 1b 脚手架）。
+//! 课堂共享 GUI 入口。
 //!
-//! 当前仅初始化插件链 + 由 `tauri.conf.json` 静态配置创建单空白主窗；
-//! Task 8/9/11 起改为程序化创建 `icon` / `main` / `tips` 三窗
-//! （见 docs/plans/2026-11-13-m1-p0.md 与 GUI 技术方案）。
+//! Task 1b：Tauri 2 脚手架；Task 8：程序化创建置顶浮动图标窗（icon），
+//! 主界面（main）改为懒创建；tips 窗 T11 接入。
+//! 窗口参数与几何策略见 `windows.rs` 与 GUI 技术方案。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod state;
+mod windows;
+
+use state::{AppState, GuiConfig};
+
 fn main() {
+    let config = GuiConfig::load();
     tauri::Builder::default()
-        // 单实例：重复启动聚焦既有实例（EX-12）。
-        // T12 接入：argv 携带资源管理器右键多选文件路径时转发给主实例。
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
-        // 剪贴板读取（T9 粘贴文本 / T12 粘贴并共享）
+        // 单实例：重复启动聚焦既有实例（EX-12）；argv 转发（资源管理器右键多选）T12 接入
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            windows::focus_icon_or_main(app);
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
-        // 用系统默认程序打开文件（T9 OpenItem）
         .plugin(tauri_plugin_opener::init())
+        .manage(AppState::new(config))
+        .setup(|app| {
+            windows::ensure_icon_window(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(windows::handle_window_event)
+        .invoke_handler(tauri::generate_handler![
+            icon_ready,
+            open_main,
+            open_icon_menu,
+            close_icon_menu,
+            get_icon_state,
+            set_pause_tips,
+            gui_quit
+        ])
         .run(tauri::generate_context!())
         .expect("classroom gui 启动失败");
+}
+
+/// icon 窗前端就绪信号：visible:false 创建，此时才 show，防止白闪（冷启动 ≤3s 指标）。
+#[tauri::command]
+fn icon_ready(app: tauri::AppHandle) -> Result<(), String> {
+    windows::show_icon(&app)
+}
+
+/// 双击图标 / 菜单「打开课堂共享」：主窗懒创建或单例聚焦（FR-G-04）。
+#[tauri::command]
+fn open_main(app: tauri::AppHandle) -> Result<(), String> {
+    windows::open_main(&app).map_err(|e| e.to_string())
+}
+
+/// 右键菜单展开（Rust 依工作区计算翻转并调整窗口）。
+#[tauri::command]
+fn open_icon_menu(app: tauri::AppHandle) -> Result<windows::MenuLayout, String> {
+    windows::open_icon_menu(&app)
+}
+
+/// 右键菜单收起（恢复 72×72 基准位）。
+#[tauri::command]
+fn close_icon_menu(app: tauri::AppHandle) -> Result<(), String> {
+    windows::close_icon_menu(&app)
+}
+
+/// icon 本地状态（暂停提醒开关）。
+#[tauri::command]
+fn get_icon_state(app: tauri::AppHandle) -> windows::IconStateDto {
+    windows::get_icon_state(&app)
+}
+
+/// 「暂停接收提醒」本地开关（占位；T9/T13 接服务 PauseTips）。
+#[tauri::command]
+fn set_pause_tips(app: tauri::AppHandle, paused: bool) -> Result<bool, String> {
+    windows::set_pause_tips(&app, paused)
+}
+
+/// 退出课堂共享：仅结束 GUI 进程（PRD 4.3；服务存活验证在 T13/TC-12）。
+#[tauri::command]
+fn gui_quit(app: tauri::AppHandle) {
+    windows::quit_gui(&app)
 }

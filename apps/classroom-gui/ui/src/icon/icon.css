@@ -1,0 +1,121 @@
+/* icon 窗口专属：透明窗口 + 三态布局（常态 72 / 投放态 124 / 菜单态 304×252）*/
+html,
+body,
+#root {
+  background: transparent !important;
+}
+
+/* 常态：窗口 72×72，圆形图标填满 */
+.icon-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+.icon-root .float-circle {
+  width: 100%;
+  height: 100%;
+  box-shadow: 0 6px 18px rgb(37 99 235 / 32%);
+}
+
+/* 投放态：窗口 124×124，虚线投放区填满（A4）*/
+.icon-root.drop {
+  align-items: stretch;
+}
+
+.icon-root.drop .float-circle {
+  border: 3px dashed var(--primary);
+  background: var(--primary-l);
+  color: var(--primary);
+  box-shadow: none;
+  font-size: var(--fs-15);
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* 菜单态：圆固定于原位，菜单在旁（flipX/flipY 时镜像到左/上侧）*/
+.icon-root.menu {
+  gap: 12px;
+}
+
+.icon-root.menu .icon-cell {
+  width: 72px;
+  height: 72px;
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.icon-root.menu .icon-cell .float-circle {
+  width: 72px;
+  height: 72px;
+}
+
+.icon-root.menu .menu-cell {
+  flex: 1;
+  min-width: 0;
+}
+
+.icon-root.menu.flip-x {
+  flex-direction: row-reverse;
+}
+
+.icon-root.menu.flip-y {
+  align-items: flex-end;
+}
+
+/* 自绘右键菜单（A3：白卡片、圆角 8、阴影、分隔线、危险项红字）*/
+.ctx-menu {
+  width: 100%;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 16%);
+  padding: 6px;
+  font-size: var(--fs-13);
+  color: #334155;
+}
+
+.ctx-item {
+  padding: 8px 10px;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ctx-item:not(.disabled):hover {
+  background: var(--primary-l);
+  color: var(--primary-d);
+}
+
+.ctx-item.disabled {
+  color: #b6c2d2;
+  cursor: default;
+}
+
+.ctx-item small {
+  font-size: 11px;
+  color: var(--weak);
+  font-weight: 400;
+}
+
+.ctx-item.danger {
+  color: var(--red);
+}
+
+.ctx-item.danger:not(.disabled):hover {
+  background: var(--red-l);
+  color: var(--red);
+}
+
+.ctx-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 5px 2px;
+}
