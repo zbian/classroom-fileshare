@@ -47,9 +47,6 @@ pub enum StoreError {
     /// 高风险扩展名（PRD 5.3）。
     #[error("高风险文件类型: {0}")]
     RiskyExt(String),
-    /// Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9 及带扩展名形态）。
-    #[error("Windows 保留设备名: {0}")]
-    ReservedName(String),
     /// 临时文件 SHA-256 与期望不符（PRD EX-07）。
     #[error("哈希校验失败: 期望 {expected}，实际 {actual}")]
     HashMismatch { expected: String, actual: String },
@@ -93,20 +90,11 @@ pub struct ListFilter {
     pub include_deleted: bool,
 }
 
-/// Windows 保留设备名清单（CON/PRN/AUX/NUL/COM1-9/LPT1-9）。
-const RESERVED_DEVICE_NAMES: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
-
-/// 判断是否为 Windows 保留设备名（大小写不敏感，含带扩展名形态如 `CON.txt`）。
+/// 判断是否为 Windows 保留设备名——复用 protocol 的实现（PR #28 检查点①）。
 ///
-/// 这类名字即使带扩展名也会被系统解析为设备，落盘前必须拒绝（安全补充项，PRD 9.4）。
-pub fn is_reserved_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("");
-    let upper = stem.to_ascii_uppercase();
-    RESERVED_DEVICE_NAMES.contains(&upper.as_str())
-}
+/// 这类名字即使带扩展名也会被系统解析为设备，落盘前必须拒绝（PRD 9.4）；
+/// 单一清单放 protocol 层，避免 store 与 protocol 两份漂移。
+pub use classroom_protocol::is_reserved_device_name;
 
 // ---------- 枚举与字符串互转（入库/出库） ----------
 
@@ -392,10 +380,9 @@ impl Store {
         now: i64,
     ) -> Result<PutOutcome> {
         let owner = safe_component(owner_id)?;
+        // 净化统一拒绝：路径穿越 / 尾随点空格 / NTFS 保留设备名（PR #28）
+        // / 非法字符，均以 StoreError::Name(NameReject::*) 上抛
         let name = sanitize_file_name(raw_name)?;
-        if is_reserved_device_name(&name) {
-            return Err(StoreError::ReservedName(name));
-        }
         if classroom_protocol::is_risky_ext(&name) {
             return Err(StoreError::RiskyExt(name));
         }

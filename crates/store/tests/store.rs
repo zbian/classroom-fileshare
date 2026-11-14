@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use classroom_protocol::{
-    Audience, Event, EventKind, ItemKind, MergeDecision, Role, ShareItem, SyncState,
+    Audience, Event, EventKind, ItemKind, MergeDecision, NameReject, Role, ShareItem, SyncState,
 };
 use classroom_store::{
     is_reserved_device_name, sha256_file, ListFilter, PutOutcome, Store, StoreError,
@@ -339,7 +339,8 @@ fn reserved_device_name_rejected_at_put() {
             100,
         )
         .expect_err("reserved device name must be rejected");
-    assert!(matches!(err, StoreError::ReservedName(_)));
+    // PR #28 后由 sanitize 统一拒绝：StoreError::Name(NameReject::ReservedDevice)
+    assert!(matches!(err, StoreError::Name(NameReject::ReservedDevice)));
     assert!(dir_entries(&root.join("repo/alice")).is_empty());
 }
 
