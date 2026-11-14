@@ -2,3 +2,21 @@
 name = "classroom-svc"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+classroom-protocol = { path = "../../crates/protocol" }
+classroom-store = { path = "../../crates/store" }
+classroom-net = { path = "../../crates/net" }
+classroom-host = { path = "../../crates/host" }
+classroom-agent = { path = "../../crates/agent" }
+classroom-ipc = { path = "../../crates/ipc" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+windows-service = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
