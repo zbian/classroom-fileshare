@@ -569,6 +569,18 @@ dependencies = [
 [[package]]
 name = "classroom-ipc"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "classroom-net",
+ "classroom-protocol",
+ "classroom-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "classroom-net"
@@ -600,6 +612,7 @@ version = "0.1.0"
 dependencies = [
  "classroom-protocol",
  "rusqlite",
+ "serde",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",

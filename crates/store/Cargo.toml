@@ -8,6 +8,7 @@ classroom-protocol = { path = "../protocol" }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
