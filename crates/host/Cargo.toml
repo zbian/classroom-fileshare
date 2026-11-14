@@ -2,3 +2,17 @@
 name = "classroom-host"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+classroom-protocol = { path = "../protocol" }
+classroom-store = { path = "../store" }
+classroom-net = { path = "../net" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+sha2 = { workspace = true }

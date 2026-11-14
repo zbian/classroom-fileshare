@@ -19,10 +19,15 @@ use crate::frame::{
 };
 
 /// 会话回调：由角色层（host/agent）实现。
+///
+/// 接口修订 #4（lead 报备）：`on_hello` 增加连接发送通道参数（host 需在
+/// join 成功时注册广播目标）；新增 `on_disconnect` / `on_manifest_req`
+/// 默认方法（断线通知与重连对齐，均为空默认实现，不影响既有实现方）。
 #[async_trait]
 pub trait SessionHandler: Send + Sync {
-    /// 处理加入请求，返回应答（PIN 校验 / 昵称查重 / 版本检查在实现方）。
-    async fn on_hello(&self, hello: Hello) -> HelloReply;
+    /// 处理加入请求，返回应答（PIN 校验 / 昵称查重 / 版本检查在实现方）；
+    /// `tx` 为该连接的发送通道，实现方可保存用于后续推送。
+    async fn on_hello(&self, hello: Hello, tx: &mut mpsc::Sender<Frame>) -> HelloReply;
 
     /// 处理同步事件；`tx` 可用于向对端回帧。
     async fn on_event(&self, ev: classroom_protocol::Event, tx: &mut mpsc::Sender<Frame>);
@@ -35,6 +40,13 @@ pub trait SessionHandler: Send + Sync {
         chunks: mpsc::Receiver<FileChunk>,
         expected_sha256: String,
     ) -> FileAck;
+
+    /// 连接断开（仅对 join 成功获得 session_id 的会话调用）。默认空实现。
+    async fn on_disconnect(&self, _session_id: &str) {}
+
+    /// 收到版本清单请求（重连对齐，PRD 7.5）；实现方应经 `tx` 回
+    /// [`Frame::Manifest`]。默认空实现。
+    async fn on_manifest_req(&self, _tx: &mut mpsc::Sender<Frame>) {}
 }
 
 /// TCP 服务端：bind/accept，每连接 spawn 一个会话任务。
@@ -88,6 +100,8 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
 
     // 当前活跃文件流的分块转发通道（FileEnd 后置 None 触发接收端校验）
     let mut file_tx: Option<mpsc::Sender<FileChunk>> = None;
+    // join 成功的会话 id（断开时回调 on_disconnect）
+    let mut joined_session: Option<String> = None;
 
     loop {
         let frame = match read_frame(&mut reader).await {
@@ -100,7 +114,11 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
         };
         match frame {
             Frame::Hello(hello) => {
-                let reply = handler.on_hello(hello).await;
+                let mut reply_tx = tx.clone();
+                let reply = handler.on_hello(hello, &mut reply_tx).await;
+                if let HelloReply::Ok { session_id } = &reply {
+                    joined_session = Some(session_id.clone());
+                }
                 if tx.send(Frame::HelloReply(reply)).await.is_err() {
                     break;
                 }
@@ -146,6 +164,10 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
                     break;
                 }
             }
+            Frame::ManifestReq => {
+                let mut reply_tx = tx.clone();
+                handler.on_manifest_req(&mut reply_tx).await;
+            }
             other => {
                 tracing::debug!(frame = ?other, "服务端会话暂不处理该帧");
             }
@@ -153,6 +175,12 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
     }
 
     drop(tx);
+    // 先回调断开：实现方（host）在回调里注销该连接并 drop 广播用 tx clone，
+    // 之后 writer 的 rx 才会关闭；若放到 writer_task.await 之后会形成
+    // 「session 等 writer ↔ 实现方等 on_disconnect」互等。
+    if let Some(session_id) = joined_session {
+        handler.on_disconnect(&session_id).await;
+    }
     let _ = writer_task.await;
     Ok(())
 }

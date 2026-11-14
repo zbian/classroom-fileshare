@@ -29,6 +29,7 @@ struct MockHandler {
     pin: Option<String>,
     events_tx: mpsc::UnboundedSender<Event>,
     received_files: Mutex<HashMap<String, Vec<u8>>>,
+    disconnects: Mutex<Vec<String>>,
 }
 
 impl MockHandler {
@@ -39,6 +40,7 @@ impl MockHandler {
                 pin: pin.map(str::to_string),
                 events_tx: tx,
                 received_files: Mutex::new(HashMap::new()),
+                disconnects: Mutex::new(Vec::new()),
             }),
             rx,
         )
@@ -47,7 +49,7 @@ impl MockHandler {
 
 #[async_trait]
 impl SessionHandler for MockHandler {
-    async fn on_hello(&self, hello: Hello) -> HelloReply {
+    async fn on_hello(&self, hello: Hello, _tx: &mut mpsc::Sender<Frame>) -> HelloReply {
         let Hello::Join {
             protocol_version,
             nickname,
@@ -98,6 +100,19 @@ impl SessionHandler for MockHandler {
             item_id: header.item_id,
             sha256_ok: ok,
         }
+    }
+
+    async fn on_disconnect(&self, session_id: &str) {
+        self.disconnects
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
+    }
+
+    async fn on_manifest_req(&self, tx: &mut mpsc::Sender<Frame>) {
+        tx.send(Frame::Manifest(vec![("item-a".into(), 1, false)]))
+            .await
+            .ok();
     }
 }
 
@@ -317,4 +332,62 @@ async fn run_session_directly_with_stream() {
         read_frame(&mut sock).await.unwrap(),
         Frame::HelloReply(HelloReply::Ok { .. })
     ));
+}
+
+/// 接口修订 #4：join 成功后连接断开，on_disconnect 带 session_id 回调。
+#[tokio::test]
+async fn disconnect_after_join_triggers_on_disconnect() {
+    let (addr, _rx, handler) = spawn_server(None).await;
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    send(
+        &mut sock,
+        &Frame::Hello(Hello::Join {
+            protocol_version: PROTOCOL_VERSION,
+            nickname: "carol".into(),
+            role: Role::Student,
+            pin: None,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        read_frame(&mut sock).await.unwrap(),
+        Frame::HelloReply(HelloReply::Ok { .. })
+    ));
+    drop(sock); // 断线
+                // 轮询等待断开回调到达（会话结束是异步的）
+    let mut seen = false;
+    for _ in 0..100 {
+        if !handler.disconnects.lock().unwrap().is_empty() {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(seen, "join 成功后断线必须触发 on_disconnect");
+}
+
+/// 接口修订 #4：ManifestReq 经 on_manifest_req 回调应答。
+#[tokio::test]
+async fn manifest_req_answered_via_callback() {
+    let (addr, _rx, _h) = spawn_server(None).await;
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    send(
+        &mut sock,
+        &Frame::Hello(Hello::Join {
+            protocol_version: PROTOCOL_VERSION,
+            nickname: "dave".into(),
+            role: Role::Student,
+            pin: None,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        read_frame(&mut sock).await.unwrap(),
+        Frame::HelloReply(HelloReply::Ok { .. })
+    ));
+    send(&mut sock, &Frame::ManifestReq).await;
+    match read_frame(&mut sock).await.unwrap() {
+        Frame::Manifest(entries) => assert_eq!(entries, vec![("item-a".to_string(), 1, false)]),
+        other => panic!("expected Manifest, got {other:?}"),
+    }
 }
