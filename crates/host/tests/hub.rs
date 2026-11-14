@@ -225,6 +225,25 @@ async fn wrong_pin_and_dup_nickname_rejected() {
     );
 }
 
+/// PR #30 检查点：Windows/NTFS 保留设备名昵称拒绝加入。
+#[tokio::test]
+async fn reserved_device_name_nicknames_rejected() {
+    let host = start_host(None).await;
+    let port = host.port;
+    assert_eq!(
+        MiniAgent::join(port, "CON", None).await.err(),
+        Some(HelloErr::InvalidNickname)
+    );
+    assert_eq!(
+        MiniAgent::join(port, "com1", None).await.err(),
+        Some(HelloErr::InvalidNickname)
+    );
+    // 保留名近似词不受影响（"console" 非保留名）
+    MiniAgent::join(port, "console", None)
+        .await
+        .expect("近似词昵称应可正常加入");
+}
+
 #[tokio::test]
 async fn disconnect_then_reconnect_gets_manifest() {
     let mut host = start_host(None).await;

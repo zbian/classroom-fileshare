@@ -17,7 +17,9 @@ use uuid::Uuid;
 use classroom_net::{
     FileAck, FileChunk, FileEnd, FileHeader, Frame, Hello, HelloErr, HelloReply, SessionHandler,
 };
-use classroom_protocol::{Audience, Event, EventKind, MergeDecision, Role, ShareItem, CHUNK_SIZE};
+use classroom_protocol::{
+    is_reserved_device_name, Audience, Event, EventKind, MergeDecision, Role, ShareItem, CHUNK_SIZE,
+};
 use classroom_store::{sha256_file, ListFilter, PutOutcome, Store};
 
 use crate::room::Admitter;
@@ -244,6 +246,13 @@ impl SessionHandler for Hub {
             return HelloReply::Err { code };
         }
         let Hello::Join { nickname, .. } = &hello;
+        // PR #30 检查点：保留设备名昵称不可用（PRD 9.4；昵称同时用作
+        // root/repo/<owner>/ 目录名，Win10 上保留名目录可能创建失败）。
+        if is_reserved_device_name(nickname) {
+            return HelloReply::Err {
+                code: HelloErr::InvalidNickname,
+            };
+        }
         {
             let conns = self.conns.lock().unwrap();
             if conns.values().any(|c| c.nickname == *nickname) {
