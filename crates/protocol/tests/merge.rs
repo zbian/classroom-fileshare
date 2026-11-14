@@ -81,6 +81,42 @@ fn merge_same_version_different_event_id_is_duplicate() {
     assert_eq!(merge(Some(&local), &ev), MergeDecision::IgnoreDuplicate);
 }
 
+// ---------- 同版本 delete 合并（接口修订 #5①，PRD 7.4 删除同步） ----------
+
+#[test]
+fn merge_delete_same_version_overwrites_live_local() {
+    // 教师删除不加 version；删除意图必须覆盖同版本的未删本地条目，
+    // 否则删除永远无法在学员端落地。
+    let mut local = mk_item("teacher", Audience::All, "课件", 1);
+    local.deleted = false;
+    let mut gone = local.clone();
+    gone.deleted = true;
+    let ev = Event {
+        kind: EventKind::Delete,
+        item: gone.clone(),
+        ..mk_event("e-del", local.clone())
+    };
+    assert_eq!(
+        merge(Some(&local), &ev),
+        MergeDecision::Overwrite(Box::new(gone))
+    );
+}
+
+#[test]
+fn merge_delete_on_already_deleted_local_is_duplicate() {
+    // 重复 delete（本地已是墓碑）：幂等忽略
+    let mut local = mk_item("teacher", Audience::All, "课件", 1);
+    local.deleted = true;
+    let mut gone = local.clone();
+    gone.deleted = true;
+    let ev = Event {
+        kind: EventKind::Delete,
+        item: gone,
+        ..mk_event("e-del", local.clone())
+    };
+    assert_eq!(merge(Some(&local), &ev), MergeDecision::IgnoreDuplicate);
+}
+
 // ---------- scope_key：同名覆盖判定（PRD 5.7） ----------
 
 #[test]

@@ -121,7 +121,8 @@ pub async fn run_host(
     };
     let port = server.local_addr().port();
     hub.set_port(port);
-    tokio::spawn(server.run());
+    let server_handle = server.handle();
+    let server_task = tokio::spawn(server.run());
 
     let beacon = spawn_beacon(Beacon {
         protocol_version: PROTOCOL_VERSION,
@@ -141,6 +142,9 @@ pub async fn run_host(
         hub.handle(&command).await;
     }
     beacon.abort();
+    // 优雅停机：终止全部会话（学员端立即感知断线）并释放监听端口
+    server_handle.shutdown();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_task).await;
     tracing::info!(room = %cfg.room_code, "教师端停止");
     Ok(())
 }

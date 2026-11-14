@@ -58,6 +58,27 @@ fn latest_item(out: PutOutcome) -> ShareItem {
     }
 }
 
+/// 确定性 event_id：`H(item_id|version|kind)` 前 32 hex。
+///
+/// 接口修订 #5③（lead 建议采纳）：重连重推复用同一 event_id，接收端
+/// `seen_event` 直接幂等去重，`event_log` 不随重连次数膨胀。
+fn deterministic_event_id(item_id: &str, version: u64, kind: &EventKind) -> String {
+    use sha2::{Digest, Sha256};
+    let kind_name = match kind {
+        EventKind::Upsert => "upsert",
+        EventKind::Delete => "delete",
+        EventKind::Rename => "rename",
+        EventKind::Ack => "ack",
+    };
+    let mut h = Sha256::new();
+    h.update(item_id.as_bytes());
+    h.update(b"|");
+    h.update(version.to_string().as_bytes());
+    h.update(b"|");
+    h.update(kind_name.as_bytes());
+    classroom_store::files::to_hex(&h.finalize())[..32].to_string()
+}
+
 impl Hub {
     pub(crate) fn new(
         store: Store,
@@ -108,13 +129,54 @@ impl Hub {
 
     fn make_event(kind: EventKind, item: ShareItem, now: i64) -> Event {
         Event {
-            event_id: Uuid::new_v4().to_string(),
+            event_id: deterministic_event_id(&item.id, item.version, &kind),
             kind,
             item,
             new_name: None,
             acked_by: None,
             ts: now,
         }
+    }
+
+    async fn push_file_to(&self, item: &ShareItem, tx: &mut mpsc::Sender<Frame>) {
+        let Ok(body_path) = self.store.lock().unwrap().file_body(item) else {
+            tracing::warn!(item_id = %item.id, "文件实体缺失，跳过推送");
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&body_path) else {
+            tracing::warn!(item_id = %item.id, "文件读取失败，跳过推送");
+            return;
+        };
+        // 文本条目 sha256=None（PRD 3.5），广播时对正文现算整体哈希
+        let sha = match item.sha256.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                use sha2::{Digest, Sha256};
+                classroom_store::files::to_hex(&Sha256::digest(&bytes))
+            }
+        };
+        let _ = tx
+            .send(Frame::FileHeader(FileHeader {
+                item_id: item.id.clone(),
+                file_name: item.title.clone(),
+                size: bytes.len() as u64,
+                sha256: sha.clone(),
+            }))
+            .await;
+        for (seq, part) in bytes.chunks(CHUNK_SIZE).enumerate() {
+            let _ = tx
+                .send(Frame::FileChunk(FileChunk {
+                    item_id: item.id.clone(),
+                    seq: seq as u64,
+                    bytes: part.to_vec(),
+                }))
+                .await;
+        }
+        let _ = tx
+            .send(Frame::FileEnd(FileEnd {
+                item_id: item.id.clone(),
+            }))
+            .await;
     }
 
     async fn broadcast_event(&self, ev: &Event) {
@@ -124,38 +186,8 @@ impl Hub {
     }
 
     async fn broadcast_file(&self, item: &ShareItem) {
-        let Ok(body_path) = self.store.lock().unwrap().file_body(item) else {
-            tracing::warn!(item_id = %item.id, "文件实体缺失，跳过推送");
-            return;
-        };
-        let Ok(bytes) = std::fs::read(&body_path) else {
-            tracing::warn!(item_id = %item.id, "文件读取失败，跳过推送");
-            return;
-        };
-        let sha = item.sha256.clone().unwrap_or_default();
-        for tx in self.targets() {
-            let _ = tx
-                .send(Frame::FileHeader(FileHeader {
-                    item_id: item.id.clone(),
-                    file_name: item.title.clone(),
-                    size: bytes.len() as u64,
-                    sha256: sha.clone(),
-                }))
-                .await;
-            for (seq, part) in bytes.chunks(CHUNK_SIZE).enumerate() {
-                let _ = tx
-                    .send(Frame::FileChunk(FileChunk {
-                        item_id: item.id.clone(),
-                        seq: seq as u64,
-                        bytes: part.to_vec(),
-                    }))
-                    .await;
-            }
-            let _ = tx
-                .send(Frame::FileEnd(FileEnd {
-                    item_id: item.id.clone(),
-                }))
-                .await;
+        for mut tx in self.targets() {
+            self.push_file_to(item, &mut tx).await;
         }
     }
 
@@ -184,6 +216,8 @@ impl Hub {
                 let ev = Self::make_event(EventKind::Upsert, item.clone(), now);
                 let _ = self.store.lock().unwrap().record_event(&ev);
                 self.broadcast_event(&ev).await;
+                // 文本正文同样经文件帧推送（修订 #5④：ShareItem 不含正文字段）
+                self.broadcast_file(&item).await;
                 let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
             }
             Err(e) => tracing::warn!(error = %e, "教师文本入库失败"),
@@ -323,16 +357,18 @@ impl SessionHandler for Hub {
             include_deleted: true,
             ..Default::default()
         };
-        let entries = match self.store.lock().unwrap().list(filter) {
-            Ok(items) => items
-                .into_iter()
-                .map(|i| (i.id, i.version, i.deleted))
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "读取版本清单失败");
-                Vec::new()
-            }
-        };
+        let items = self.store.lock().unwrap().list(filter).unwrap_or_default();
+        // 先回版本清单，再对未删条目整体重推（Event + 文件/正文件帧）：
+        // 确定性 event_id 使接收端幂等去重，缺失条目 Overwrite、已有条目忽略
+        let entries = items
+            .iter()
+            .map(|i| (i.id.clone(), i.version, i.deleted))
+            .collect();
         let _ = tx.send(Frame::Manifest(entries)).await;
+        for item in items.into_iter().filter(|i| !i.deleted) {
+            let ev = Self::make_event(EventKind::Upsert, item.clone(), unix_now());
+            let _ = tx.send(Frame::Event(ev)).await;
+            self.push_file_to(&item, tx).await;
+        }
     }
 }
