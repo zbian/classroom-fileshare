@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust (fmt / clippy / test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  # 前端作业：apps/classroom-gui/ui 由 Task 1b 创建后自动生效。
+  web:
+    name: Web (pnpm build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检测前端工程是否存在
+        id: ui
+        shell: pwsh
+        run: |
+          if (Test-Path "apps/classroom-gui/ui/package.json") {
+            "exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - uses: pnpm/action-setup@v4
+        if: steps.ui.outputs.exists == 'true'
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        if: steps.ui.outputs.exists == 'true'
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/classroom-gui/ui/pnpm-lock.yaml
+
+      - name: pnpm install
+        if: steps.ui.outputs.exists == 'true'
+        working-directory: apps/classroom-gui/ui
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm build
+        if: steps.ui.outputs.exists == 'true'
+        working-directory: apps/classroom-gui/ui
+        run: pnpm build

@@ -1,0 +1,4 @@
+[package]
+name = "classroom-store"
+version.workspace = true
+edition.workspace = true
