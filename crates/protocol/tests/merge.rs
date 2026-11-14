@@ -2,8 +2,9 @@
 //! 风险扩展名与事件序列化往返。
 
 use classroom_protocol::{
-    is_risky_ext, merge, sanitize_file_name, validate_text, Audience, Event, EventKind, ItemKind,
-    MergeDecision, NameReject, Role, ShareItem, SyncState, TextReject, MAX_TEXT_CHARS,
+    is_reserved_device_name, is_risky_ext, merge, sanitize_file_name, validate_text, Audience,
+    Event, EventKind, ItemKind, MergeDecision, NameReject, Role, ShareItem, SyncState, TextReject,
+    MAX_TEXT_CHARS,
 };
 
 /// 构造最小合法 ShareItem（时间戳由测试注入：protocol 不取时钟）。
@@ -199,6 +200,66 @@ fn risky_ext_detected_case_insensitive() {
     assert!(!is_risky_ext("Photo.JPG"));
     assert!(!is_risky_ext("课件.docx"));
     assert!(!is_risky_ext("noext"));
+}
+
+// ---------- PR #28 安全修复：尾随点/空格与 NTFS 保留设备名 ----------
+//
+// 绕过链：sanitize("x.exe.") 原放行（尾随点不在非法字符集）→ is_risky_ext
+// 取到空扩展不拦 → Win32 落盘剥尾随点/空格 → 磁盘上实际是 x.exe。
+
+#[test]
+fn sanitize_rejects_trailing_dot() {
+    assert!(matches!(
+        sanitize_file_name("x.exe."),
+        Err(NameReject::TrailingDotOrSpace)
+    ));
+}
+
+#[test]
+fn sanitize_rejects_trailing_space() {
+    assert!(matches!(
+        sanitize_file_name("x.exe "),
+        Err(NameReject::TrailingDotOrSpace)
+    ));
+    assert!(matches!(
+        sanitize_file_name("课件.pdf "),
+        Err(NameReject::TrailingDotOrSpace)
+    ));
+    // 点+空格混合尾随同样拒绝
+    assert!(matches!(
+        sanitize_file_name("x.exe. "),
+        Err(NameReject::TrailingDotOrSpace)
+    ));
+}
+
+#[test]
+fn risky_ext_normalizes_trailing_dot_and_space() {
+    // 防调用方绕过 sanitize 直接调用：入口归一后判定
+    assert!(is_risky_ext("x.exe."));
+    assert!(is_risky_ext("x.exe "));
+    assert!(is_risky_ext("x.EXE."));
+    assert!(!is_risky_ext("报告.pdf."));
+}
+
+#[test]
+fn sanitize_rejects_reserved_device_names() {
+    assert!(matches!(
+        sanitize_file_name("CON"),
+        Err(NameReject::ReservedDevice)
+    ));
+    assert!(matches!(
+        sanitize_file_name("con.txt"),
+        Err(NameReject::ReservedDevice)
+    ));
+    // 剥路径后是保留名同样拒绝
+    assert!(matches!(
+        sanitize_file_name(r"..\..\COM1"),
+        Err(NameReject::ReservedDevice)
+    ));
+    assert!(is_reserved_device_name("NUL.txt"));
+    assert!(is_reserved_device_name("lpt9"));
+    assert!(!is_reserved_device_name("console"));
+    assert!(!is_reserved_device_name("contact.docx"));
 }
 
 // ---------- 事件序列化往返 ----------

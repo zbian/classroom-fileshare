@@ -6,8 +6,8 @@ pub mod item;
 
 pub use event::{merge, Event, EventKind, MergeDecision};
 pub use item::{
-    is_risky_ext, sanitize_file_name, validate_text, Audience, ItemKind, NameReject, Role,
-    ShareItem, SyncState, TextReject,
+    is_reserved_device_name, is_risky_ext, sanitize_file_name, validate_text, Audience, ItemKind,
+    NameReject, Role, ShareItem, SyncState, TextReject,
 };
 
 /// 协议版本号：服务与 GUI 版本不一致时以其拒绝连接（PRD 4.5）。

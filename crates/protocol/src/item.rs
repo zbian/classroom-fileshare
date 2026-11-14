@@ -119,9 +119,33 @@ pub enum NameReject {
     /// 净化后仍为路径穿越片段（`..`）。
     #[error("文件名包含路径穿越")]
     Traversal,
+    /// 以 `.` 或空格结尾：Win32 落盘会将其剥除（PR #28 绕过链），
+    /// 如 `x.exe.` 落盘后实为 `x.exe`，必须拒绝。
+    #[error("文件名以点或空格结尾")]
+    TrailingDotOrSpace,
+    /// NTFS 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，含带扩展名形态）。
+    #[error("Windows 保留设备名")]
+    ReservedDevice,
     /// 含 Windows 非法字符或控制字符。
     #[error("文件名含非法字符")]
     IllegalChar,
+}
+
+/// NTFS 保留设备名清单（小写；PR #28 评审补充，PRD 9.4）。
+const RESERVED_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// 判断是否为 Windows/NTFS 保留设备名（大小写不敏感，含带扩展名形态
+/// 如 `CON.txt`——这类名字即使带扩展也会被系统解析为设备）。
+///
+/// TODO：T-3 store 侧的同名实现改为复用本函数，避免两份清单漂移
+/// （rebase t3–t7 链后处理）。
+pub fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("");
+    let lower = stem.to_ascii_lowercase();
+    RESERVED_DEVICE_NAMES.contains(&lower.as_str())
 }
 
 /// 校验入站文本（非空白、≤10000 字）。
@@ -142,7 +166,10 @@ pub fn validate_text(title: &str, body: &str) -> Result<(), TextReject> {
 /// 文件名净化：剥路径、拒绝非法字符与穿越，返回安全文件名（PRD 9.4）。
 ///
 /// 带路径成分的名字（含绝对路径，如资源管理器右键传入）剥到最后一段；
-/// 剥完为空或 `.`/`..` 则拒绝；含 Windows 非法字符（`<>:"|?*` 及控制字符）拒绝。
+/// 剥完为空、`.`/`..`、尾随 `.` 或空格（Win32 落盘会剥除、构成类型伪装，
+/// PR #28）、NTFS 保留设备名、含 Windows 非法字符（`<>:"|?*` 及控制字符）
+/// 均拒绝。获批语义（T-2 验收）：剥路径是主路径，剥离后仅剩文件名、
+/// 写入 owner 子目录不可能逃逸仓库。
 pub fn sanitize_file_name(raw: &str) -> Result<String, NameReject> {
     let name = raw.rsplit(['/', '\\']).next().unwrap_or("");
     if name.is_empty() {
@@ -150,6 +177,12 @@ pub fn sanitize_file_name(raw: &str) -> Result<String, NameReject> {
     }
     if name == "." || name == ".." {
         return Err(NameReject::Traversal);
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err(NameReject::TrailingDotOrSpace);
+    }
+    if is_reserved_device_name(name) {
+        return Err(NameReject::ReservedDevice);
     }
     if name
         .chars()
@@ -161,8 +194,12 @@ pub fn sanitize_file_name(raw: &str) -> Result<String, NameReject> {
 }
 
 /// 判断文件名的扩展名是否属于高风险类型（大小写不敏感，PRD 5.3）。
+///
+/// 入口先做尾随 `.`/空格归一（`x.exe.` → `x.exe`），防止调用方绕过
+/// [`sanitize_file_name`] 直接判定造成漏拦（PR #28）。
 pub fn is_risky_ext(file_name: &str) -> bool {
-    match file_name.rsplit_once('.') {
+    let normalized = file_name.trim_end_matches(['.', ' ']);
+    match normalized.rsplit_once('.') {
         Some((_, ext)) => RISKY_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
         None => false,
     }
