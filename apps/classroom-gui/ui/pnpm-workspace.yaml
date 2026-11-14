@@ -7,3 +7,7 @@ allowBuilds:
   esbuild: true
 onlyBuiltDependencies:
   - esbuild
+# pnpm 11 默认 minimumReleaseAge=1440(24h)，会把「发布不足 24h 的传递依赖」拦成
+# CI 红（实例：node-releases@2.0.64 发布后 23h08m 触发 ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION）。
+# 显式降为 60 分钟：保留对「刚发布」可疑包的供应链拦截，不再误伤一天内的正常版本。
+minimumReleaseAge: 60
