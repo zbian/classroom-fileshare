@@ -1,0 +1,2 @@
+# tauri-build 生成的 ACL schema 快照，每次构建刷新，不入库
+gen/schemas/

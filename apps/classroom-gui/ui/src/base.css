@@ -1,0 +1,169 @@
+/* ============================================================
+   课堂共享 GUI 基础样式：reset + 元素默认 + 通用类
+   通用类类名与《全量界面设计稿 v1.0》保持一致，便于对照还原
+   主题不使用渐变与重阴影（PRD 4.6）
+   ============================================================ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-13);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  /* 桌面工具默认禁选；输入区域按需放开 */
+  user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  font: inherit;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* —— 通用类（对照设计稿）—— */
+
+/* 按钮：默认白底描边；.pri 主色实底（教师蓝/学员青随 role）；.dg 危险红 */
+.btn {
+  font-size: var(--fs-13);
+  padding: 6px 12px;
+  border-radius: var(--r-btn);
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  white-space: nowrap;
+}
+.btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.btn.pri {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn.dg {
+  color: var(--red);
+  border-color: #fecaca;
+}
+
+/* 状态 chip：文字标签 + 色块，不单靠颜色区分（PRD 4.6 / review 必查项）*/
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #f1f5f9;
+  color: var(--sub);
+  white-space: nowrap;
+}
+.chip.pri {
+  background: var(--primary-l);
+  color: var(--primary-d);
+}
+.chip.warn {
+  background: var(--amber-l);
+  color: var(--amber);
+}
+.chip.ok {
+  background: var(--green-l);
+  color: var(--green);
+}
+.chip.err {
+  background: var(--red-l);
+  color: var(--red);
+}
+
+/* 类型徽标：file 蓝 / text 琥珀 */
+.badge {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+.badge.file {
+  background: var(--new-l);
+  color: var(--primary-d);
+}
+.badge.text {
+  background: var(--amber-l);
+  color: var(--amber);
+}
+
+/* 提示条：info 默认 / pri 蓝 / ok 绿 / warn 琥珀 / err 红 */
+.info {
+  font-size: var(--fs-12);
+  color: var(--sub);
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: var(--r-btn);
+  padding: 8px 10px;
+  line-height: 1.6;
+}
+.info.pri {
+  background: var(--primary-l);
+  border-color: #bfdbfe;
+  color: var(--primary-d);
+}
+.info.ok {
+  background: var(--green-l);
+  border-color: #a7f3d0;
+  color: var(--green);
+}
+.info.warn {
+  background: var(--amber-l);
+  border-color: #fde68a;
+  color: var(--amber);
+}
+.info.err {
+  background: var(--red-l);
+  border-color: #fecaca;
+  color: var(--red);
+}
+
+/* 浮动图标圆形（A1）：72px 常态；投放态由 .drop 放大为 124px（A4）*/
+.float-circle {
+  width: var(--float-size);
+  height: var(--float-size);
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-17);
+  font-weight: 600;
+  border: 4px solid #fff;
+  box-shadow: 0 6px 18px rgb(37 99 235 / 32%);
+  flex: none;
+}
+.float-circle.drop {
+  width: var(--float-drop-size);
+  height: var(--float-drop-size);
+  border: 3px dashed var(--primary);
+  background: var(--primary-l);
+  color: var(--primary);
+  box-shadow: none;
+  font-size: var(--fs-15);
+  text-align: center;
+  line-height: 1.5;
+}
