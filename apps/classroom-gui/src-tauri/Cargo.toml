@@ -12,6 +12,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
 
 # 说明：tauri 相关版本暂列于本成员 crate（lead 特批），
 # 待 T1a 合入 main 后可收编进根 [workspace.dependencies] 统一管理。

@@ -1,19 +1,157 @@
 /**
- * icon.html 占位（Task 1b）：72px 圆形浮动图标（A1）。
- * T8 实现：置顶窗口、drag-region 拖动、右键菜单（A3）、投放态（A4）、位置持久化。
+ * 浮动图标窗（icon.html，Task 8：A1 常态 / A3 右键菜单 / A4 投放态）。
+ *
+ * 三态由 Rust 侧窗口尺寸承载（命中区=可见区），前端按事件切换视觉：
+ * - 常态：72×72 圆形，data-tauri-drag-region 拖动，双击开主窗
+ * - 投放态：Rust DragDrop 事件驱动 124×124 放大（gui://icon-drag）
+ * - 菜单态：右键触发 open_icon_menu（Rust 依工作区翻转），blur/Esc/选择收起
  */
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { useCallback, useEffect, useState } from 'react'
+import ContextMenu, { type MenuItem } from './ContextMenu'
+
+/** 右键菜单展开方向（Rust open_icon_menu 依屏幕工作区计算） */
+interface MenuLayout {
+  flipX: boolean
+  flipY: boolean
+}
+
+interface IconStateDto {
+  pausedTips: boolean
+}
+
 export default function IconApp() {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [layout, setLayout] = useState<MenuLayout>({ flipX: false, flipY: false })
+  const [dragOver, setDragOver] = useState(false)
+  const [paused, setPaused] = useState(false)
+
+  const closeMenu = useCallback(async () => {
+    setMenuOpen(false)
+    try {
+      await invoke('close_icon_menu')
+    } catch {
+      // 窗口可能已复位，忽略
+    }
+  }, [])
+
+  const openMenu = useCallback(async () => {
+    try {
+      setLayout(await invoke<MenuLayout>('open_icon_menu'))
+      setMenuOpen(true)
+    } catch {
+      // icon 窗口异常时忽略
+    }
+  }, [])
+
+  useEffect(() => {
+    const unlistenBlur = listen('gui://icon-blur', () => {
+      void closeMenu()
+    })
+    const unlistenDrag = listen<string>('gui://icon-drag', (e) => {
+      setDragOver(e.payload === 'enter')
+    })
+    void invoke<IconStateDto>('get_icon_state').then((s) => setPaused(s.pausedTips))
+    // 前端就绪：通知 Rust 显示窗口（visible:false 创建，防白闪）
+    void invoke('icon_ready')
+    return () => {
+      void unlistenBlur.then((f) => f())
+      void unlistenDrag.then((f) => f())
+    }
+  }, [closeMenu])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') void closeMenu()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [closeMenu])
+
+  const onCircleMouseDown = (e: React.MouseEvent) => {
+    // drag-region 下原生 dblclick 不可靠，用 mousedown 的 detail 判定双击（FR-G-04）
+    if (e.button === 0 && e.detail >= 2) {
+      void invoke('open_main')
+      void closeMenu()
+    }
+  }
+
+  const onCircleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    if (!dragOver) void openMenu()
+  }
+
+  const items: MenuItem[] = [
+    // 「粘贴并共享」「粘贴为文本草稿」接剪贴板链路于 T12；「设置」面板在 T9/F1 —— 先占位禁用
+    { key: 'paste-share', label: '粘贴并共享', hint: 'Ctrl+V', disabled: true },
+    { key: 'paste-draft', label: '粘贴为文本草稿…', disabled: true },
+    { key: 'sep-1', label: '', separator: true },
+    {
+      key: 'open',
+      label: '打开「课堂共享」',
+      hint: '双击同效',
+      onSelect: () => {
+        void invoke('open_main')
+        void closeMenu()
+      },
+    },
+    {
+      key: 'pause',
+      label: paused ? '恢复接收提醒' : '暂停接收提醒',
+      onSelect: () => {
+        void invoke<boolean>('set_pause_tips', { paused: !paused }).then(setPaused)
+        void closeMenu()
+      },
+    },
+    { key: 'sep-2', label: '', separator: true },
+    { key: 'settings', label: '设置', disabled: true },
+    {
+      key: 'quit',
+      label: '退出课堂共享',
+      danger: true,
+      onSelect: () => {
+        void invoke('gui_quit')
+      },
+    },
+  ]
+
+  if (dragOver) {
+    return (
+      <div className="icon-root drop">
+        <div className="float-circle" data-tauri-drag-region="">
+          松手
+          <br />
+          即共享
+        </div>
+      </div>
+    )
+  }
+
+  const circle = (
+    <div
+      className="float-circle"
+      data-tauri-drag-region=""
+      title="课堂共享：双击打开 · 右键菜单 · 可拖动"
+      onMouseDown={onCircleMouseDown}
+      onContextMenu={onCircleContextMenu}
+    >
+      共享
+    </div>
+  )
+
+  if (!menuOpen) {
+    return <div className="icon-root">{circle}</div>
+  }
+
   return (
     <div
-      style={{
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'transparent',
-      }}
+      className={`icon-root menu${layout.flipX ? ' flip-x' : ''}${layout.flipY ? ' flip-y' : ''}`}
     >
-      <div className="float-circle">共享</div>
+      <div className="icon-cell">{circle}</div>
+      <div className="menu-cell">
+        <ContextMenu items={items} />
+      </div>
     </div>
   )
 }
