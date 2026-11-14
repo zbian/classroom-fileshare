@@ -13,9 +13,6 @@
 //! `Request{id}` / `Reply{id}` 关联往返 + 服务端异步 `Notify` 推送。
 
 pub mod client;
-// 增量 A：codec 函数在增量 B（server/client 实现）落地前暂未接线，临时 allow，
-// B 完成后移除本行
-#[allow(dead_code)]
 pub mod codec;
 pub mod server;
 pub mod token;
