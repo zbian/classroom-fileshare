@@ -178,7 +178,23 @@ fn default_position(app: &AppHandle) -> (f64, f64) {
     )
 }
 
-/// 双击/菜单打开主界面：已存在则 show+unminimize+set_focus（PRD 4.4 单例聚焦），否则懒创建。
+/// 主窗：启动预创建隐藏（与 icon/tips 相同的 setup 线程创建路径），
+/// 双击/菜单/tips 点击仅 show+focus。此前从命令线程延迟创建在 WebView2 上
+/// 表现为窗口白色、页面不加载（实测），预创建规避。
+pub fn ensure_main_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(MAIN_LABEL).is_some() {
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("main.html".into()))
+        .title("课堂共享")
+        .inner_size(1024.0, 680.0)
+        .min_inner_size(960.0, 640.0)
+        .visible(false)
+        .build()?;
+    Ok(())
+}
+
+/// 双击/菜单打开主界面：已存在则 show+unminimize+set_focus（PRD 4.4 单例聚焦），否则建后即显。
 pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
     if let Some(w) = app.get_webview_window(MAIN_LABEL) {
         w.show()?;
@@ -186,11 +202,11 @@ pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
         w.set_focus()?;
         return Ok(());
     }
-    WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("main.html".into()))
-        .title("课堂共享")
-        .inner_size(1024.0, 680.0)
-        .min_inner_size(960.0, 640.0)
-        .build()?;
+    ensure_main_window(app)?;
+    if let Some(w) = app.get_webview_window(MAIN_LABEL) {
+        w.show()?;
+        w.set_focus()?;
+    }
     Ok(())
 }
 

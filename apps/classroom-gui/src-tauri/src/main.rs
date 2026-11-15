@@ -26,6 +26,8 @@ fn main() {
             windows::ensure_icon_window(app.handle())?;
             // tips 预创建隐藏：首条到达才 show（避免到达时才建窗的延迟）
             tips::ensure_tips_window(app.handle())?;
+            // 主窗同样预创建隐藏（延迟创建实测 WebView2 白屏，见 windows.rs 注释）
+            windows::ensure_main_window(app.handle())?;
             // dev 演示入口：--demo-tips=N 连发 N 条（仅 debug）
             #[cfg(debug_assertions)]
             if let Some(n) = std::env::args().find_map(|a| {
