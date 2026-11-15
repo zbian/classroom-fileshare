@@ -1,0 +1,248 @@
+/* 弹窗与主界面（main.html）专属样式；通用类见 base.css */
+
+/* ---- 三段式弹窗 ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(15 23 42 / 32%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgb(15 23 42 / 16%);
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-hd {
+  padding: 12px 16px;
+  font-size: var(--fs-15);
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-x {
+  border: none;
+  background: none;
+  font-size: 18px;
+  color: var(--weak);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.modal-x:hover {
+  color: var(--ink);
+}
+
+.modal-bd {
+  padding: 14px 16px;
+  font-size: var(--fs-13);
+  overflow: auto;
+}
+
+.modal-ft {
+  padding: 11px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 表单行 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.field > label {
+  font-size: var(--fs-12);
+  color: var(--sub);
+}
+.input,
+.textarea,
+.select {
+  border: 1px solid #cbd5e1;
+  border-radius: var(--r-btn);
+  padding: 7px 10px;
+  font-size: var(--fs-13);
+  color: #334155;
+  background: #fff;
+  font-family: inherit;
+}
+.textarea {
+  min-height: 120px;
+  resize: vertical;
+  line-height: 1.7;
+}
+.input:focus,
+.textarea:focus,
+.select:focus {
+  outline: 2px solid var(--primary-l);
+  border-color: var(--primary);
+}
+
+/* ---- 主界面六层结构（PRD 8.2） ---- */
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.app-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+.app-titlebar .app-name {
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.app-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: var(--fs-12);
+  color: var(--sub);
+  background: var(--primary-l);
+  border-bottom: 1px solid var(--line);
+}
+.app-statusbar.warn {
+  background: var(--amber-l);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-dot.ok {
+  background: #10b981;
+}
+.status-dot.warn {
+  background: #f59e0b;
+}
+.status-dot.off {
+  background: #cbd5e1;
+}
+
+.app-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+.app-tab {
+  padding: 10px 15px;
+  font-size: var(--fs-14);
+  color: var(--sub);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+}
+.app-tab.on {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+.app-tab.disabled {
+  color: var(--weak);
+  cursor: default;
+}
+
+.app-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 11px 16px;
+  background: #fff;
+}
+.app-toolbar .input {
+  max-width: 230px;
+}
+.app-toolbar .spacer {
+  flex: 1;
+}
+
+.app-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px;
+}
+
+/* C1 六列表格 */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-13);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+.tbl th {
+  text-align: left;
+  font-size: var(--fs-12);
+  font-weight: 400;
+  color: var(--weak);
+  background: #f8fafc;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tbl td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+.tbl tr.row {
+  cursor: pointer;
+}
+.tbl tr.row.selected {
+  background: var(--primary-l);
+}
+.tbl .name {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tbl .ops {
+  color: var(--primary);
+  white-space: nowrap;
+}
+.tbl .ops span {
+  margin-right: 10px;
+  cursor: pointer;
+}
+.tbl .ops span.disabled {
+  color: #b6c2d2;
+  cursor: default;
+}
+
+.app-footer {
+  padding: 10px 16px;
+  background: #fff;
+  border-top: 1px solid var(--line);
+}
