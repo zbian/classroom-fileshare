@@ -57,7 +57,7 @@ $svcConfig = [ordered]@{
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-$firewallSummary = '（student/降级模式无入站规则）'
+$firewallSummary = '（降级模式无法配置防火墙；自动发现可能不可用，manual_addr 兜底）'
 if ($isAdmin) {
     $base = Join-Path $env:ProgramData 'ClassShare'
     Write-SvcConfig $base $svcConfig
@@ -69,14 +69,19 @@ if ($isAdmin) {
     sc.exe failure ClassShareSvc reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'sc.exe failure 配置失败' }
 
+    # UDP 发现入站：两种角色都需要（Windows 默认入站策略=阻止，学员机不建
+    # 规则则自动发现必失败——qa v1.2 E1 判定为产品缺陷）；程序限定服务进程
+    netsh advfirewall firewall delete rule name='ClassShare Discovery UDP' 2>$null | Out-Null
+    netsh advfirewall firewall add rule name='ClassShare Discovery UDP' dir=in action=allow protocol=UDP localport=47820 program="$svcExe" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '防火墙 UDP 47820 规则添加失败' }
+
     if ($Mode -eq 'teacher') {
         netsh advfirewall firewall delete rule name='ClassShare Service TCP' 2>$null | Out-Null
-        netsh advfirewall firewall delete rule name='ClassShare Discovery UDP' 2>$null | Out-Null
-        netsh advfirewall firewall add rule name='ClassShare Service TCP' dir=in action=allow protocol=TCP localport=47821 | Out-Null
+        netsh advfirewall firewall add rule name='ClassShare Service TCP' dir=in action=allow protocol=TCP localport=47821 program="$svcExe" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw '防火墙 TCP 47821 规则添加失败' }
-        netsh advfirewall firewall add rule name='ClassShare Discovery UDP' dir=in action=allow protocol=UDP localport=47820 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw '防火墙 UDP 47820 规则添加失败' }
-        $firewallSummary = 'ClassShare Service TCP（入站 TCP/47821）；ClassShare Discovery UDP（入站 UDP/47820）'
+        $firewallSummary = 'ClassShare Service TCP（入站 TCP/47821）；ClassShare Discovery UDP（入站 UDP/47820，程序限定）'
+    } else {
+        $firewallSummary = 'ClassShare Discovery UDP（入站 UDP/47820，程序限定）——student 无 TCP 入站'
     }
 
     sc.exe start ClassShareSvc | Out-Null
@@ -97,6 +102,9 @@ if ($isAdmin) {
 if ($guiExe) {
     reg.exe add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v ClassShareGUI `
         /t REG_SZ /d "`"$guiExe`"" /f | Out-Null
+} else {
+    # qa v1.2 E2：不静默跳过——显式警告（TC-11 步骤 5 依赖此注册）
+    Write-Warning '未指定 -GuiExe：GUI 登录自启未注册（登录后需手动启动 GUI；验收用例依赖此注册项）'
 }
 
 Write-Host ''
