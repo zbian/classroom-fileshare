@@ -103,9 +103,9 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 | 编号 | 缺陷描述 | 处置（Lead 派发） | QA 复验口径 | 状态 |
 | --- | --- | --- | --- | --- |
-| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
-| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | 修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
-| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | 待 Lead 派 dev-backend 修复（方向：agent 读循环补 `Frame::Ping => 回 Pong` 分支，或让 agent 复用 net 的会话运行器） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **待派发（阻断级，QA 静态复核发现）** |
+| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | **issue #14**（T-13）：dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
+| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
+| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估 | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复中，issue #37 跟踪** |
 
 ## 4 分用例方案
 
