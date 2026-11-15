@@ -95,6 +95,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 发现缺陷：报告 Lead → Lead 建 `type/bug` issue（附我用例编号、复现步骤、证据路径）→ 修复合并后我按原步骤复验并在 issue 留言闭环。
 - 分级建议：**阻断**（用例主判据不通过）/ **严重**（FR 验收标准不通过但主判据通过）/ **一般**（负例、边界、文案）/ **轻微**（视觉、日志）。
+- ★协议行为的复验要求：**测试桩 ≠ 真实实现**。凡协议层行为（Ping/Pong 应答、帧编解码、事件幂等、重名准入等），复验必须在**真实端点组合**（真实 agent ↔ 真实 host）上验证，不得仅凭使用测试桩的用例通过即判绿——E3 即由此逃逸 CI（桩自动应答 Ping，真实 agent 未实现该行为）。
 
 ### 3.8 已登记缺陷与修复跟踪（评审期）
 
@@ -102,8 +103,9 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 | 编号 | 缺陷描述 | 处置（Lead 派发） | QA 复验口径 | 状态 |
 | --- | --- | --- | --- | --- |
-| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | 修复中（#34 修复周期） |
-| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | 修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | 修复中（#34 修复周期） |
+| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
+| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | 修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
+| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | 待 Lead 派 dev-backend 修复（方向：agent 读循环补 `Frame::Ping => 回 Pong` 分支，或让 agent 复用 net 的会话运行器） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **待派发（阻断级，QA 静态复核发现）** |
 
 ## 4 分用例方案
 
@@ -136,9 +138,11 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | 2 | 点击「开始上课」→ 学员端发现房间码 | ≤3 秒 | FR-T-01 |
 | 3 | 首次配置步数 | 教师 1 步（开始上课）、学生 1 步（设昵称） | 2.4 |
 | 4 | 冷启动图标出现 | ≤3 秒 | FR-G-01 / 9.1 |
-| 5 | 重名昵称 | 第二台被明确拒绝、无法进入 | FR-S-01 |
+| 5 | 重名昵称 | 第二台被明确拒绝、无法进入 | FR-S-01 / EX-02 |
 | 6 | （如执行）错误 PIN | 无法加入 | FR-T-01 |
 | 7 | 重启 GUI | 不再弹昵称窗，自动重连 | FR-S-01 |
+
+★执行前置（阻断依赖）：第 5 项依赖 **E3 修复**（§3.8）——修复前重名拒绝语义在真实 agent 上失效（活跃学员被误判僵死并驱逐，同名反而被接受）。E3 未修复时本用例第 5 项判**不通过**，并连带影响 TC-02/TC-03（被驱逐学员不再收到广播）。
 
 **(d) 需采集的证据**
 
@@ -150,6 +154,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 重名负例需第 2 台学员机：可用 VM（Hyper-V **外部虚拟交换机/桥接**；Default Switch 的 NAT 不保证 UDP 广播可达），或重置学员机 A 的昵称数据后重跑（次选，等价性略弱）。
 - PIN 负例需教师重建房间：与首轮共环境时注意清空两端数据或更换房间码，避免残留状态干扰。
+- ★时延观察（#34 B 存活探测引入）：同名冲突时 join 拒绝不再瞬时，**预期 0–3s 内**返回「该昵称已被使用」；若旧连接尚未被教师机感知断开，同名重连也可能经历 ≤3s 探测后才被接受。记录实测值（PRD 对该项无时限要求，仅记录行为，不判缺陷）；「≤3s 发现房间码」指标走 beacon 发现链路，与 join 探测分离，不受此影响。
 
 ### 4.2 TC-02 广播文件（10 MB，全员 5 秒）
 
