@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.2（TC-02 口径已批准 §5.2；§6 取证五项已确认并全文落实，来源 #14 / e42dbd5；PR #25 评审中） |
+| 状态 | v1.2.1（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1/E2 缺陷跟踪见 §3.8；PR #35 评审排队） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -48,7 +48,11 @@
 
 - 同一 L2 网段、同一交换机（有线优先）。**禁用/避开**：VPN、跨网段路由、Wi-Fi AP 客户端隔离（会拦 UDP 广播）、来宾网络。
 - 端口（M1 计划已锁定）：UDP 47820（beacon）、TCP 47821（服务）。防火墙已确认（#14 / e42dbd5）：install.ps1 仅 **teacher** 角色幂等删建两条入站规则——`ClassShare Service TCP`（TCP/47821）、`ClassShare Discovery UDP`（UDP/47820）；**student 机不加任何入站规则**。
-- ★环境预检重点（新增）：学员机在**默认防火墙**（入站默认拒绝）下能否收到 47820 beacon——接收广播属入站流量，存在被默认策略拦截的风险。预检须在未动防火墙的学员真机上先跑发现流程；若被拦截即登记缺陷（学员侧未放行 UDP 47820），如临时手工放行继续测试必须同步登记环境偏差。
+- ★环境预检重点（已判定**产品缺陷 E1**，2026-11-15 Lead 确认）：学员机接收 47820 beacon 属入站流量，而 install.ps1 student 模式未建任何入站规则——默认防火墙（入站默认拒绝）下自动发现预计失败。已派 dev-backend 修复（student 模式补**程序限定**入站规则，uninstall 对应清理）。E1 修复后的验证口径（预检流程保留，作为修复验证手段）：
+  1. 未动防火墙的学员真机直接安装（student 模式）→ 自动发现**开箱即用**（不依赖手工放行）；
+  2. `Get-NetFirewallRule` 查验新增规则为**程序限定**（限定 classroom-svc.exe 程序路径），而非放宽端口全域；
+  3. 执行 `uninstall.ps1` 后该规则被清除；
+  4. 修复合入前如需临时手工放行继续测试，必须同步登记环境偏差（不得作为通过依据）。
 - 环境自检命令（取证入报告）：
 
 ```powershell
@@ -70,7 +74,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
   - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> [-ManualAddr <ip>:47821] -GuiExe <…>`（对应 RK-04 备用手动地址）。
   - 服务名 `ClassShareSvc`、服务进程 `classroom-svc.exe`、GUI 进程 `classroom-gui.exe`（以打包产物名为准）。
   - **数据根（管理员安装）= `%PROGRAMDATA%\ClassShare\data`**（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；日志 `<数据根>\logs\svc.log`。降级安装（无管理员）数据根 = `%LOCALAPPDATA%\ClassShare\data`。GUI 侧 `gui.json` / `profile.json` 仍在 `%APPDATA%\ClassShare\`。
-  - `-GuiExe` 缺省时 **GUI 登录自启不注册**（TC-11 步骤 5 依赖它，安装时必传）；HKCU Run 仅对执行安装的用户生效（机房多用户需逐用户或镜像配置，登记为部署注意事项）。
+  - `-GuiExe` 缺省时 **GUI 登录自启不注册**（TC-11 步骤 5 依赖它，安装时必传）——原为静默跳过，已判定**缺陷 E2**（2026-11-15），修复为**显式警告 + 安装摘要行明示「未注册」**；E2 合入后验收执行时若仍静默跳过即复验失败。HKCU Run 仅对执行安装的用户生效（机房多用户需逐用户或镜像配置，登记为部署注意事项）。
   - 降级模式观察项（#14 验收项）：无管理员安装 → HKCU Run 前台进程 `--console`、`%LOCALAPPDATA%` 数据根、明示局限（未登录不接收、崩溃不自动重启）——在备用机执行一次并取证，对照 FR-G-05 异常与边界。
 - 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与完整命令。#34 合并前可暂从 `feat/t13-svc` 分支取脚本，版本记录写明 e42dbd5；合并后改从 main 取用。
 
@@ -91,6 +95,15 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 发现缺陷：报告 Lead → Lead 建 `type/bug` issue（附我用例编号、复现步骤、证据路径）→ 修复合并后我按原步骤复验并在 issue 留言闭环。
 - 分级建议：**阻断**（用例主判据不通过）/ **严重**（FR 验收标准不通过但主判据通过）/ **一般**（负例、边界、文案）/ **轻微**（视觉、日志）。
+
+### 3.8 已登记缺陷与修复跟踪（评审期）
+
+缺陷由 Lead 登记处置，QA 负责修复后复验并在本表闭环：
+
+| 编号 | 缺陷描述 | 处置（Lead 派发） | QA 复验口径 | 状态 |
+| --- | --- | --- | --- | --- |
+| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | 修复中（#34 修复周期） |
+| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | 修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | 修复中（#34 修复周期） |
 
 ## 4 分用例方案
 
@@ -436,7 +449,7 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 | 1 | 服务名 / 进程名 | 服务 `ClassShareSvc`；服务进程 `classroom-svc.exe`；GUI 进程 `classroom-gui.exe`（以打包产物名为准）；无管理员降级为 `--console` 前台进程 | ✅ #14 / e42dbd5 |
 | 2 | 数据根 | 管理员安装 `%PROGRAMDATA%\ClassShare\data`（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；降级安装 `%LOCALAPPDATA%\ClassShare\data`；GUI 侧 gui.json/profile.json 仍在 `%APPDATA%\ClassShare\` | ✅ |
 | 3 | 日志 | `<数据根>\logs\svc.log`，RFC3339 含毫秒，RUST_LOG 可调；关键行 broadcast / received / applied（host/agent tracing 事件） | ✅ |
-| 4 | 防火墙 | 仅 teacher 角色幂等删建入站规则：TCP/47821 + UDP/47820；★新增预检重点：学员机默认防火墙下 beacon 接收（§3.2），预检不过即缺陷 | ✅（预检重点为 QA 新增） |
+| 4 | 防火墙 | 仅 teacher 角色幂等删建入站规则：TCP/47821 + UDP/47820；学员侧无规则 → 已判定**产品缺陷 E1**（§3.2/§3.8，修复中） | ✅ 确认值 + E1 跟踪 |
 | 5 | 多实例 | 命名管道同机多实例并发（≥2 已测）；SCM 服务单实例；同机不并存双角色（设计如此）→ 压测代理以多 agent 进程搭建 | ✅ |
 | 6 | TC-02 规模口径 | 放行结论 | ✅ 已关闭：批准方案 B（2026-11-13，见 §5.2） |
 | 7 | 可用真机台数与 OS 版本（Win10/11 各几台）、是否有 Hyper-V 主机 | §3.1 矩阵落地 | **Lead**（向用户收集信息中，不阻塞方案） |
