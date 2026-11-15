@@ -22,10 +22,12 @@ fn visit(dir: &Path, removed: &mut usize) {
         let path = entry.path();
         if path.is_dir() {
             visit(&path, removed);
-        } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("part")) {
-            if std::fs::remove_file(&path).is_ok() {
-                *removed += 1;
-            }
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("part"))
+            && std::fs::remove_file(&path).is_ok()
+        {
+            *removed += 1;
         }
     }
 }

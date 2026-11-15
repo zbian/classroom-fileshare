@@ -165,6 +165,9 @@ pub enum GuiReply {
     Items(Vec<ShareItem>),
     /// Status 的结果（结构化快照，修订 #6④，替代原 StatusText 单轨）。
     Status(StatusSnapshot),
+    /// OpenItem 的结果：条目文件实体绝对路径。GUI 在用户会话用系统默认
+    /// 程序打开（Session 0 服务无法为用户启动进程，接口修订 #7①）。
+    FilePath(PathBuf),
 }
 
 /// 服务处理结果：`Err` 为人类可读错误文案（可跨 IPC 序列化传输）。
