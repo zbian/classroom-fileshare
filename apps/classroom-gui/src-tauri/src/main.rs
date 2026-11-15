@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod state;
+mod tips;
 mod windows;
 
 use state::{AppState, GuiConfig};
@@ -23,6 +24,18 @@ fn main() {
         .manage(AppState::new(config))
         .setup(|app| {
             windows::ensure_icon_window(app.handle())?;
+            // tips 预创建隐藏：首条到达才 show（避免到达时才建窗的延迟）
+            tips::ensure_tips_window(app.handle())?;
+            // dev 演示入口：--demo-tips=N 连发 N 条（仅 debug）
+            #[cfg(debug_assertions)]
+            if let Some(n) = std::env::args().find_map(|a| {
+                a.strip_prefix("--demo-tips=")
+                    .and_then(|v| v.parse::<u32>().ok())
+            }) {
+                #[cfg(debug_assertions)]
+                eprintln!("[t11] demo-tips 启动参数命中：n={n}");
+                tips::demo_tips(app.handle(), n);
+            }
             Ok(())
         })
         .on_window_event(windows::handle_window_event)
@@ -33,7 +46,11 @@ fn main() {
             close_icon_menu,
             get_icon_state,
             set_pause_tips,
-            gui_quit
+            gui_quit,
+            update_tips_height,
+            tips_dismissed,
+            open_main_locate,
+            dev_demo_tips
         ])
         .run(tauri::generate_context!())
         .expect("classroom gui 启动失败");
@@ -79,4 +96,33 @@ fn set_pause_tips(app: tauri::AppHandle, paused: bool) -> Result<bool, String> {
 #[tauri::command]
 fn gui_quit(app: tauri::AppHandle) {
     windows::quit_gui(&app)
+}
+
+/// tips 堆叠高度同步（命中区=可见区；前端 TipsStack 调用）。
+#[tauri::command]
+fn update_tips_height(app: tauri::AppHandle, h: f64) -> Result<(), String> {
+    tips::update_tips_height(&app, h)
+}
+
+/// tips 队列清空 → 隐藏窗口（前端调用）。
+#[tauri::command]
+fn tips_dismissed(app: tauri::AppHandle) {
+    tips::tips_dismissed(&app)
+}
+
+/// tips 点击直达主窗对应条目（T9 消费 gui://locate intent）。
+#[tauri::command]
+fn open_main_locate(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    windows::open_main_locate(&app, &id).map_err(|e| e.to_string())
+}
+
+/// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
+#[tauri::command]
+fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
+    #[cfg(debug_assertions)]
+    tips::demo_tips(&app, n);
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (&app, n);
+    }
 }

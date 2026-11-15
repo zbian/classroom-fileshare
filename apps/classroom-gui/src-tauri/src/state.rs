@@ -45,10 +45,12 @@ impl GuiConfig {
     }
 
     /// 读取失败（不存在/损坏）时静默回退默认值，不阻塞启动。
+    /// 注意剥离 UTF-8 BOM：Windows 记事本/PowerShell 5.1 写出的 JSON 带 BOM，
+    /// serde_json 不接受前导 BOM（实测会导致图标位置静默丢失，回退默认位）。
     pub fn load() -> Self {
         std::fs::read_to_string(Self::path())
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
             .unwrap_or_default()
     }
 

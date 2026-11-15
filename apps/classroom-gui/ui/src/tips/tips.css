@@ -1,0 +1,77 @@
+/* tips 窗专属：透明窗口 + A2 气泡卡片样式 */
+html,
+body,
+#root {
+  background: transparent !important;
+}
+
+.tips-root {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 单条 tips（A2）：白卡 + 主色左描边 + 3px 倒计时进度条；定高 72 与 Rust 高度计算一致 */
+.tip-card {
+  height: 72px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 12px rgb(15 23 42 / 9%);
+  font-size: var(--fs-13);
+  cursor: pointer;
+  flex: none;
+}
+
+.tip-card:hover {
+  border-color: var(--primary);
+  border-left-color: var(--primary);
+}
+
+.tip-card .ttl {
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tip-card .ss {
+  color: var(--sub);
+  font-size: var(--fs-12);
+  display: flex;
+  justify-content: space-between;
+}
+
+.tip-card .bar {
+  height: 3px;
+  background: #e2e8f0;
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.tip-card .bar i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+
+/* 「还有 N 条」合并行（A2 琥珀）：点击打开主窗列表 */
+.tip-more {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--amber-l);
+  border: 1px solid #fde68a;
+  color: var(--amber);
+  border-radius: 8px;
+  font-size: var(--fs-13);
+  cursor: pointer;
+  flex: none;
+}

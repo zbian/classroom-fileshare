@@ -195,6 +195,16 @@ pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// 单实例回调（EX-12）：重复启动聚焦既有窗口。
+/// tips 点击直达：打开主窗并定位到对应条目。
+/// T9 消费 `gui://locate`（切 Tab + 滚动 + 高亮）；主窗首次创建时 webview 可能
+/// 尚未就绪，届时改为 intent 队列，确保事件不丢。
+pub fn open_main_locate(app: &AppHandle, item_id: &str) -> tauri::Result<()> {
+    open_main(app)?;
+    let _ = app.emit_to(MAIN_LABEL, "gui://locate", item_id);
+    Ok(())
+}
+
+/// 单实例回调（EX-12）：重复启动聚焦既有窗口。
 pub fn focus_icon_or_main(app: &AppHandle) {
     let target = app
         .get_webview_window(ICON_LABEL)
