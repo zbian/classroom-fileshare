@@ -8,7 +8,10 @@ use tokio::sync::{mpsc, Notify};
 
 use classroom_agent::{run_agent, AgentConfig, AgentEvent};
 use classroom_host::{run_host, HostCommand, HostConfig, HostEvent};
-use classroom_ipc::{serve_ipc, GuiReply, GuiRequest, ItemUpdatedPayload, SvcNotify, SvcResult};
+use classroom_ipc::{
+    serve_ipc, GuiReply, GuiRequest, ItemUpdatedPayload, ServiceState, StatusSnapshot, SvcNotify,
+    SvcResult,
+};
 use classroom_protocol::{Role, ShareItem};
 use classroom_store::Store;
 
@@ -23,19 +26,33 @@ pub enum CoreEvent {
     Agent(AgentEvent),
 }
 
-/// 服务状态快照（Status 请求应答；桥任务更新）。
-#[derive(Default)]
+/// 服务状态快照（Status 应答；桥任务更新；修订 #6④ 结构化字段）。
 pub struct StatusBoard {
-    text: Mutex<String>,
+    snapshot: Mutex<StatusSnapshot>,
 }
 
 impl StatusBoard {
-    /// 当前状态文本。
-    pub fn snapshot(&self) -> String {
-        self.text.lock().unwrap().clone()
+    /// 初始快照：Running、空房间、按角色与昵称。
+    pub fn new(role: Role, nickname: String) -> Self {
+        Self {
+            snapshot: Mutex::new(StatusSnapshot {
+                service_state: ServiceState::Running,
+                room: String::new(),
+                online_count: 0,
+                nickname,
+                role,
+                pending_count: 0, // M1 恒 0（待发队列 M2 接入）
+            }),
+        }
     }
-    fn set(&self, text: impl Into<String>) {
-        *self.text.lock().unwrap() = text.into();
+
+    /// 当前快照。
+    pub fn snapshot(&self) -> StatusSnapshot {
+        self.snapshot.lock().unwrap().clone()
+    }
+
+    fn update(&self, f: impl FnOnce(&mut StatusSnapshot)) {
+        f(&mut self.snapshot.lock().unwrap());
     }
 }
 
@@ -59,8 +76,11 @@ pub async fn run_core(
     let handler_store: Arc<Mutex<Store>> = Arc::new(Mutex::new(Store::open(data_root)?));
     let (notify_tx, notify_rx) = mpsc::channel::<SvcNotify>(128);
     let (core_event_tx, mut core_event_rx) = mpsc::channel::<CoreEvent>(128);
-    let status = Arc::new(StatusBoard::default());
-
+    let role = match cfg.mode {
+        SvcMode::Teacher => Role::Teacher,
+        SvcMode::Student => Role::Student,
+    };
+    let status = Arc::new(StatusBoard::new(role.clone(), cfg.nickname.clone()));
     let mut host_cmd: Option<mpsc::Sender<HostCommand>> = None;
     let mut agent_task: Option<tokio::task::JoinHandle<()>> = None;
     match cfg.mode {
@@ -114,7 +134,7 @@ pub async fn run_core(
         }
     }
 
-    // 事件桥：CoreEvent → SvcNotify（tips/列表刷新/状态行）
+    // 事件桥：CoreEvent → SvcNotify（tips/列表刷新/状态快照更新）
     let bridge_notify = notify_tx.clone();
     let bridge_status = status.clone();
     tokio::spawn(async move {
@@ -124,17 +144,11 @@ pub async fn run_core(
                     return;
                 }
             }
-            if let Some(line) = status_line(&ev) {
-                bridge_status.set(line);
-            }
+            apply_status(&bridge_status, &ev);
         }
     });
 
     // IPC 服务
-    let role = match cfg.mode {
-        SvcMode::Teacher => Role::Teacher,
-        SvcMode::Student => Role::Student,
-    };
     let handler = make_ipc_handler(host_cmd.clone(), handler_store, status.clone());
     let ipc_token = token.clone();
     tokio::spawn(async move {
@@ -212,7 +226,7 @@ pub fn make_ipc_handler(
         GuiRequest::ConfigureRoom { .. } => {
             Err("M1 房间由安装脚本配置（svc.json），运行期修改在 M2 提供".into())
         }
-        GuiRequest::Status => Ok(GuiReply::StatusText(status.snapshot())),
+        GuiRequest::Status => Ok(GuiReply::Status(status.snapshot())),
         GuiRequest::PauseTips(_) | GuiRequest::ShutdownGuiOnly => Ok(GuiReply::Ok),
     })
 }
@@ -269,24 +283,19 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
     }
 }
 
-/// CoreEvent → 状态行（StatusBoard 更新）。
-fn status_line(ev: &CoreEvent) -> Option<String> {
+/// CoreEvent → 状态快照更新（房间/在线数；修订 #6④ 结构化字段）。
+fn apply_status(board: &StatusBoard, ev: &CoreEvent) {
     match ev {
-        CoreEvent::Host(HostEvent::Started(s)) => Some(format!(
-            "房间 {}，端口 {}，在线 {}",
-            s.room_code,
-            s.tcp_port,
-            s.online.len()
-        )),
-        CoreEvent::Host(HostEvent::Status(s)) => Some(format!(
-            "房间 {}，端口 {}，在线 {}",
-            s.room_code,
-            s.tcp_port,
-            s.online.len()
-        )),
-        CoreEvent::Agent(AgentEvent::Joined(room)) => Some(format!("已加入 {room}")),
-        CoreEvent::Agent(AgentEvent::Disconnected) => Some("与教师机断开，自动重连中".into()),
-        _ => None,
+        CoreEvent::Host(HostEvent::Started(s)) | CoreEvent::Host(HostEvent::Status(s)) => {
+            board.update(|snap| {
+                snap.room = s.room_code.clone();
+                snap.online_count = s.online.len() as u32;
+            });
+        }
+        CoreEvent::Agent(AgentEvent::Joined(room)) => {
+            board.update(|snap| snap.room = room.clone());
+        }
+        _ => {}
     }
 }
 
@@ -342,9 +351,34 @@ mod tests {
     }
 
     #[test]
-    fn status_line_covers_key_events() {
-        assert!(status_line(&CoreEvent::Agent(AgentEvent::Disconnected)).is_some());
-        assert!(status_line(&CoreEvent::Host(HostEvent::StudentJoined("a".into()))).is_none());
+    fn apply_status_updates_room_and_online_count() {
+        let board = StatusBoard::new(Role::Teacher, String::new());
+        assert_eq!(board.snapshot().room, "");
+        assert_eq!(board.snapshot().service_state, ServiceState::Running);
+
+        apply_status(
+            &board,
+            &CoreEvent::Host(HostEvent::Started(classroom_host::HostStatus {
+                room_code: "XK-204".into(),
+                tcp_port: 47821,
+                online: vec![],
+            })),
+        );
+        let snap = board.snapshot();
+        assert_eq!(snap.room, "XK-204");
+        assert_eq!(snap.online_count, 0);
+
+        // 学员端：Joined 更新房间描述
+        let board = StatusBoard::new(Role::Student, "alice".into());
+        apply_status(
+            &board,
+            &CoreEvent::Agent(AgentEvent::Joined("tcp://1.2.3.4".into())),
+        );
+        let snap = board.snapshot();
+        assert_eq!(snap.room, "tcp://1.2.3.4");
+        assert_eq!(snap.nickname, "alice");
+        assert_eq!(snap.role, Role::Student);
+        assert_eq!(snap.pending_count, 0, "M1 恒 0");
     }
 
     #[test]
@@ -359,7 +393,7 @@ mod tests {
             _ => panic!(),
         };
         let store = Arc::new(Mutex::new(store));
-        let status = Arc::new(StatusBoard::default());
+        let status = Arc::new(StatusBoard::new(Role::Teacher, String::new()));
         let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
         let handler = make_ipc_handler(Some(cmd_tx), store, status);
 
@@ -387,18 +421,25 @@ mod tests {
             Ok(HostCommand::SendText { title, .. }) => assert_eq!(title, "t"),
             other => panic!("通道应收到 SendText: {other:?}"),
         }
-        // Status 初始为空字符串（快照可用）
-        assert!(matches!(
-            handler(GuiRequest::Status),
-            Ok(GuiReply::StatusText(_))
-        ));
+        // Status 返回结构化快照（修订 #6④）
+        match handler(GuiRequest::Status) {
+            Ok(GuiReply::Status(snap)) => {
+                assert_eq!(snap.service_state, ServiceState::Running);
+                assert_eq!(snap.role, Role::Teacher);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
     fn handler_student_rejects_send_and_runtime_config() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
-        let handler = make_ipc_handler(None, store, Arc::new(StatusBoard::default()));
+        let handler = make_ipc_handler(
+            None,
+            store,
+            Arc::new(StatusBoard::new(Role::Student, String::new())),
+        );
         match handler(GuiRequest::SendText {
             title: "t".into(),
             body: "b".into(),
