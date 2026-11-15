@@ -284,13 +284,16 @@ async fn reconnect_catches_up_missed_upsert() {
 
     // 断线期间错过的条目与之前的 A 都在本地索引
     let store = Store::open(agent_dir.path()).unwrap();
-    let titles: Vec<String> = store
+    let mut titles: Vec<String> = store
         .list(ListFilter::default())
         .unwrap()
         .into_iter()
         .map(|i| i.title)
         .collect();
-    assert_eq!(titles, vec!["B".to_string(), "A".to_string()]);
+    // 不依赖 updated_at 排序：两条目可能在同一秒内创建（秒级时间戳相同，
+    // 排序 fallback 到随机 uuid），改为集合语义比较（与 t7 分支同款修复）
+    titles.sort();
+    assert_eq!(titles, vec!["A".to_string(), "B".to_string()]);
 }
 
 #[tokio::test]
