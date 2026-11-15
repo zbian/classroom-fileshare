@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.1（Lead 已评审：TC-02 规模口径批准方案 B，见 §5.2；PR #25 评审中） |
+| 状态 | v1.2（TC-02 口径已批准 §5.2；§6 取证五项已确认并全文落实，来源 #14 / e42dbd5；PR #25 评审中） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -47,7 +47,8 @@
 ### 3.2 网络
 
 - 同一 L2 网段、同一交换机（有线优先）。**禁用/避开**：VPN、跨网段路由、Wi-Fi AP 客户端隔离（会拦 UDP 广播）、来宾网络。
-- 端口（M1 计划已锁定）：UDP 47820（beacon）、TCP 47821（服务）。安装脚本应添加防火墙入站规则；若未加而手工放行，登记为缺陷 + 环境偏差。
+- 端口（M1 计划已锁定）：UDP 47820（beacon）、TCP 47821（服务）。防火墙已确认（#14 / e42dbd5）：install.ps1 仅 **teacher** 角色幂等删建两条入站规则——`ClassShare Service TCP`（TCP/47821）、`ClassShare Discovery UDP`（UDP/47820）；**student 机不加任何入站规则**。
+- ★环境预检重点（新增）：学员机在**默认防火墙**（入站默认拒绝）下能否收到 47820 beacon——接收广播属入站流量，存在被默认策略拦截的风险。预检须在未动防火墙的学员真机上先跑发现流程；若被拦截即登记缺陷（学员侧未放行 UDP 47820），如临时手工放行继续测试必须同步登记环境偏差。
 - 环境自检命令（取证入报告）：
 
 ```powershell
@@ -60,16 +61,22 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 教师机、学员机各有一个**本地管理员**账号（安装服务 `scripts/install.ps1` 需要提权）。
 - TC-11 需要学员机的登录密码（重启后登录取证），且执行期间无人自动登录（关闭「自动登录」配置）。
+- TC-11/TC-12 的安装路径（管理员权限注册服务）在**真机由 QA 执行**（开发环境无管理员权限，#14 已明确留给验收）。
 
 ### 3.4 安装方式与版本记录（M1 无安装包）
 
-- M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + 开机自启 + GUI HKCU Run + 右键注册）。NSIS 安装包属 M3。
-- 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与命令。
-- 若执行时 `install.ps1` 未就绪：允许以「手工等效安装」（`sc.exe create` + HKCU Run + 手工注册表右键项）替代，**必须在报告中登记环境偏差**，且该项在 install.ps1 合并后复验一次。
+- M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + SCM failure 自动重启 5s/5s/30s + teacher 防火墙 + GUI HKCU Run）与 `uninstall.ps1`。NSIS 安装包属 M3。
+- 已确认安装参数（e42dbd5，QA 已读脚本核对）：
+  - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> [-ManualAddr <ip>:47821] -GuiExe <…>`（对应 RK-04 备用手动地址）。
+  - 服务名 `ClassShareSvc`、服务进程 `classroom-svc.exe`、GUI 进程 `classroom-gui.exe`（以打包产物名为准）。
+  - **数据根（管理员安装）= `%PROGRAMDATA%\ClassShare\data`**（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；日志 `<数据根>\logs\svc.log`。降级安装（无管理员）数据根 = `%LOCALAPPDATA%\ClassShare\data`。GUI 侧 `gui.json` / `profile.json` 仍在 `%APPDATA%\ClassShare\`。
+  - `-GuiExe` 缺省时 **GUI 登录自启不注册**（TC-11 步骤 5 依赖它，安装时必传）；HKCU Run 仅对执行安装的用户生效（机房多用户需逐用户或镜像配置，登记为部署注意事项）。
+  - 降级模式观察项（#14 验收项）：无管理员安装 → HKCU Run 前台进程 `--console`、`%LOCALAPPDATA%` 数据根、明示局限（未登录不接收、崩溃不自动重启）——在备用机执行一次并取证，对照 FR-G-05 异常与边界。
+- 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与完整命令。#34 合并前可暂从 `feat/t13-svc` 分支取脚本，版本记录写明 e42dbd5；合并后改从 main 取用。
 
 ### 3.5 计时与时钟同步（时延类指标的取证基础）
 
-- 时间源优先级：① 各机服务日志时间戳（tracing，含毫秒）② 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）③ 秒表（最后手段，双人配合）。
+- 时间源优先级：① 各机服务日志 `<数据根>\logs\svc.log`（已确认 RFC3339 含毫秒；关键行 broadcast / received / applied，RUST_LOG 可调，#14）② 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）③ 秒表（最后手段，双人配合）。
 - 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正。
 - p95 口径：各学员机 Δ = (本机 applied/落盘时间) − (教师机 broadcast 时间)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
 
@@ -92,7 +99,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 **(a) 前置环境**
 
 - 教师机 1 台、学员机 ≥2 台（重名负例需第 2 台；不足时用 1 台 VM 顶替，网络须桥接，见 (e)）。
-- 两端均为「首次运行」状态：`%APPDATA%\ClassShare\`（或实现确定的用户数据根）不存在或已备份清空；服务已安装且 Running。
+- 两端均为「首次运行」状态：服务侧 `%PROGRAMDATA%\ClassShare\`（svc.json 与 data\）与 GUI 侧 `%APPDATA%\ClassShare\`（gui.json / profile.json）均已备份清空；服务已安装且 Running（重跑用例前同样清理）。
 - 教师机与学员机接入同一交换机；学员机 GUI 未启动（或已退出）。
 - 录屏工具开启于教师机与学员机 A。
 
@@ -255,7 +262,7 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 6. 磁盘取证（教师机 + 每台学员机，PowerShell）：
 
 ```powershell
-$root = "$env:APPDATA\ClassShare\repo\teacher"   # 以实现确定的数据根为准
+$root = "$env:ProgramData\ClassShare\data\repo\teacher"   # 管理员安装数据根（降级安装为 $env:LOCALAPPDATA\ClassShare\data）
 Get-ChildItem $root -Filter "课堂讲义*" | Select-Object Name,Length,LastWriteTime
 Get-FileHash "$root\课堂讲义.docx","$root\课堂讲义.docx.bak" -Algorithm SHA256
 ```
@@ -264,10 +271,10 @@ Get-FileHash "$root\课堂讲义.docx","$root\课堂讲义.docx.bak" -Algorithm 
 7. 索引取证（同机）：
 
 ```powershell
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) for r in c.execute(\"select file_name,title,version,deleted,sync_state from share_items\").fetchall()]"
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
 ```
 
-   （列名以 T-03 实际 `schema.sql` 为准。）预期：该作用域仅 1 行、`version=2`、`deleted=0`。
+   （列名以 T-03 实际 `schema.sql` 为准；降级安装机器换 `%LOCALAPPDATA%\ClassShare\data\index.db`。）预期：该作用域仅 1 行、`version=2`、`deleted=0`。
 8. 观察项（只留 1 份备份）：再发 V3 → 预期 version=3、.bak 被替换为 V2（仅 1 份）。
 
 **(c) 预期结果与判定标准**
@@ -291,7 +298,7 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 **(e) 本机限制与替代**
 
 - 多台学员机时逐台敲命令成本高：用统一取证脚本一轮跑完收集输出（脚本放 `evidence/M1/TC-06/collect.ps1`）。
-- 若服务以 LocalSystem 运行导致数据根不在用户 `%APPDATA%`（Session 0 环境），以 §6 向 dev 确认的真实路径为准，报告注明。无其他不可完成项。
+- 数据根已确认（§3.4）：管理员安装统一 `%PROGRAMDATA%\ClassShare\data`，collect.ps1 按该路径取数即可，降级安装机器按 `%LOCALAPPDATA%` 变体。无其他不可完成项。
 
 ### 4.5 TC-11 开机自启（重启且不登录仍落盘）
 
@@ -304,7 +311,7 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 
 **(b) 执行步骤（点击级）**
 
-1. 学员机：`Get-Service <服务名>` 确认 Running（截图）→ 开始菜单 → 电源 → 重启。
+1. 学员机：`Get-Service ClassShareSvc` 确认 Running（截图）→ 开始菜单 → 电源 → 重启。
 2. 等学员机到达 Windows 登录界面，**保持不登录**；手机拍摄带画面时间的登录界面照片（记录拍摄时刻）。
 3. 教师机：发送 1 个小文件 `不登录测试.docx`（约 1 MB 即可，TC 未限定大小）；记 T0（服务日志）。
 4. 等待 ≥30s（覆盖 beacon 周期与重连）。
@@ -313,10 +320,10 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 7. 取证（登录后在学员机执行）：
 
 ```powershell
-Get-Item "<数据根>\repo\teacher\不登录测试.docx" | Select-Object CreationTime,LastWriteTime
+Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\不登录测试.docx" | Select-Object CreationTime,LastWriteTime
 Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 |
-  Where-Object Message -match '<服务名>' | Select-Object TimeCreated,Message
-Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
+  Where-Object Message -match 'ClassShareSvc' | Select-Object TimeCreated,Message
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "不登录测试"
 ```
 
    预期：文件 CreationTime 与日志接收时间**早于本次登录时刻**（证明未登录期间落盘）；System 日志 7036 显示服务开机即启动。
@@ -342,6 +349,7 @@ Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
 
 - 单机无法同时扮演「教师」与「不登录学员」：最低 2 台真机，或「真机教师 + 桥接 VM 学员」（VM 重启到登录界面即可；宿主机不得兼任学员）。
 - 登录界面无法截屏：手机拍照（记录拍照时刻）；教师机侧日志时间戳补强。
+- 安装（管理员，install.ps1 + `-GuiExe` 必传）在真机由 QA 执行（#14 明确：开发无管理员权限，此路径留给验收）。
 - 锁屏（`Win+L`）**不等价**（会话仍在）：只可作为预检，不作为判据。
 - 若机房镜像开启自动登录，该项无法按原步骤执行：需先关闭自动登录或换机，并在报告登记环境约束。
 
@@ -357,10 +365,11 @@ Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
 1. 基线取证（PowerShell，输出存档）：
 
 ```powershell
-Get-Service <服务名>                      # 预期 Running
-tasklist /FI "IMAGENAME eq <gui进程名>"    # 预期可见
-Get-ChildItem "$env:APPDATA\ClassShare" -Recurse -File | Measure-Object | Select-Object Count
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');print(c.execute('select count(*) from share_items').fetchone())"
+Get-Service ClassShareSvc                          # 预期 Running
+tasklist /FI "IMAGENAME eq classroom-gui.exe"       # 预期可见（以打包产物名为准）
+tasklist /FI "IMAGENAME eq classroom-svc.exe"       # 预期可见（服务进程）
+Get-ChildItem "$env:ProgramData\ClassShare\data" -Recurse -File | Measure-Object | Select-Object Count
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);print(c.execute('select count(*) from share_items').fetchone())"
 ```
 
 2. 右键浮动图标 → 菜单六项齐全（A3：粘贴并共享/粘贴为文本草稿/打开课堂共享/暂停接收提醒/设置/退出课堂共享，截图）。
@@ -404,6 +413,8 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');print(c.exe
 PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策如下：
 
 > **执行口径（已批准）**：M1 以 **≥3 台（目标 5–8 台）真机/VM 全绿**为功能门禁；同网「多 agent 进程压测」（几台机器各跑 N 个 agent 实例、不同昵称与 data_root，凑 30 连接）观测扇出与时延趋势；**正式 30 台 p95 压测留 M3**；TC-02 按「**有条件通过**」计入放行，M1 验收报告与 v0.1.0 release note 均须注明该口径。
+>
+> 压测代理可行性已确认（#14 ⑤）：命名管道支持同机多实例并发（≥2 已测）；服务本体 SCM 单实例、同机不并存双角色（设计如此）——压测代理须以多 **agent 进程**（非多服务）方式搭建，具体吞吐口径在验收准备复核中实测确定。
 
 | 方案 | 内容 | 代价/风险 | 结论 |
 | --- | --- | --- | --- |
@@ -418,15 +429,15 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 - TC-01/03/06/11/12「通过」；TC-02 按 §5.2 已批准的方案 B 以「有条件通过」计入（报告与 release note 注明口径）。
 - `M1-report.md` 完成、证据齐备、缺陷清单与 issue 对应齐全 → 建议 Lead 打 `v0.1.0`（release note 注明 TC-02 缩减口径与 M3 压测计划）。
 
-## 6 执行前确认清单（跟踪中：第 1–5 项已写入 issue #14 验收标准，待 T-13 PR 回写；第 6/8 项已关闭）
+## 6 执行前确认清单（第 1–5 项已确认 ✅，来源 issue #14 / e42dbd5，QA 已读 install.ps1 核对；第 6/8 项已关闭）
 
-| # | 问题 | 影响 | 建议答复方 |
+| # | 问题 | 已确认值 / 状态 | 来源 |
 | --- | --- | --- | --- |
-| 1 | 服务名/显示名、GUI 与服务的进程名（取证命令参数） | 全部取证命令 | dev-backend（T-13 PR 回写文档，呼应 RK-07） |
-| 2 | 数据根的最终路径：GUI 与服务是否同根？服务（Session 0/LocalSystem）下 `%APPDATA%` 解析到哪？ | TC-06/11/12 磁盘与索引取证 | dev-backend |
-| 3 | 日志路径、是否含毫秒时间戳、broadcast/received/applied 关键行文案 | §3.5 计时与 Δ 计算 | dev-backend |
-| 4 | `install.ps1` 是否包含防火墙规则（UDP 47820 / TCP 47821 入站） | 环境预检 | dev-backend |
-| 5 | 多 agent 同机多实例（不同 data_root/昵称）是否被支持 | §5.2 方案 B 压测代理 | dev-backend |
+| 1 | 服务名 / 进程名 | 服务 `ClassShareSvc`；服务进程 `classroom-svc.exe`；GUI 进程 `classroom-gui.exe`（以打包产物名为准）；无管理员降级为 `--console` 前台进程 | ✅ #14 / e42dbd5 |
+| 2 | 数据根 | 管理员安装 `%PROGRAMDATA%\ClassShare\data`（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；降级安装 `%LOCALAPPDATA%\ClassShare\data`；GUI 侧 gui.json/profile.json 仍在 `%APPDATA%\ClassShare\` | ✅ |
+| 3 | 日志 | `<数据根>\logs\svc.log`，RFC3339 含毫秒，RUST_LOG 可调；关键行 broadcast / received / applied（host/agent tracing 事件） | ✅ |
+| 4 | 防火墙 | 仅 teacher 角色幂等删建入站规则：TCP/47821 + UDP/47820；★新增预检重点：学员机默认防火墙下 beacon 接收（§3.2），预检不过即缺陷 | ✅（预检重点为 QA 新增） |
+| 5 | 多实例 | 命名管道同机多实例并发（≥2 已测）；SCM 服务单实例；同机不并存双角色（设计如此）→ 压测代理以多 agent 进程搭建 | ✅ |
 | 6 | TC-02 规模口径 | 放行结论 | ✅ 已关闭：批准方案 B（2026-11-13，见 §5.2） |
 | 7 | 可用真机台数与 OS 版本（Win10/11 各几台）、是否有 Hyper-V 主机 | §3.1 矩阵落地 | **Lead**（向用户收集信息中，不阻塞方案） |
 | 8 | Task 14 验收 issue 编号 | 流程合规 | ✅ 已关闭：issue #15（2026-11-14），本方案执行以其跟踪 |
@@ -434,17 +445,26 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 ## 附录 A 命令速查
 
 ```powershell
-# 服务与进程
-Get-Service <服务名>; sc.exe query <服务名>
-tasklist /FI "IMAGENAME eq <gui进程名>"; tasklist /FI "IMAGENAME eq <svc进程名>"
-Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 | Where-Object Message -match '<服务名>'
+# 安装/卸载（管理员；-GuiExe 必传，否则 GUI 登录自启不注册）
+.\scripts\install.ps1 -Mode teacher -Room XK-204 -Pin 9527 -GuiExe <classroom-gui.exe>
+.\scripts\install.ps1 -Mode student -Nickname alice -GuiExe <classroom-gui.exe>
+.\scripts\uninstall.ps1
+Get-Content "$env:ProgramData\ClassShare\svc.json"    # 服务配置（mode/room_code/pin/nickname/manual_addr/tcp_port）
 
-# 数据与哈希
-Get-ChildItem "$env:APPDATA\ClassShare" -Recurse -File | Select-Object FullName,Length,LastWriteTime
+# 服务与进程
+Get-Service ClassShareSvc; sc.exe query ClassShareSvc; sc.exe qfailure ClassShareSvc
+tasklist /FI "IMAGENAME eq classroom-svc.exe"; tasklist /FI "IMAGENAME eq classroom-gui.exe"
+Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 | Where-Object Message -match 'ClassShareSvc'
+
+# 数据与哈希（管理员安装数据根；降级安装换 $env:LOCALAPPDATA\ClassShare\data）
+Get-ChildItem "$env:ProgramData\ClassShare\data" -Recurse -File | Select-Object FullName,Length,LastWriteTime
 Get-FileHash <文件> -Algorithm SHA256
 
 # 索引（列名以 schema.sql 为准）
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
+
+# 日志（RFC3339 毫秒）
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern 'broadcast|received|applied'
 
 # 时钟
 w32tm /resync; w32tm /query /status; Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
