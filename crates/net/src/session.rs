@@ -46,6 +46,10 @@ pub trait SessionHandler: Send + Sync {
     /// 收到版本清单请求（重连对齐，PRD 7.5）；实现方应经 `tx` 回
     /// [`Frame::Manifest`]。默认空实现。
     async fn on_manifest_req(&self, _tx: &mut mpsc::Sender<Frame>) {}
+
+    /// 收到客户端 Pong（join 成功的会话；PR #34 B 项存活探测依赖）。
+    /// 默认空实现。
+    async fn on_pong(&self, _session_id: &str) {}
 }
 
 /// TCP 服务端：bind/accept，每连接 spawn 一个会话任务。
@@ -66,8 +70,12 @@ pub struct ServerHandle {
 
 impl ServerHandle {
     /// 请求停机（幂等；随后 `Server::run` 会退出并 abort 全部会话）。
+    ///
+    /// PR #34 C 项：用 notify_one 而非 notify_waiters——Notify 的单许可
+    /// 语义保证「run 尚未进入 select 时先行调用」也不丢通知（waiters
+    /// 不保存许可，存在丢通知窗口）。
     pub fn shutdown(&self) {
-        self.shutdown.notify_waiters();
+        self.shutdown.notify_one();
     }
 }
 
@@ -208,6 +216,11 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
             Frame::ManifestReq => {
                 let mut reply_tx = tx.clone();
                 handler.on_manifest_req(&mut reply_tx).await;
+            }
+            Frame::Pong => {
+                if let Some(session_id) = &joined_session {
+                    handler.on_pong(session_id).await;
+                }
             }
             other => {
                 tracing::debug!(frame = ?other, "服务端会话暂不处理该帧");

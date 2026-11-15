@@ -2,6 +2,7 @@
 //! 断线重连 Manifest 对齐、文件分块推送。
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -11,7 +12,7 @@ use tokio::sync::mpsc;
 
 use classroom_host::{HostCommand, HostConfig, HostEvent};
 use classroom_net::{encode_frame, read_frame, FileHeader, Frame, Hello, HelloErr, HelloReply};
-use classroom_protocol::{Role, PROTOCOL_VERSION};
+use classroom_protocol::{ItemKind, Role, PROTOCOL_VERSION};
 use classroom_store::{ListFilter, Store};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -85,42 +86,96 @@ async fn start_host(pin: Option<String>) -> Host {
     }
 }
 
+/// 模拟学员：独立 reader 任务自动应答 Ping（可用 silent 模式模拟合盖
+/// 休眠——连接保持但不回 Pong），其余帧经队列供测试消费。
 struct MiniAgent {
-    sock: TcpStream,
-}
-
-async fn send_frame(sock: &mut TcpStream, f: &Frame) {
-    sock.write_all(&encode_frame(f)).await.expect("write frame");
+    writer: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    frames: mpsc::Receiver<Frame>,
+    kill: Arc<tokio::sync::Notify>,
 }
 
 impl MiniAgent {
-    /// 加入房间；Err 返回拒绝码。
-    async fn join(port: u16, nickname: &str, pin: Option<&str>) -> Result<MiniAgent, HelloErr> {
-        let mut sock = TcpStream::connect(("127.0.0.1", port))
+    /// 加入房间（自动应答 Ping）；Err 返回拒绝码。
+    async fn join(port: u16, nickname: &str, pin: Option<&str>) -> Result<Self, HelloErr> {
+        Self::join_probe(port, nickname, pin, true).await
+    }
+
+    /// 加入房间；`pong_reply=false` 时对服务端 Ping 不应答（僵死连接语义）。
+    async fn join_probe(
+        port: u16,
+        nickname: &str,
+        pin: Option<&str>,
+        pong_reply: bool,
+    ) -> Result<Self, HelloErr> {
+        let sock = TcpStream::connect(("127.0.0.1", port))
             .await
             .expect("connect");
-        send_frame(
-            &mut sock,
-            &Frame::Hello(Hello::Join {
+        let (mut reader, writer) = sock.into_split();
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        {
+            let mut w = writer.lock().await;
+            w.write_all(&encode_frame(&Frame::Hello(Hello::Join {
                 protocol_version: PROTOCOL_VERSION,
                 nickname: nickname.into(),
                 role: Role::Student,
                 pin: pin.map(str::to_string),
-            }),
-        )
-        .await;
-        match read_frame(&mut sock).await.expect("hello reply") {
-            Frame::HelloReply(HelloReply::Ok { .. }) => Ok(MiniAgent { sock }),
-            Frame::HelloReply(HelloReply::Err { code }) => Err(code),
+            })))
+            .await
+            .expect("write hello");
+        }
+        match read_frame(&mut reader).await.expect("hello reply") {
+            Frame::HelloReply(HelloReply::Ok { .. }) => {}
+            Frame::HelloReply(HelloReply::Err { code }) => return Err(code),
             other => panic!("expected HelloReply, got {other:?}"),
         }
+        let (tx, frames) = mpsc::channel(64);
+        let reply_writer = writer.clone();
+        let kill = Arc::new(tokio::sync::Notify::new());
+        let task_kill = kill.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = task_kill.notified() => break, // halves 随任务结束 drop → 连接关闭
+                    frame = read_frame(&mut reader) => match frame {
+                        Ok(Frame::Ping) if pong_reply => {
+                            let mut w = reply_writer.lock().await;
+                            if w.write_all(&encode_frame(&Frame::Pong)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Frame::Ping) => {} // silent：吞掉不应答（模拟休眠）
+                        Ok(f) => {
+                            if tx.send(f).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                }
+            }
+        });
+        Ok(Self {
+            writer,
+            frames,
+            kill,
+        })
+    }
+
+    /// 显式断开（halves 持有在 reader 任务，drop 本结构不会关连接）。
+    async fn hang_up(&self) {
+        self.kill.notify_waiters();
+    }
+
+    async fn send(&self, f: &Frame) {
+        let mut w = self.writer.lock().await;
+        w.write_all(&encode_frame(f)).await.expect("write frame");
     }
 
     async fn next(&mut self) -> Frame {
-        tokio::time::timeout(TIMEOUT, read_frame(&mut self.sock))
+        tokio::time::timeout(TIMEOUT, self.frames.recv())
             .await
             .expect("等待帧超时")
-            .expect("帧解码失败")
+            .expect("帧通道已关闭")
     }
 }
 
@@ -261,7 +316,8 @@ async fn disconnect_then_reconnect_gets_manifest() {
         other => panic!("expected Event, got {other:?}"),
     };
 
-    // 断线 → StudentLeft
+    // 断线 → StudentLeft（halves 在 reader 任务，需显式挂断）
+    a.hang_up().await;
     drop(a);
     next_matching(&mut host.events, |e| match e {
         HostEvent::StudentLeft(n) if n == "alice" => Some(n),
@@ -271,7 +327,7 @@ async fn disconnect_then_reconnect_gets_manifest() {
 
     // 重连（同名可重新加入）→ 发 ManifestReq → 收到含条目的 Manifest
     let mut a2 = MiniAgent::join(port, "alice", None).await.expect("rejoin");
-    send_frame(&mut a2.sock, &Frame::ManifestReq).await;
+    a2.send(&Frame::ManifestReq).await;
     match a2.next().await {
         Frame::Manifest(entries) => {
             assert!(
@@ -334,4 +390,119 @@ async fn teacher_file_broadcast_chunks_and_sha() {
     assert_eq!(chunk_count, 3, "2.5MB 按 1MB 分块应为 3 块");
     assert_eq!(got, payload, "分块重组后字节一致");
     assert_eq!(sha256_hex(&got), header.sha256, "整体 SHA-256 一致");
+}
+
+// ---------- PR #34 A：事件来源加固与清单过滤 ----------
+
+#[tokio::test]
+async fn non_teacher_event_ignored_and_manifest_excludes_it() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let mut a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    // 教师广播一条（进入清单）
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "通知".into(),
+            body: "明天带教材".into(),
+        })
+        .await
+        .unwrap();
+    let teacher_item = match a.next().await {
+        Frame::Event(ev) => ev.item,
+        other => panic!("expected Event, got {other:?}"),
+    };
+    // 消费正文文件帧（Event 后紧跟 FileHeader → … → FileEnd）
+    loop {
+        match a.next().await {
+            Frame::FileEnd(_) => break,
+            Frame::FileHeader(_) | Frame::FileChunk(_) => continue,
+            other => panic!("正文推送帧序列异常: {other:?}"),
+        }
+    }
+
+    // 伪造事件（定制客户端直连注入 owner="小林"）——必须被忽略
+    let forged = classroom_protocol::Event {
+        event_id: "forged-1".into(),
+        kind: classroom_protocol::EventKind::Upsert,
+        item: classroom_protocol::ShareItem {
+            id: "forged-item".into(),
+            kind: ItemKind::Text,
+            owner_id: "小林".into(),
+            owner_role: Role::Student,
+            audience: classroom_protocol::Audience::All,
+            title: "伪造条目".into(),
+            size: 1,
+            sha256: None,
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: classroom_protocol::SyncState::Synced,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: 1,
+    };
+    a.send(&Frame::Event(forged)).await;
+    // 给 host 处理时间，然后排水：不应出现伪造条目的 ReceivedUpsert
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let leaked = drain_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "小林" => Some(i),
+        _ => None,
+    });
+    assert!(
+        leaked.is_none(),
+        "伪造 owner 事件不得入店或通知: {leaked:?}"
+    );
+
+    // 重连清单只含教师广播内容（A1：owner/audience 过滤）
+    a.send(&Frame::ManifestReq).await;
+    match a.next().await {
+        Frame::Manifest(entries) => {
+            assert_eq!(entries.len(), 1, "清单仅含教师条目: {entries:?}");
+            assert_eq!(entries[0].0, teacher_item.id);
+        }
+        other => panic!("expected Manifest, got {other:?}"),
+    }
+}
+
+/// 非阻塞排水：返回第一个匹配项（无则 None），不等待。
+fn drain_matching<T>(
+    rx: &mut mpsc::Receiver<HostEvent>,
+    mut f: impl FnMut(HostEvent) -> Option<T>,
+) -> Option<T> {
+    while let Ok(ev) = rx.try_recv() {
+        if let Some(t) = f(ev) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+// ---------- PR #34 B：重名存活探测 ----------
+
+#[tokio::test]
+async fn live_connection_defends_duplicate_nickname() {
+    let host = start_host(None).await;
+    let port = host.port;
+    // alice 在线且自动应答 Pong
+    let _alive = MiniAgent::join(port, "alice", None).await.expect("join");
+    // 第二个 alice：探测到旧连接存活 → 维持 EX-02 拒绝
+    let err = MiniAgent::join(port, "alice", None).await.err();
+    assert_eq!(err, Some(HelloErr::DupNickname));
+}
+
+#[tokio::test]
+async fn dead_connection_evicted_and_nickname_reusable() {
+    let host = start_host(None).await;
+    let port = host.port;
+    // alice「合盖休眠」：连接保持但不应答 Ping（silent 模式）
+    let _sleeping = MiniAgent::join_probe(port, "alice", None, false)
+        .await
+        .expect("join");
+    // 第二个 alice：探测 3s 无 Pong → 驱逐旧的 → 接受新 join
+    let replacement = MiniAgent::join(port, "alice", None).await;
+    assert!(replacement.is_ok(), "僵死连接应被驱逐、昵称可重新加入");
 }

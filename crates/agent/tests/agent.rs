@@ -314,3 +314,72 @@ async fn join_rejection_is_fatal() {
         .unwrap();
     assert!(result.is_err(), "错 PIN 必须以致命错误退出而非死循环重试");
 }
+
+/// PR #34 D：教师删除发生在学员离线期间 → 重连后经 Manifest 墓碑对齐
+/// （PRD 7.4 延迟补删的 M2 全链前置）。
+#[tokio::test]
+async fn offline_delete_aligned_as_tombstone_on_reconnect() {
+    let port = free_port();
+    let host1 = start_host_at(port).await;
+    let agent_dir = tempfile::tempdir().unwrap();
+    let mut rx = start_agent(port, "alice", None, agent_dir.path()).await;
+    next_matching(&mut rx, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+
+    // 学员在线收到条目（含正文实体）
+    host1
+        .cmd
+        .send(HostCommand::SendText {
+            title: "临时通知".into(),
+            body: "会被删除".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut rx, |e| match e {
+        AgentEvent::Received(i) if i.title == "临时通知" => Some(i),
+        _ => None,
+    })
+    .await;
+
+    // 学员离线期间教师删除（无在线端接收 delete 事件，仅落墓碑）
+    host1.cmd.send(HostCommand::Shutdown).await.unwrap();
+    next_matching(&mut rx, |e| {
+        matches!(e, AgentEvent::Disconnected).then_some(())
+    })
+    .await;
+    let host2 = start_host_at_inner(port, None, Some(host1.root.clone())).await;
+    host2
+        .cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await; // 等删除落库
+
+    // 重连 → Manifest 对齐 → 远端已删而本地未删 → 补做墓碑 + 实体清理
+    next_matching(&mut rx, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+    let removed_id = next_matching(&mut rx, |e| match e {
+        AgentEvent::Removed(id) => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(removed_id, item.id, "墓碑对齐应产出 Removed");
+
+    let store = Store::open(agent_dir.path()).unwrap();
+    let gone = store.get(&item.id).unwrap().expect("墓碑保留在索引");
+    assert!(gone.deleted, "对齐后本地条目应为墓碑");
+    assert!(
+        store.list(ListFilter::default()).unwrap().is_empty(),
+        "默认列表不可见"
+    );
+    assert!(
+        !store.file_body(&gone).unwrap().exists(),
+        "实体文件应被补删清理"
+    );
+}

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,8 @@ pub(crate) struct Hub {
 struct Conn {
     nickname: String,
     tx: mpsc::Sender<Frame>,
+    /// 最近一次 Pong 的秒级时间戳（0=从未应答；PR #34 B 存活探测）。
+    pong_at: Arc<AtomicI64>,
 }
 
 fn unix_now() -> i64 {
@@ -200,6 +202,34 @@ impl Hub {
         }
     }
 
+    /// PR #34 B：探测旧连接——存活 → Some(())（调用方拒绝新 join）；
+    /// 无响应 → 驱逐旧表项并返回 None（新 join 可用该昵称）。
+    async fn probe_or_evict(&self, old_sid: &str, nickname: &str) -> Option<()> {
+        let probe_start = unix_now();
+        let (ping_tx, pong_at) = {
+            let conns = self.conns.lock().unwrap();
+            let conn = conns.get(old_sid)?;
+            (conn.tx.clone(), conn.pong_at.clone())
+        };
+        let _ = ping_tx.send(Frame::Ping).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if pong_at.load(Ordering::SeqCst) >= probe_start {
+                tracing::info!(nickname = %nickname, "旧连接存活，拒绝重名加入（EX-02）");
+                return Some(());
+            }
+            // 探测期间旧连接可能自然断开（on_disconnect 已移除表项）
+            self.conns.lock().unwrap().get(old_sid)?;
+        }
+        // 僵死：驱逐旧表项（广播不再发它；writer 因 tx 释放而关闭，旧客户端
+        // 读到 EOF 自行退出）。旧会话任务的读循环可能仍挂——M1 接受：
+        // 其后续事件被 owner 过滤（PR #34 A2）忽略
+        self.conns.lock().unwrap().remove(old_sid);
+        tracing::info!(nickname = %nickname, "旧连接无响应，已驱逐（昵称可重新加入）");
+        None
+    }
+
     async fn send_text(&self, title: &str, body: &str) {
         let now = unix_now();
         let outcome = self.store.lock().unwrap().put_text(
@@ -287,9 +317,20 @@ impl SessionHandler for Hub {
                 code: HelloErr::InvalidNickname,
             };
         }
-        {
+        // PR #34 B 项（重名存活探测）：同名已在线时先探测旧连接——
+        // 课堂合盖休眠/断网（无 RST）极常见，无条件拒绝会把昵称锁死到
+        // 教师重启；无脑替换又破坏 PRD EX-02/TC-01 的重名拒绝语义。
+        // 折中：向旧连接发 Ping，至多 3s 内收到 Pong 视为存活（拒绝新
+        // join）；超时判定僵死，驱逐旧表项后接受新 join。
+        let dup_sid = {
             let conns = self.conns.lock().unwrap();
-            if conns.values().any(|c| c.nickname == *nickname) {
+            conns
+                .iter()
+                .find(|(_, c)| c.nickname == *nickname)
+                .map(|(sid, _)| sid.clone())
+        };
+        if let Some(old_sid) = dup_sid {
+            if self.probe_or_evict(&old_sid, nickname).await.is_some() {
                 return HelloReply::Err {
                     code: HelloErr::DupNickname,
                 };
@@ -301,6 +342,7 @@ impl SessionHandler for Hub {
             Conn {
                 nickname: nickname.clone(),
                 tx: tx.clone(),
+                pong_at: Arc::new(AtomicI64::new(0)),
             },
         );
         tracing::info!(nickname = %nickname, session_id = %session_id, "学员加入");
@@ -313,6 +355,16 @@ impl SessionHandler for Hub {
     }
 
     async fn on_event(&self, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
+        // PR #34 A2（最小加固）：仅接受教师端 owner 的事件，其余忽略——
+        // 阻止定制客户端伪造任意 owner 入库；M2 回传的会话身份绑定另走接口修订
+        if ev.item.owner_id != TEACHER_OWNER {
+            tracing::warn!(
+                owner = %ev.item.owner_id,
+                event_id = %ev.event_id,
+                "忽略非教师 owner 的事件"
+            );
+            return;
+        }
         // 先取出决策再 match，确保 MutexGuard 不跨 await
         let decision = self.store.lock().unwrap().apply_remote(&ev);
         match decision {
@@ -352,8 +404,18 @@ impl SessionHandler for Hub {
         }
     }
 
+    async fn on_pong(&self, session_id: &str) {
+        if let Some(conn) = self.conns.lock().unwrap().get(session_id) {
+            conn.pong_at.store(unix_now(), Ordering::SeqCst);
+        }
+    }
+
     async fn on_manifest_req(&self, tx: &mut mpsc::Sender<Frame>) {
+        // PR #34 A1：清单仅含教师广播内容（owner=teacher + audience=All），
+        // 不泄露学员提交条目
         let filter = ListFilter {
+            owner: Some(TEACHER_OWNER.to_string()),
+            audience: Some(Audience::All),
             include_deleted: true,
             ..Default::default()
         };
