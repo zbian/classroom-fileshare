@@ -68,8 +68,12 @@ pub enum HelloReply {
 pub enum HelloErr {
     /// PIN 错误。
     WrongPin,
-    /// 昵称重复。
+    /// 昵称重复（PRD 8.3：该昵称已被使用，请换一个）。
     DupNickname,
+    /// 昵称不可用（Windows/NTFS 保留设备名等；PR #30 检查点）。
+    /// 独立于 DupNickname：语义是「昵称本身不可用」而非「已被使用」，
+    /// GUI 文案区分（PRD 8.3 风格：该昵称不可用，请换一个）。
+    InvalidNickname,
     /// 协议版本不匹配。
     VersionMismatch,
 }

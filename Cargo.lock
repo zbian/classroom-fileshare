@@ -541,6 +541,18 @@ dependencies = [
 [[package]]
 name = "classroom-host"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "classroom-net",
+ "classroom-protocol",
+ "classroom-store",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "classroom-ipc"
