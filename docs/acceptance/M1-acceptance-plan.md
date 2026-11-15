@@ -84,17 +84,17 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 - 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正（跨机 mtime 比对**强制**执行此校正，否则 Δ 不可信）。
 - p95 口径：各学员机 Δ = (本机落盘时间) − (教师机广播时刻)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
 
-> ⚠️ **日志锚点实际清单（QA 静态复核 3ab34b9 / t13 分支，2026-11-16）**：#14 约定的关键行 `broadcast / received / applied` 在当前实现中**不存在**（这三个词只作为 Rust 标识符 `AgentEvent::Received` / `MergeDecision::Overwrite(applied)` 与 GUI 事件名存在，非日志文案）。现有 info 级锚点仅：
+> ⚠️ **日志锚点实际清单（QA 静态复核 3ab34b9 / t13 分支，2026-11-16）**：#14 约定的关键行 `broadcast / received / applied` 在当前实现中**尚不存在**（这三个词只作为 Rust 标识符 `AgentEvent::Received` / `MergeDecision::Overwrite(applied)` 与 GUI 事件名存在，非日志文案）。现有 info 级锚点仅：
 > - host：`教师端启动`(room,port)、`学员加入`(nickname,session_id)、`学员离线`(nickname)、`旧连接存活，拒绝重名加入（EX-02）`、`旧连接无响应，已驱逐（昵称可重新加入）`、`教师端停止`
 > - agent：`已加入`(addr)、`与教师机断开，稍后自动重连`
 > - store：`text put` / 文件落盘等为 **debug 级**（默认 info 不输出，`RUST_LOG=debug` 可开）
 >
-> **降级取证口径（E4 修复前执行 M1 验收时采用）**：
-> - T0（教师广播时刻）→ 取教师机自身仓库副本的 mtime（`repo/teacher/<文件名>`，教师先入库后广播，故该 mtime **不晚于**真实广播时刻 → Δ 为**保守估计**，判定偏严，方向可接受）；
-> - T_applied（学员落盘时刻）→ 取学员机 `repo/teacher/<文件名>`（或文本 `repo/<owner>/texts/<uuid>.txt`）的 mtime，即原子替换落盘时刻，可脚本化批量采集（适配 §5.2 的多节点规模）；
-> - 「到达 received」与「落盘 applied」**无法区分** → FR-G-02「tips 到达后 ≤1s 弹出」只能靠样本机录屏核对（样本机 ≥2 台），并在报告中声明该口径；
-> - E4 修复（host 补 broadcast、agent 补 received/applied 三条 info 级锚点）后，改用日志时间戳直采，Δ 表升级为日志级证据。
-> - 报告结论须注明所用口径与是否为保守估计，避免以代理口径冒充日志级精度。
+> **E4 修复后的目标状态（Lead 已派单，字段格式已约定）**：host 补 `broadcast`、agent 补 `received` 与 `applied` 三条 **info 级**锚点，行内字段固定为 `item_id=`、`file=`、`size=`（字段名稳定，QA 按此解析）。
+> - 解析式：`broadcast`/`received`/`applied` + `item_id=<uuid>` + `file=<文件名>` + `size=<字节>`（文本条目 `size` 为字符数）；
+> - Δ 计算：`Δ_node = T(applied, 学员机) − T(broadcast, 教师机)`；「到达→落盘」间隔 = `T(applied) − T(received)`；
+> - 采集命令见附录 A（`Select-String` 模式），批量脚本见 `docs/acceptance/scripts/collect-m1-evidence.ps1`（已就绪并实测通过：EXIT=0，兼容 PS 5.1/PS7，UTF-8 BOM）。
+>
+> **应急降级口径（仅当 E4 未能赶在 M1 验收开始前合入时启用）**：以文件 mtime 代理（教师端副本 mtime 早于真实广播 → Δ 为**保守估计**；学员端 mtime = 原子替换落盘时刻，可脚本化批量采集）；「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；报告须声明所用口径与保守性，不以代理口径冒充日志级精度。
 
 ### 3.6 证据规范
 
@@ -118,7 +118,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | **issue #14**（T-13）：dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
 | E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
 | **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估（结论采 B：net 抽 client 会话运行器，M2 初） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复已推送待复验**（feat/t6-agent @ 3ab34b9；QA 静态复核通过 + 自动化实测 10 轮零 flaky，见 §3.8.1） |
-| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | 待 Lead 派 dev-backend 补三条 info 级锚点（host 广播、agent 收到/落盘，含毫秒） | 修复后日志直采 Δ 并与 mtime 代理交叉验证；修复前按 §3.5「降级取证口径」执行并在报告声明 | **待派发（QA 静态复核发现，影响 TC-02 取证精度）** |
+| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复中（已派单，约定格式已锁定）** |
 
 #### 3.8.1 QA 静态复核记录
 
@@ -154,14 +154,16 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | E3 两条新用例 | `live_agent_answers_probe_and_keeps_receiving`、`killed_agent_frees_nickname` → 连续 **10 轮全通过，0 flaky**（`test result: ok. 2 passed` ×10） |
 | 结论 | E3 修复静态复核通过，自动化覆盖口径①②③；口径③ 的「静默死亡」变体仍未覆盖 → 真机复验（§4.1）补测 |
 
-**E4（待派发）——TC-02 计时取证锚点缺失（#14 约定参数与实现不符）**
+**E4（已派单，修复中）——TC-02 计时取证锚点缺失（#14 约定参数与实现不符）**
 
 | 项目 | 内容 |
 | --- | --- |
 | 缺陷 | #14 验收标准要求回写「关键行格式（broadcast/received/applied 含毫秒）」，但当前实现**无这三条日志**（QA 静态复核：host/agent 全部 tracing 调用枚举完毕，info 级仅 join/leave/start 与昵称探测相关文案；broadcast/received/applied 仅作 Rust 标识符存在） |
-| 影响 | ① TC-02 的 Δ 取证降级为**文件 mtime 代理**（教师端 mtime 早于真实广播 → Δ 保守估计；学员端 mtime = 原子替换落盘时刻）；② 「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；③ 多节点 Δ 表精度受限，30 台 p95 正式压测（M3）需要日志级锚点 |
-| QA 复验口径 | 修复后：host 侧出现广播 info 行、agent 侧出现「收到」与「落盘完成」info 行，且含毫秒时间戳与可定位字段（item_id/file_name）；QA 据此直采 Δ 并与 mtime 代理值交叉验证（偏差应在合理范围内） |
-| 建议 | dev-backend 补三条 info 级 tracing 锚点（改动小、风险低，且属 #14 已约定范围）；在修复前按 §3.5「降级取证口径」执行并在报告声明口径 |
+| 已约定修复格式 | 三条 info 级锚点：host `broadcast`、agent `received`、agent `applied`；行内字段 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析，Lead 2026-11-16 锁定） |
+| 影响（修复前） | ① TC-02 的 Δ 取证降级为**文件 mtime 代理**（教师端 mtime 早于真实广播 → Δ 保守估计；学员端 mtime = 原子替换落盘时刻）；② 「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；③ 多节点 Δ 表精度受限，30 台 p95 正式压测（M3）需要日志级锚点 |
+| QA 复验口径 | 修复后：① 三条锚点在 svc.log 中可见且含毫秒时间戳与 `item_id/file/size` 字段；② 按约定格式解析出 `broadcast`（教师）与 `applied`（学员）时间戳，计算 `Δ = T(applied) − T(broadcast)`；③ 与 mtime 代理值交叉验证（偏差应在合理范围内）；④ 「到达→落盘」间隔 `T(applied) − T(received)` 可分列 |
+| 计划影响 | Lead 承诺 E4 在 M1 验收开始前合入 main → §3.5 日志级取证口径按原计划执行，**降级口径仅作应急备份** |
+| 建议 | dev-backend 补三条 info 级 tracing 锚点（改动小、风险低，且属 #14 已约定范围） |
 
 ## 4 分用例方案
 
@@ -239,8 +241,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 **(b) 执行步骤（点击级）**
 
 1. 教师机：资源管理器打开测试目录，选中 `payload10mb.zip`（单选）。
-2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师广播时刻（E4 修复前取教师端副本 mtime，修复后取教师日志广播行；均以录屏同步）。
-3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；其余机器以落盘 mtime（E4 修复后为 received/applied 日志时间戳）参与 Δ 计算。
+2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师日志 `broadcast` 行时间戳（E4 约定格式；录屏同步）。
+3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；各机以日志 `received`/`applied` 时间戳参与 Δ 计算。
 4. 学员机：双击浮动图标 → 主界面 ≤1s 打开（FR-G-04）→「教师共享」Tab 出现该文件，状态「已下载」。
 5. 学员机：双击该条目 → 系统默认程序打开（zip 即资源管理器展开视图；PDF 即阅读器），内容可读。
 6. 抽样 ≥3 台（不足 3 台则全量）：`Get-FileHash` 对比教师端源文件，一致。
@@ -262,8 +264,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 
 **(d) 需采集的证据**
 
-- 教师机：右键菜单截图、发送时刻录屏、服务日志广播行（**E4 未修复时改用教师端副本 mtime**，见 §3.5 降级口径）。
-- 每台学员机：服务日志接收/落盘行（**E4 未修复时改用落盘文件 mtime**，`Get-Item` 一行一条，批量脚本采集）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
+- 教师机：右键菜单截图、发送时刻录屏、服务日志 `broadcast` 行（E4 约定格式 `item_id=/file=/size=`）。
+- 每台学员机：服务日志 `received` 与 `applied` 行（文本汇总成一张 Δ 表进报告）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
 - 哈希比对命令输出（教师端 + 抽样学员端）。
 - 负例提示截图 + 之后成功发送的日志行。
 
@@ -544,7 +546,9 @@ Get-FileHash <文件> -Algorithm SHA256
 # 索引（列名以 schema.sql 为准）
 python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
 
-# 日志锚点：当前实现无 broadcast/received/applied 行（缺陷 E4），用会话生命周期行 + 落盘 mtime
+# 日志锚点（E4 约定格式：broadcast/received/applied + item_id=/file=/size=）
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "broadcast|received|applied"
+# 应急降级（E4 未合入时）：用会话生命周期行 + 落盘 mtime 代理
 Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "教师端启动|学员加入|学员离线|已加入|旧连接"
 Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\<文件名>" | Select-Object LastWriteTime
 
@@ -574,5 +578,5 @@ fsutil file createnew big120.bin 125829120
 - [ ] 120 MB 超限文件、`x.exe` 风险文件、3 个多选小文件、60 MB 传输中断文件
 - [ ] 128 字标准文本（附录 §4.3）与混合内容变体
 - [ ] `课堂讲义.docx` V1/V2/V3 三版（含各版 SHA-256）
-- [ ] 取证脚本 `collect.ps1`（TC-06/12 复用：服务状态 + 进程 + 目录计数 + 索引查询一屏输出）
+- [x] 取证脚本 `docs/acceptance/scripts/collect-m1-evidence.ps1`（**已就绪并实测**：服务/进程状态、时钟与时区、E4 日志锚点 broadcast/received/applied、条目落盘属性+哈希+.bak 计数、SQLite 索引概览、仓库统计；只读；兼容 Windows PowerShell 5.1 与 PS7；UTF-8 BOM 编码，勿用无 BOM 编辑器改存，否则中文机乱码）
 - [ ] 各机录屏工具可用（Xbox Game Bar `Win+Alt+R`）、手机（TC-11）
