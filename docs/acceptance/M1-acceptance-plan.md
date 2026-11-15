@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.2.1（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1/E2 缺陷跟踪见 §3.8；PR #35 评审排队） |
+| 状态 | v1.2.3（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E4 缺陷跟踪见 §3.8；E3 静态复核通过 + 自动化实测 10 轮零 flaky；PR #35 评审排队） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -80,9 +80,21 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 ### 3.5 计时与时钟同步（时延类指标的取证基础）
 
-- 时间源优先级：① 各机服务日志 `<数据根>\logs\svc.log`（已确认 RFC3339 含毫秒；关键行 broadcast / received / applied，RUST_LOG 可调，#14）② 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）③ 秒表（最后手段，双人配合）。
-- 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正。
-- p95 口径：各学员机 Δ = (本机 applied/落盘时间) − (教师机 broadcast 时间)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
+- 时间源优先级：① 各机服务日志 `<数据根>\logs\svc.log`（RFC3339 含毫秒，RUST_LOG 可调）② **各机文件落盘 mtime**（原子替换时刻，见下方「日志锚点实际清单」的降级口径）③ 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）④ 秒表（最后手段，双人配合）。
+- 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正（跨机 mtime 比对**强制**执行此校正，否则 Δ 不可信）。
+- p95 口径：各学员机 Δ = (本机落盘时间) − (教师机广播时刻)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
+
+> ⚠️ **日志锚点实际清单（QA 静态复核 3ab34b9 / t13 分支，2026-11-16）**：#14 约定的关键行 `broadcast / received / applied` 在当前实现中**不存在**（这三个词只作为 Rust 标识符 `AgentEvent::Received` / `MergeDecision::Overwrite(applied)` 与 GUI 事件名存在，非日志文案）。现有 info 级锚点仅：
+> - host：`教师端启动`(room,port)、`学员加入`(nickname,session_id)、`学员离线`(nickname)、`旧连接存活，拒绝重名加入（EX-02）`、`旧连接无响应，已驱逐（昵称可重新加入）`、`教师端停止`
+> - agent：`已加入`(addr)、`与教师机断开，稍后自动重连`
+> - store：`text put` / 文件落盘等为 **debug 级**（默认 info 不输出，`RUST_LOG=debug` 可开）
+>
+> **降级取证口径（E4 修复前执行 M1 验收时采用）**：
+> - T0（教师广播时刻）→ 取教师机自身仓库副本的 mtime（`repo/teacher/<文件名>`，教师先入库后广播，故该 mtime **不晚于**真实广播时刻 → Δ 为**保守估计**，判定偏严，方向可接受）；
+> - T_applied（学员落盘时刻）→ 取学员机 `repo/teacher/<文件名>`（或文本 `repo/<owner>/texts/<uuid>.txt`）的 mtime，即原子替换落盘时刻，可脚本化批量采集（适配 §5.2 的多节点规模）；
+> - 「到达 received」与「落盘 applied」**无法区分** → FR-G-02「tips 到达后 ≤1s 弹出」只能靠样本机录屏核对（样本机 ≥2 台），并在报告中声明该口径；
+> - E4 修复（host 补 broadcast、agent 补 received/applied 三条 info 级锚点）后，改用日志时间戳直采，Δ 表升级为日志级证据。
+> - 报告结论须注明所用口径与是否为保守估计，避免以代理口径冒充日志级精度。
 
 ### 3.6 证据规范
 
@@ -105,7 +117,51 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | --- | --- | --- | --- | --- |
 | E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | **issue #14**（T-13）：dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
 | E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
-| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估 | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复中，issue #37 跟踪** |
+| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估（结论采 B：net 抽 client 会话运行器，M2 初） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复已推送待复验**（feat/t6-agent @ 3ab34b9；QA 静态复核通过 + 自动化实测 10 轮零 flaky，见 §3.8.1） |
+| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | 待 Lead 派 dev-backend 补三条 info 级锚点（host 广播、agent 收到/落盘，含毫秒） | 修复后日志直采 Δ 并与 mtime 代理交叉验证；修复前按 §3.5「降级取证口径」执行并在报告声明 | **待派发（QA 静态复核发现，影响 TC-02 取证精度）** |
+
+#### 3.8.1 QA 静态复核记录
+
+**E1/E2（73304f7）——通过（脚本级）**
+
+| 检查点 | 结论 |
+| --- | --- |
+| student 模式建 UDP 47820 入站规则 | ✓ 两角色均建，且 `program="$svcExe"` 程序限定 |
+| TCP 47821 仍仅 teacher | ✓ student 分支无 TCP 规则，摘要行明示「student 无 TCP 入站」 |
+| 降级模式说明 | ✓ 摘要注明「无法配置防火墙 + manual_addr 兜底」 |
+| E2 显式警告 | ✓ `-GuiExe` 缺省 → `Write-Warning`（文案含「GUI 登录自启未注册」） |
+| uninstall 清理 | ✓ 幂等删除 TCP/UDP 两条规则 |
+| 残留待真机复核 | 规则是否真正程序限定（`Get-NetFirewallRule`）、卸载后是否清除、学员机开箱发现 |
+
+**E3（3ab34b9）——静态复核通过（待真机复验）**
+
+| 检查点 | 结论 |
+| --- | --- |
+| agent 读循环是否真回 Pong | ✓ `crates/agent/src/lib.rs` 读循环新增 `Frame::Ping =>` 分支，`writer.write_all(&encode_frame(&Frame::Pong))`；与心跳分支同一 `writer`，`tokio::select!` 分支串行执行无并发写冲突 |
+| 新用例是否用真实 agent 非桩 | ✓ `crates/agent/tests/agent.rs`：`start_agent` → `classroom_agent::run_agent`；`start_host_at_inner` → `classroom_host::run_host`——真实 agent × 真实 host，无 MiniAgent 桩 |
+| 口径①（活连接同名被拒） | ✓ 用例 `live_agent_answers_probe_and_keeps_receiving`：同名第二真实 agent 收到 `DupNickname` 错误并致命退出 |
+| 口径②（旧连接不被驱逐、仍收广播） | ✓ 同一用例：探测后教师广播「探测后广播」，旧 agent 仍收到并断言 `owner_id == "teacher"` |
+| 口径③（僵死后同名可加入） | ⚠️ 用例 `killed_agent_frees_nickname` 覆盖的是 **abort（连接干净关闭 → host 感知断线直接释放昵称）**；**未被自动化覆盖**的是「静默死亡（TCP 仍在但不响应，无 FIN/RST，即合盖休眠/断网）」——恰是探测机制的设计目标 |
+| 残余风险处置 | 口径③ 的静默死亡变体列入**真机复验**（§4.1）：强杀（`taskkill /F`，产生 RST）与挂起/断网（不响应）两种情形分别验证「≤3s 探测后驱逐、同名可加入」；并确认活连接不被误驱逐 |
+| 根治方向 | 采方案 B（net 抽 client 会话运行器，M2 初）→ 真机复验时额外核对 agent 其余帧分支（Manifest/FileChunk/FileEnd）迁移后行为等价 |
+
+**E3 独立验证（QA 实测，2026-11-16）**
+
+| 项目 | 结果 |
+| --- | --- |
+| 验证环境 | 独立 worktree `.wt/verify-t6` @ 3ab34b9，Rust 1.100.0 / cargo 1.100.0（MSVC） |
+| 核心 crate 全量测试 | `cargo test -p classroom-agent -p classroom-host -p classroom-net -p classroom-protocol -p classroom-store` → **EXITCODE=0**，agent 8 + host 9 + net 1/6/7 + protocol 25 + store 15 全绿（两轮） |
+| E3 两条新用例 | `live_agent_answers_probe_and_keeps_receiving`、`killed_agent_frees_nickname` → 连续 **10 轮全通过，0 flaky**（`test result: ok. 2 passed` ×10） |
+| 结论 | E3 修复静态复核通过，自动化覆盖口径①②③；口径③ 的「静默死亡」变体仍未覆盖 → 真机复验（§4.1）补测 |
+
+**E4（待派发）——TC-02 计时取证锚点缺失（#14 约定参数与实现不符）**
+
+| 项目 | 内容 |
+| --- | --- |
+| 缺陷 | #14 验收标准要求回写「关键行格式（broadcast/received/applied 含毫秒）」，但当前实现**无这三条日志**（QA 静态复核：host/agent 全部 tracing 调用枚举完毕，info 级仅 join/leave/start 与昵称探测相关文案；broadcast/received/applied 仅作 Rust 标识符存在） |
+| 影响 | ① TC-02 的 Δ 取证降级为**文件 mtime 代理**（教师端 mtime 早于真实广播 → Δ 保守估计；学员端 mtime = 原子替换落盘时刻）；② 「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；③ 多节点 Δ 表精度受限，30 台 p95 正式压测（M3）需要日志级锚点 |
+| QA 复验口径 | 修复后：host 侧出现广播 info 行、agent 侧出现「收到」与「落盘完成」info 行，且含毫秒时间戳与可定位字段（item_id/file_name）；QA 据此直采 Δ 并与 mtime 代理值交叉验证（偏差应在合理范围内） |
+| 建议 | dev-backend 补三条 info 级 tracing 锚点（改动小、风险低，且属 #14 已约定范围）；在修复前按 §3.5「降级取证口径」执行并在报告声明口径 |
 
 ## 4 分用例方案
 
@@ -155,6 +211,12 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 - 重名负例需第 2 台学员机：可用 VM（Hyper-V **外部虚拟交换机/桥接**；Default Switch 的 NAT 不保证 UDP 广播可达），或重置学员机 A 的昵称数据后重跑（次选，等价性略弱）。
 - PIN 负例需教师重建房间：与首轮共环境时注意清空两端数据或更换房间码，避免残留状态干扰。
 - ★时延观察（#34 B 存活探测引入）：同名冲突时 join 拒绝不再瞬时，**预期 0–3s 内**返回「该昵称已被使用」；若旧连接尚未被教师机感知断开，同名重连也可能经历 ≤3s 探测后才被接受。记录实测值（PRD 对该项无时限要求，仅记录行为，不判缺陷）；「≤3s 发现房间码」指标走 beacon 发现链路，与 join 探测分离，不受此影响。
+- ★E3 修复的真机复验步骤（§3.8.1 残余风险：静默死亡变体未被自动化覆盖）：
+  1. 学员机 A 正常在线（教师机在线人数显示 +1）。
+  2. 学员机 B 用同名加入 → 必须被拒（提示「该昵称已被使用」），A 仍在线、仍能收到教师广播。
+  3. 学员机 A **静默死亡**（模拟合盖休眠/断网：挂起进程或拔网线，TCP 不断）→ 教师机应 ≤3s 探测后驱逐 → 同名 B 可加入成功。
+  4. 学员机 A **强杀**（`taskkill /F`，产生 RST）→ 同名 B 可加入成功（立即或 ≤3s 内）。
+  5. 取证：教师机 `svc.log` 中重名 join 的 info 行（活连接拒绝路径与僵死驱逐路径文案不同，各取一条）+ 在线人数截图。
 
 ### 4.2 TC-02 广播文件（10 MB，全员 5 秒）
 
@@ -177,8 +239,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 **(b) 执行步骤（点击级）**
 
 1. 教师机：资源管理器打开测试目录，选中 `payload10mb.zip`（单选）。
-2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师服务日志 broadcast/upsert 时间戳（录屏同步）。
-3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；其余机器以服务日志 received/applied 时间戳参与 Δ 计算。
+2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师广播时刻（E4 修复前取教师端副本 mtime，修复后取教师日志广播行；均以录屏同步）。
+3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；其余机器以落盘 mtime（E4 修复后为 received/applied 日志时间戳）参与 Δ 计算。
 4. 学员机：双击浮动图标 → 主界面 ≤1s 打开（FR-G-04）→「教师共享」Tab 出现该文件，状态「已下载」。
 5. 学员机：双击该条目 → 系统默认程序打开（zip 即资源管理器展开视图；PDF 即阅读器），内容可读。
 6. 抽样 ≥3 台（不足 3 台则全量）：`Get-FileHash` 对比教师端源文件，一致。
@@ -200,8 +262,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 
 **(d) 需采集的证据**
 
-- 教师机：右键菜单截图、发送时刻录屏、服务日志 broadcast 行。
-- 每台学员机：服务日志 received/applied 行（文本汇总成一张 Δ 表进报告）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
+- 教师机：右键菜单截图、发送时刻录屏、服务日志广播行（**E4 未修复时改用教师端副本 mtime**，见 §3.5 降级口径）。
+- 每台学员机：服务日志接收/落盘行（**E4 未修复时改用落盘文件 mtime**，`Get-Item` 一行一条，批量脚本采集）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
 - 哈希比对命令输出（教师端 + 抽样学员端）。
 - 负例提示截图 + 之后成功发送的日志行。
 
@@ -341,7 +403,8 @@ python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\dat
 Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\不登录测试.docx" | Select-Object CreationTime,LastWriteTime
 Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 |
   Where-Object Message -match 'ClassShareSvc' | Select-Object TimeCreated,Message
-Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "不登录测试"
+# 日志锚点：当前实现无 received 行，用会话生命周期行佐证（学员加入/离线）
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "学员加入|学员离线|已加入"
 ```
 
    预期：文件 CreationTime 与日志接收时间**早于本次登录时刻**（证明未登录期间落盘）；System 日志 7036 显示服务开机即启动。
@@ -360,7 +423,7 @@ Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "�
 **(d) 需采集的证据**
 
 - 重启前 `Get-Service` 截图；登录界面手机照片（含可辨时间）。
-- 登录后列表与打开成功截图；文件时间戳、System 7036、服务日志接收行的命令输出（与登录时刻同框对比，可写进同一 `.md` 证据文件）。
+- 登录后列表与打开成功截图；文件时间戳、System 7036、服务日志行（无 E4 时取会话生命周期行）的命令输出（与登录时刻同框对比，可写进同一 `.md` 证据文件）。
 - 教师机发送侧录屏/日志行。
 
 **(e) 本机限制与替代**
@@ -411,7 +474,7 @@ python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\dat
 
 **(d) 需采集的证据**
 
-- 前后两次 `Get-Service` / `tasklist` / 计数命令输出（同格式对比）；右键菜单与退出过程录屏/截图；重启 GUI 后列表截图；服务日志接收行。
+- 前后两次 `Get-Service` / `tasklist` / 计数命令输出（同格式对比）；右键菜单与退出过程录屏/截图；重启 GUI 后列表截图；服务日志（退出前后对比行）。
 
 **(e) 本机限制与替代**
 
@@ -453,7 +516,7 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 | --- | --- | --- | --- |
 | 1 | 服务名 / 进程名 | 服务 `ClassShareSvc`；服务进程 `classroom-svc.exe`；GUI 进程 `classroom-gui.exe`（以打包产物名为准）；无管理员降级为 `--console` 前台进程 | ✅ #14 / e42dbd5 |
 | 2 | 数据根 | 管理员安装 `%PROGRAMDATA%\ClassShare\data`（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；降级安装 `%LOCALAPPDATA%\ClassShare\data`；GUI 侧 gui.json/profile.json 仍在 `%APPDATA%\ClassShare\` | ✅ |
-| 3 | 日志 | `<数据根>\logs\svc.log`，RFC3339 含毫秒，RUST_LOG 可调；关键行 broadcast / received / applied（host/agent tracing 事件） | ✅ |
+| 3 | 日志 | `<数据根>\logs\svc.log`，RFC3339 含毫秒，RUST_LOG 可调；关键行 broadcast / received / applied（host/agent tracing 事件） | ⚠️ **路径与格式已确认，但关键行与实现不符 → 缺陷 E4**（§3.8.1） |
 | 4 | 防火墙 | 仅 teacher 角色幂等删建入站规则：TCP/47821 + UDP/47820；学员侧无规则 → 已判定**产品缺陷 E1**（§3.2/§3.8，修复中） | ✅ 确认值 + E1 跟踪 |
 | 5 | 多实例 | 命名管道同机多实例并发（≥2 已测）；SCM 服务单实例；同机不并存双角色（设计如此）→ 压测代理以多 agent 进程搭建 | ✅ |
 | 6 | TC-02 规模口径 | 放行结论 | ✅ 已关闭：批准方案 B（2026-11-13，见 §5.2） |
@@ -481,8 +544,9 @@ Get-FileHash <文件> -Algorithm SHA256
 # 索引（列名以 schema.sql 为准）
 python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
 
-# 日志（RFC3339 毫秒）
-Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern 'broadcast|received|applied'
+# 日志锚点：当前实现无 broadcast/received/applied 行（缺陷 E4），用会话生命周期行 + 落盘 mtime
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "教师端启动|学员加入|学员离线|已加入|旧连接"
+Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\<文件名>" | Select-Object LastWriteTime
 
 # 时钟
 w32tm /resync; w32tm /query /status; Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
