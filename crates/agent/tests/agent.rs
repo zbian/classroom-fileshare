@@ -383,3 +383,86 @@ async fn offline_delete_aligned_as_tombstone_on_reconnect() {
         "实体文件应被补删清理"
     );
 }
+
+// ---------- E3（issue #37）：真实 agent ↔ 真实 host 的探测回路 ----------
+
+/// 活跃 agent 必须应答 host 的探测 Ping：同名第二 agent 被拒（EX-02），
+/// 且旧 agent 不被误驱逐、仍能接收广播（qa §3.8）。
+#[tokio::test]
+async fn live_agent_answers_probe_and_keeps_receiving() {
+    let host = start_host_at(free_port()).await;
+    let port = host.port;
+    let dir1 = tempfile::tempdir().unwrap();
+    let mut rx1 = start_agent(port, "alice", None, dir1.path()).await;
+    next_matching(&mut rx1, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+
+    // 同名第二真实 agent：探测到旧连接存活 → DupNickname → 致命退出
+    let dir2 = tempfile::tempdir().unwrap();
+    let (tx2, _rx2) = mpsc::channel(16);
+    let cfg2 = AgentConfig {
+        nickname: "alice".into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        data_root: dir2.path().to_path_buf(),
+    };
+    let handle = tokio::spawn(classroom_agent::run_agent(cfg2, tx2));
+    let outcome = tokio::time::timeout(Duration::from_secs(8), handle)
+        .await
+        .expect("同名探测应在 8s 内出结果（3s 探测 + 余量）")
+        .expect("第二 agent 任务存活");
+    let err = outcome.expect_err("活跃旧连接在场时同名 join 必须被拒");
+    assert!(
+        format!("{err:#}").contains("DupNickname"),
+        "应报重名拒绝: {err:#}"
+    );
+
+    // 旧 agent 未被误驱逐：教师广播仍能送达
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "探测后广播".into(),
+            body: "仍在课堂".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut rx1, |e| match e {
+        AgentEvent::Received(i) if i.title == "探测后广播" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.owner_id, "teacher");
+}
+
+/// 杀掉 agent「进程」后昵称立即可被新 agent 使用（qa §3.8）。
+#[tokio::test]
+async fn killed_agent_frees_nickname() {
+    let host = start_host_at(free_port()).await;
+    let port = host.port;
+    let dir1 = tempfile::tempdir().unwrap();
+    let (tx1, mut rx1) = mpsc::channel(16);
+    let cfg1 = AgentConfig {
+        nickname: "alice".into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        data_root: dir1.path().to_path_buf(),
+    };
+    let h1 = tokio::spawn(classroom_agent::run_agent(cfg1, tx1));
+    next_matching(&mut rx1, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+
+    // 杀「进程」：abort 使全部连接资源 drop → host 感知断线并注销昵称
+    h1.abort();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 新 agent 用同名立即加入成功
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut rx2 = start_agent(port, "alice", None, dir2.path()).await;
+    next_matching(&mut rx2, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+}

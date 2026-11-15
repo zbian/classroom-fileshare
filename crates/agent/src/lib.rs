@@ -184,6 +184,13 @@ async fn agent_session(
                         let _ = notify.send(AgentEvent::Synced).await;
                     }
                     Frame::Pong => {}
+                    // E3（issue #37）：必须应答服务端探测 Ping——host 重名
+                    // 存活探测依赖 Pong，忽略会导致活跃连接被误驱逐
+                    Frame::Ping => {
+                        if writer.write_all(&encode_frame(&Frame::Pong)).await.is_err() {
+                            tracing::debug!("Pong 写入失败，会话即将结束");
+                        }
+                    }
                     other => tracing::debug!(frame = ?other, "agent 忽略该帧"),
                 }
             }
