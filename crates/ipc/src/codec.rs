@@ -62,7 +62,7 @@ pub(crate) fn handshake_msg(token: &str) -> IpcMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GuiReply, ItemUpdatedPayload};
+    use crate::{GuiReply, ItemUpdatedPayload, ServiceState, StatusSnapshot};
     use classroom_net::Beacon;
     use classroom_protocol::{Audience, ItemKind, Role, ShareItem, SyncState};
 
@@ -103,6 +103,17 @@ mod tests {
             IpcMessage::Reply {
                 id: 7,
                 result: Ok(GuiReply::Items(vec![sample_item("通知")])),
+            },
+            IpcMessage::Reply {
+                id: 6,
+                result: Ok(GuiReply::Status(StatusSnapshot {
+                    service_state: ServiceState::Running,
+                    room: "XK-204".into(),
+                    online_count: 2,
+                    nickname: "alice".into(),
+                    role: Role::Student,
+                    pending_count: 0,
+                })),
             },
             IpcMessage::Reply {
                 id: 8,

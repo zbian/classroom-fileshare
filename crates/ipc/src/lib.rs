@@ -126,6 +126,36 @@ pub enum SvcNotify {
     Discovered(Vec<Beacon>),
 }
 
+/// 服务运行状态（GUI 视角三态；修订 #6④）。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceState {
+    /// 服务运行中。
+    Running,
+    /// 服务已停止（收到停机确认）。
+    Stopped,
+    /// IPC 不可达（服务未启动/已退出；GUI 侧本地构造）。
+    Unreachable,
+}
+
+/// 服务状态快照（Status 应答载荷；修订 #6④：前端状态条结构化字段）。
+/// 不 derive Eq：`Role`（protocol）仅 PartialEq。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StatusSnapshot {
+    /// 服务状态。
+    pub service_state: ServiceState,
+    /// 房间码（teacher；student 为已加入的房间描述，未加入为空）。
+    pub room: String,
+    /// 在线学员数（teacher）。
+    pub online_count: u32,
+    /// 本机昵称（student；teacher 为空）。
+    pub nickname: String,
+    /// 本机角色。
+    pub role: Role,
+    /// 离线待发条数（M1 恒 0，M2 待发队列接入后实化）。
+    pub pending_count: u32,
+}
+
 /// 请求应答载荷（计划未定义 `SvcResult` 的 Ok 载荷，本 crate 定义）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum GuiReply {
@@ -133,8 +163,8 @@ pub enum GuiReply {
     Ok,
     /// List 的结果。
     Items(Vec<ShareItem>),
-    /// Status 的结果（人类可读状态文本）。
-    StatusText(String),
+    /// Status 的结果（结构化快照，修订 #6④，替代原 StatusText 单轨）。
+    Status(StatusSnapshot),
 }
 
 /// 服务处理结果：`Err` 为人类可读错误文案（可跨 IPC 序列化传输）。

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use classroom_ipc::{
     connect_ipc, serve_ipc, GuiReply, GuiRequest, IpcClient, ItemUpdatedPayload, ListFilter,
-    SvcNotify, SvcResult,
+    ServiceState, StatusSnapshot, SvcNotify, SvcResult,
 };
 use classroom_protocol::{Audience, ItemKind, Role, ShareItem, SyncState};
 
@@ -34,7 +34,14 @@ fn sample_item(title: &str) -> ShareItem {
 fn stub_handler(req: GuiRequest) -> SvcResult {
     match req {
         GuiRequest::List(_) => Ok(GuiReply::Items(vec![sample_item("通知")])),
-        GuiRequest::Status => Ok(GuiReply::StatusText("房间 XK-204，在线 2".into())),
+        GuiRequest::Status => Ok(GuiReply::Status(StatusSnapshot {
+            service_state: ServiceState::Running,
+            room: "XK-204".into(),
+            online_count: 2,
+            nickname: String::new(),
+            role: Role::Teacher,
+            pending_count: 0,
+        })),
         GuiRequest::SendText { title, .. } => {
             if title.trim().is_empty() {
                 Err("标题不能为空".into())
@@ -94,7 +101,12 @@ async fn assertions(
         other => panic!("List 往返异常: {other:?}"),
     }
     match client.request(GuiRequest::Status).await {
-        Ok(Ok(GuiReply::StatusText(s))) => assert!(s.contains("XK-204")),
+        Ok(Ok(GuiReply::Status(snap))) => {
+            assert_eq!(snap.room, "XK-204");
+            assert_eq!(snap.online_count, 2);
+            assert_eq!(snap.service_state, ServiceState::Running);
+            assert_eq!(snap.pending_count, 0, "M1 恒 0");
+        }
         other => panic!("Status 往返异常: {other:?}"),
     }
     assert!(matches!(
