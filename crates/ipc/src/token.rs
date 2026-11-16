@@ -5,7 +5,7 @@
 //! Users:RX，本地非管理员可读令牌全权限过握手。现以 `*SID:(R,W)` 显式
 //! 授予（qa 实证 EXIT=0），失败向上抛错含手工修复命令。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -24,7 +24,15 @@ pub fn load_or_create_token(root: &Path) -> anyhow::Result<String> {
 /// 双授予 `*<user_sid>:(R,W)`」，用户会话 GUI 才能读到令牌过握手。
 /// `None` 时仅 LocalSystem 可读，GUI 不可用属配置缺失（调用方告警）。
 pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::Result<String> {
-    let path = root.join("ipc.token");
+    std::fs::create_dir_all(root)?;
+    // 假设 2（CI 诊断，PR #50）：canonicalize 展开 8.3 短名（RUNNER~1）并
+    // 剥 `\\?\` 前缀——短名+引号组合在 icacls 老式解析下行为未定义
+    let root_canon = match std::fs::canonicalize(root) {
+        Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        Err(_) => root.to_string_lossy().into_owned(),
+    };
+    let root_canon = PathBuf::from(root_canon);
+    let path = root_canon.join("ipc.token");
     let restrict = |p: &Path| restrict_acl(p, user_sid);
     if path.exists() {
         let token = std::fs::read_to_string(&path)?;
@@ -37,7 +45,6 @@ pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::
         }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    std::fs::create_dir_all(root)?;
     std::fs::write(&path, &token)?;
     restrict(&path)?;
     tracing::info!(
@@ -97,7 +104,12 @@ pub fn grant_for_session(root: &Path, sid: &str) -> anyhow::Result<()> {
     if !sid.starts_with("S-1-") {
         anyhow::bail!("非法 SID: {sid}");
     }
-    let path = root.join("ipc.token");
+    // 与 load 路径一致：canonicalize 展开短名（假设 2 诊断）
+    let root_canon = match std::fs::canonicalize(root) {
+        Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        Err(_) => root.to_string_lossy().into_owned(),
+    };
+    let path = PathBuf::from(root_canon).join("ipc.token");
     let remove_raw = format!("\"{}\" /remove:g \"*{sid}\"", path.display());
     let remove_status = std::process::Command::new("icacls")
         .raw_arg(remove_raw)
@@ -119,9 +131,28 @@ pub fn grant_for_session(root: &Path, sid: &str) -> anyhow::Result<()> {
 /// （这正是原实现缺 `/grant` 假象之下的第二层根因）。因此用
 /// `CommandExt::raw_arg` 传原始命令行，路径含空格时手工加引号。
 fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
+    let (raw, code, stdout, stderr) = icacls_grant(path, user_sid);
+    tracing::debug!(
+        exit = ?code,
+        stdout = %stdout,
+        stderr = %stderr,
+        "icacls restrict 完成"
+    );
+    if code != Some(0) {
+        anyhow::bail!(
+            "IPC 令牌 ACL 限权失败（icacls 退出码 {code:?}，stdout: {stdout:?}，stderr: {stderr:?}）。\
+             手工修复命令：icacls {raw}（issue #49）"
+        );
+    }
+    Ok(())
+}
+
+/// icacls 授予核心：构建 raw 命令行并执行，返回（raw, exit, stdout, stderr）
+/// 供诊断（CI 环境「退出 0 却无效果」必须看到真实命令行才能定位）。
+fn icacls_grant(path: &Path, user_sid: Option<&str>) -> (String, Option<i32>, String, String) {
     use std::os::windows::process::CommandExt;
 
-    let sid = current_user_sid()?;
+    let sid = current_user_sid().unwrap_or_else(|_| "S-1-0-0".into());
     let mut grants = vec![format!("*{sid}:(R,W)")];
     if let Some(us) = user_sid.filter(|s| s.starts_with("S-1-")) {
         grants.push(format!("*{us}:(R,W)"));
@@ -131,29 +162,16 @@ fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
         path.display(),
         grants.join(" ")
     );
-    // CI 诊断（PR #50 run 43867884669）：用 .output() 捕获 icacls 全部
-    // 输出——失败 Err 文案与测试 stdout 都带上三元组，环境差异一眼可诊
-    let out = std::process::Command::new("icacls")
-        .raw_arg(&raw)
-        .output()
-        .map_err(|e| anyhow::anyhow!("icacls 调用失败: {e}"))?;
-    tracing::debug!(
-        exit = ?out.status.code(),
-        stdout = %String::from_utf8_lossy(&out.stdout),
-        stderr = %String::from_utf8_lossy(&out.stderr),
-        "icacls restrict 完成"
-    );
-    if !out.status.success() {
-        anyhow::bail!(
-            "IPC 令牌 ACL 限权失败（icacls 退出码 {:?}，stdout: {:?}，stderr: {:?}）。\
-             手工修复命令：icacls {}（issue #49）",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-            raw
-        );
-    }
-    Ok(())
+    let out = match std::process::Command::new("icacls").raw_arg(&raw).output() {
+        Ok(o) => o,
+        Err(e) => return (raw, None, String::new(), format!("icacls 启动失败: {e}")),
+    };
+    (
+        raw,
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -184,6 +202,10 @@ mod tests {
         println!("diag: sid={sid:?} path={:?}", dir.path().join("ipc.token"));
         let token = load_or_create_token(dir.path()).expect("限权必须成功（fail closed）");
         assert_eq!(token.len(), 64);
+
+        // 直接调授予核心，把完整 raw 命令行（引号显形）与三元组打进日志
+        let (raw, code, so, se) = icacls_grant(&dir.path().join("ipc.token"), None);
+        println!("diag: raw={raw:?} exit={code:?} stdout={so:?} stderr={se:?}");
 
         let out = std::process::Command::new("icacls")
             .arg(dir.path().join("ipc.token"))
