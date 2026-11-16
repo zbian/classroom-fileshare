@@ -1,0 +1,44 @@
+===== M1 验收取证  role=student  machine=BIAN-小白机  at=2026-11-16T11:55:02.912 =====
+数据根: C:\Users\Bian\AppData\Local\Temp\cs-qa-anchor\data
+PowerShell: 5.1.26100.9818
+
+--- [1] 服务与进程 ---
+服务 ClassShareSvc: 未注册（降级模式或未安装）
+进程 classroom-svc.exe: 未运行
+进程 classroom-gui.exe: 未运行
+HKCU Run 自启项: 无
+
+--- [2] 时钟（Delta 计算前提） ---
+发生下列错误: 服务尚未启动。 (0x80070426)
+时区: (UTC+08:00) Beijing, Chongqing, Hong Kong, Urumqi  UTC偏移: 480
+本机 Get-Date: 2026-11-16T11:55:03.051
+
+--- [3] 日志锚点（E4 格式：broadcast/received/applied） ---
+日志: C:\Users\Bian\AppData\Local\Temp\cs-qa-anchor\data\logs\svc.log  (大小 987 字节, 最后写入 2026-11-16T11:52:57.740)
+2026-11-16T03:52:57.646034Z  INFO broadcast item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 file=课堂讲义 副本.pptx size=3145728 audience="all"
+2026-11-16T03:52:57.681246Z  INFO received item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 file=课堂讲义 副本.pptx size=3145728 from=teacher
+2026-11-16T03:52:57.700370Z  INFO applied item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 version=1
+2026-11-16T03:52:57.719377Z  INFO broadcast item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 file=课堂通知 size=9 audience="all"
+2026-11-16T03:52:57.720554Z  INFO received item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 file=课堂通知 size=27 from=teacher
+2026-11-16T03:52:57.740378Z  INFO applied item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 version=1
+--- [3b] 会话生命周期行（辅证 / 降级口径） ---
+2026-11-16T03:52:57.488974Z  INFO 教师端启动 room=XK-204 port=1690
+2026-11-16T03:52:57.547664Z  INFO 学员加入 nickname=alice session_id=eef7cf44-ee28-4fc1-b2ae-309cbf1f7430
+2026-11-16T03:52:57.547817Z  INFO 已加入 addr=127.0.0.1:1690
+--- [3c] 锚点解析（机器可读 TSV：kind<TAB>timestamp<TAB>item_id<TAB>file<TAB>size） ---
+kind	Timestamp	item_id	file	size
+broadcast	2026-11-16T03:52:57.646034Z	fcb980db-641e-4dd2-ae1e-1185d95d0c88	课堂讲义 副本.pptx	3145728
+received	2026-11-16T03:52:57.681246Z	fcb980db-641e-4dd2-ae1e-1185d95d0c88	课堂讲义 副本.pptx	3145728
+applied	2026-11-16T03:52:57.700370Z	fcb980db-641e-4dd2-ae1e-1185d95d0c88		
+broadcast	2026-11-16T03:52:57.719377Z	0cbe9431-9eaf-4869-a420-7b491fdc2b33	课堂通知	9
+received	2026-11-16T03:52:57.720554Z	0cbe9431-9eaf-4869-a420-7b491fdc2b33	课堂通知	27
+applied	2026-11-16T03:52:57.740378Z	0cbe9431-9eaf-4869-a420-7b491fdc2b33		
+锚点条数: 6
+
+--- [5] SQLite 索引概览 ---
+索引不存在: C:\Users\Bian\AppData\Local\Temp\cs-qa-anchor\data\index.db
+
+--- [6] 仓库统计 ---
+repo 不存在: C:\Users\Bian\AppData\Local\Temp\cs-qa-anchor\data\repo
+
+===== 采集结束 at=2026-11-16T11:55:03.071 =====
