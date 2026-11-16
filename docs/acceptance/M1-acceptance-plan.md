@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.1（Lead 已评审：TC-02 规模口径批准方案 B，见 §5.2；PR #25 评审中） |
+| 状态 | v1.3.1（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3 复核通过、E4 已合入并经真实日志与**真实服务二进制**复跑验证（§3.9/§3.9.1）；E5 已按约定关闭、E6 修复中、**E7 待派单（严重）**；PR #35 评审排队） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -47,7 +47,12 @@
 ### 3.2 网络
 
 - 同一 L2 网段、同一交换机（有线优先）。**禁用/避开**：VPN、跨网段路由、Wi-Fi AP 客户端隔离（会拦 UDP 广播）、来宾网络。
-- 端口（M1 计划已锁定）：UDP 47820（beacon）、TCP 47821（服务）。安装脚本应添加防火墙入站规则；若未加而手工放行，登记为缺陷 + 环境偏差。
+- 端口（M1 计划已锁定）：UDP 47820（beacon）、TCP 47821（服务）。防火墙已确认（#14 / e42dbd5）：install.ps1 幂等删建入站规则（**E1 已修复**，随 #44 合入）：`ClassShare Service TCP`（TCP/47821）仅 **teacher**；`ClassShare Discovery UDP`（UDP/47820）**两角色都建**（程序限定 classroom-svc.exe）。
+- ★环境预检重点（已判定**产品缺陷 E1**，2026-11-15 Lead 确认）：学员机接收 47820 beacon 属入站流量，而 install.ps1 student 模式未建任何入站规则——默认防火墙（入站默认拒绝）下自动发现预计失败。已派 dev-backend 修复（student 模式补**程序限定**入站规则，uninstall 对应清理）。E1 修复后的验证口径（预检流程保留，作为修复验证手段）：
+  1. 未动防火墙的学员真机直接安装（student 模式）→ 自动发现**开箱即用**（不依赖手工放行）；
+  2. `Get-NetFirewallRule` 查验新增规则为**程序限定**（限定 classroom-svc.exe 程序路径），而非放宽端口全域；
+  3. 执行 `uninstall.ps1` 后该规则被清除；
+  4. 修复合入前如需临时手工放行继续测试，必须同步登记环境偏差（不得作为通过依据）。
 - 环境自检命令（取证入报告）：
 
 ```powershell
@@ -60,18 +65,37 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 教师机、学员机各有一个**本地管理员**账号（安装服务 `scripts/install.ps1` 需要提权）。
 - TC-11 需要学员机的登录密码（重启后登录取证），且执行期间无人自动登录（关闭「自动登录」配置）。
+- TC-11/TC-12 的安装路径（管理员权限注册服务）在**真机由 QA 执行**（开发环境无管理员权限，#14 已明确留给验收）。
 
 ### 3.4 安装方式与版本记录（M1 无安装包）
 
-- M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + 开机自启 + GUI HKCU Run + 右键注册）。NSIS 安装包属 M3。
-- 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与命令。
-- 若执行时 `install.ps1` 未就绪：允许以「手工等效安装」（`sc.exe create` + HKCU Run + 手工注册表右键项）替代，**必须在报告中登记环境偏差**，且该项在 install.ps1 合并后复验一次。
+- M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + SCM failure 自动重启 5s/5s/30s + 防火墙（TCP 47821 仅 teacher；UDP 47820 两角色，E1）+ GUI HKCU Run）与 `uninstall.ps1`。NSIS 安装包属 M3。
+- 已确认安装参数（e42dbd5，QA 已读脚本核对）：
+  - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> [-ManualAddr <ip>:47821] -GuiExe <…>`（对应 RK-04 备用手动地址）。
+  - 服务名 `ClassShareSvc`、服务进程 `classroom-svc.exe`、GUI 进程 `classroom-gui.exe`（以打包产物名为准）。
+  - **数据根（管理员安装）= `%PROGRAMDATA%\ClassShare\data`**（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；日志 `<数据根>\logs\svc.log`。降级安装（无管理员）数据根 = `%LOCALAPPDATA%\ClassShare\data`。GUI 侧 `gui.json` / `profile.json` 仍在 `%APPDATA%\ClassShare\`。
+  - `-GuiExe` 缺省时 **GUI 登录自启不注册**（TC-11 步骤 5 依赖它，安装时必传）——原为静默跳过，已判定**缺陷 E2**（2026-11-15），修复为**显式警告 + 安装摘要行明示「未注册」**；E2 合入后验收执行时若仍静默跳过即复验失败。HKCU Run 仅对执行安装的用户生效（机房多用户需逐用户或镜像配置，登记为部署注意事项）。
+  - 降级模式观察项（#14 验收项）：无管理员安装 → HKCU Run 前台进程 `--console`、`%LOCALAPPDATA%` 数据根、明示局限（未登录不接收、崩溃不自动重启）——在备用机执行一次并取证，对照 FR-G-05 异常与边界。
+- 验收执行前记录进报告：git commit / tag、构建命令（`cargo build --release` / `cargo tauri build`）、产物路径、安装日期与完整命令。#44 已合并：脚本从 main 取用（scripts/ 随 #44 入库）。
 
 ### 3.5 计时与时钟同步（时延类指标的取证基础）
 
-- 时间源优先级：① 各机服务日志时间戳（tracing，含毫秒）② 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）③ 秒表（最后手段，双人配合）。
-- 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正。
-- p95 口径：各学员机 Δ = (本机 applied/落盘时间) − (教师机 broadcast 时间)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
+- 时间源优先级：① 各机服务日志 `<数据根>\logs\svc.log`（RFC3339 含毫秒，RUST_LOG 可调）② **各机文件落盘 mtime**（原子替换时刻，见下方「日志锚点实际清单」的降级口径）③ 样本机录屏画面时钟（Xbox Game Bar，`Win+Alt+R`）④ 秒表（最后手段，双人配合）。
+- 执行前各机对时：`w32tm /resync`，并 `w32tm /query /status` 取证；无法对域/NTP 时，记录教师机与各学员机的 `Get-Date` 对拍偏差，计算 Δ 时校正（跨机 mtime 比对**强制**执行此校正，否则 Δ 不可信）。
+- p95 口径：各学员机 Δ = (本机落盘时间) − (教师机广播时刻)；报告同时给出「全部节点 ≤5s」与「p95 ≤5s」两个结论（PRD 11 章 TC-02 用前者，9.1 用后者）。
+
+> ⚠️ **日志锚点实际清单（QA 静态复核 3ab34b9 / t13 分支，2026-11-16）**：#14 约定的关键行 `broadcast / received / applied` 在当前实现中**尚不存在**（这三个词只作为 Rust 标识符 `AgentEvent::Received` / `MergeDecision::Overwrite(applied)` 与 GUI 事件名存在，非日志文案）。现有 info 级锚点仅：
+> - host：`教师端启动`(room,port)、`学员加入`(nickname,session_id)、`学员离线`(nickname)、`旧连接存活，拒绝重名加入（EX-02）`、`旧连接无响应，已驱逐（昵称可重新加入）`、`教师端停止`
+> - agent：`已加入`(addr)、`与教师机断开，稍后自动重连`
+> - store：`text put` / 文件落盘等为 **debug 级**（默认 info 不输出，`RUST_LOG=debug` 可开）
+>
+> **E4 修复后的目标状态（Lead 已派单，字段格式已约定）**：host 补 `broadcast`、agent 补 `received` 与 `applied` 三条 **info 级**锚点，行内字段固定为 `item_id=`、`file=`、`size=`（字段名稳定，QA 按此解析）。
+> - ★**行内无模块路径**：实现已 `.with_target(false)` 抑制 target 段（issue #14 评论区示例中的模块路径段以实际输出为准，忽略）。QA 解析**按「关键词 + 字段」匹配，不做整行模板匹配**，并容忍 tracing 的两种行内布局：① 消息在前 `<ts> INFO broadcast item_id=.. file=.. size=..` ② 字段在前 `<ts> INFO item_id=.. file=.. size=.. broadcast`；文件名含空格（如「第一课 讲义.pptx」）也能正确截取。
+> - 解析式：`broadcast`/`received`/`applied` + `item_id=<uuid>` + `file=<文件名>` + `size=<字节>`（文本条目 `size` 为字符数）；
+> - Δ 计算：`Δ_node = T(applied, 学员机) − T(broadcast, 教师机)`；「到达→落盘」间隔 = `T(applied) − T(received)`；
+> - 采集命令见附录 A；脚本见 `docs/acceptance/scripts/collect-m1-evidence.ps1`（单机采集，输出机器可读 TSV 锚点段）与 `docs/acceptance/scripts/build-delta-table.ps1`（跨节点 Δ 汇总 + p95 + 判定 + 时钟偏移修正）。
+>
+> **应急降级口径（仅当 E4 未能赶在 M1 验收开始前合入时启用）**：以文件 mtime 代理（教师端副本 mtime 早于真实广播 → Δ 为**保守估计**；学员端 mtime = 原子替换落盘时刻，可脚本化批量采集）；「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；报告须声明所用口径与保守性，不以代理口径冒充日志级精度。
 
 ### 3.6 证据规范
 
@@ -84,6 +108,94 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 发现缺陷：报告 Lead → Lead 建 `type/bug` issue（附我用例编号、复现步骤、证据路径）→ 修复合并后我按原步骤复验并在 issue 留言闭环。
 - 分级建议：**阻断**（用例主判据不通过）/ **严重**（FR 验收标准不通过但主判据通过）/ **一般**（负例、边界、文案）/ **轻微**（视觉、日志）。
+- ★协议行为的复验要求：**测试桩 ≠ 真实实现**。凡协议层行为（Ping/Pong 应答、帧编解码、事件幂等、重名准入等），复验必须在**真实端点组合**（真实 agent ↔ 真实 host）上验证，不得仅凭使用测试桩的用例通过即判绿——E3 即由此逃逸 CI（桩自动应答 Ping，真实 agent 未实现该行为）。
+
+### 3.8 已登记缺陷与修复跟踪（评审期）
+
+缺陷由 Lead 登记处置，QA 负责修复后复验并在本表闭环：
+
+| 编号 | 缺陷描述 | 处置（Lead 派发） | QA 复验口径 | 状态 |
+| --- | --- | --- | --- | --- |
+| E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | **issue #14**（T-13）：dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
+| E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
+| **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估（结论采 B：net 抽 client 会话运行器，M2 初） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复已推送待复验**（feat/t6-agent @ 3ab34b9；QA 静态复核通过 + 自动化实测 10 轮零 flaky，见 §3.8.1） |
+| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复已合入 main**（73e17d3 / PR #39）；QA 真实日志演练通过，见 §3.9 |
+| **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | **Lead 定性（2026-11-16）：接受偏差，不修码**——applied 行不含 file/size 属约定，证据表以 item_id 为键，file/size 为冗余 | 已在 issue #14 评论留痕（applied 行不含 file/size 属约定 + 三条锚点真实行格式 + 解析口径） | **已关闭（约定达成）** |
+| **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | **Lead 定性（2026-11-16）：一般，派单修复**——agent `received` 锚点 `size=` 改用 `ev.item.size`，对齐 PRD 3.5「文本为字符数」；**PR #48**（fix/e6-received-size，commit c0b6ee8） | 修复后：文本条目的 teacher/agent `size` 两侧相等（均为字符数）；QA 重跑 §3.9 演练核对 | **QA 复验通过（2026-11-16，PR #48）：** 真实日志实测文本条目两侧均 `size=9`（字符数），文件条目两侧均 3145728（字节）；上游测试 EXIT=0 全绿；PR 新增断言把「字符数 5 / 正文实体 UTF-8 15 字节」固化。**待合并** |
+| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御） | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行 | **修复中，issue #49 跟踪** |
+
+### 3.8.1 QA 静态复核记录
+
+| 检查点 | 结论 |
+| --- | --- |
+| student 模式建 UDP 47820 入站规则 | ✓ 两角色均建，且 `program="$svcExe"` 程序限定 |
+| TCP 47821 仍仅 teacher | ✓ student 分支无 TCP 规则，摘要行明示「student 无 TCP 入站」 |
+| 降级模式说明 | ✓ 摘要注明「无法配置防火墙 + manual_addr 兜底」 |
+| E2 显式警告 | ✓ `-GuiExe` 缺省 → `Write-Warning`（文案含「GUI 登录自启未注册」） |
+| uninstall 清理 | ✓ 幂等删除 TCP/UDP 两条规则 |
+| 残留待真机复核 | 规则是否真正程序限定（`Get-NetFirewallRule`）、卸载后是否清除、学员机开箱发现 |
+
+**E3（3ab34b9）——静态复核通过（待真机复验）**
+
+| 检查点 | 结论 |
+| --- | --- |
+| agent 读循环是否真回 Pong | ✓ `crates/agent/src/lib.rs` 读循环新增 `Frame::Ping =>` 分支，`writer.write_all(&encode_frame(&Frame::Pong))`；与心跳分支同一 `writer`，`tokio::select!` 分支串行执行无并发写冲突 |
+| 新用例是否用真实 agent 非桩 | ✓ `crates/agent/tests/agent.rs`：`start_agent` → `classroom_agent::run_agent`；`start_host_at_inner` → `classroom_host::run_host`——真实 agent × 真实 host，无 MiniAgent 桩 |
+| 口径①（活连接同名被拒） | ✓ 用例 `live_agent_answers_probe_and_keeps_receiving`：同名第二真实 agent 收到 `DupNickname` 错误并致命退出 |
+| 口径②（旧连接不被驱逐、仍收广播） | ✓ 同一用例：探测后教师广播「探测后广播」，旧 agent 仍收到并断言 `owner_id == "teacher"` |
+| 口径③（僵死后同名可加入） | ⚠️ 用例 `killed_agent_frees_nickname` 覆盖的是 **abort（连接干净关闭 → host 感知断线直接释放昵称）**；**未被自动化覆盖**的是「静默死亡（TCP 仍在但不响应，无 FIN/RST，即合盖休眠/断网）」——恰是探测机制的设计目标 |
+| 残余风险处置 | 口径③ 的静默死亡变体列入**真机复验**（§4.1）：强杀（`taskkill /F`，产生 RST）与挂起/断网（不响应）两种情形分别验证「≤3s 探测后驱逐、同名可加入」；并确认活连接不被误驱逐 |
+| 根治方向 | 采方案 B（net 抽 client 会话运行器，M2 初）→ 真机复验时额外核对 agent 其余帧分支（Manifest/FileChunk/FileEnd）迁移后行为等价 |
+
+**E3 独立验证（QA 实测，2026-11-16）**
+
+| 项目 | 结果 |
+| --- | --- |
+| 验证环境 | 独立 worktree `.wt/verify-t6` @ 3ab34b9，Rust 1.100.0 / cargo 1.100.0（MSVC） |
+| 核心 crate 全量测试 | `cargo test -p classroom-agent -p classroom-host -p classroom-net -p classroom-protocol -p classroom-store` → **EXITCODE=0**，agent 8 + host 9 + net 1/6/7 + protocol 25 + store 15 全绿（两轮） |
+| E3 两条新用例 | `live_agent_answers_probe_and_keeps_receiving`、`killed_agent_frees_nickname` → 连续 **10 轮全通过，0 flaky**（`test result: ok. 2 passed` ×10） |
+| 结论 | E3 修复静态复核通过，自动化覆盖口径①②③；口径③ 的「静默死亡」变体仍未覆盖 → 真机复验（§4.1）补测 |
+
+**E4（已派单，修复中）——TC-02 计时取证锚点缺失（#14 约定参数与实现不符）**
+
+| 项目 | 内容 |
+| --- | --- |
+| 缺陷 | #14 验收标准要求回写「关键行格式（broadcast/received/applied 含毫秒）」，但当前实现**无这三条日志**（QA 静态复核：host/agent 全部 tracing 调用枚举完毕，info 级仅 join/leave/start 与昵称探测相关文案；broadcast/received/applied 仅作 Rust 标识符存在） |
+| 已约定修复格式 | 三条 info 级锚点：host `broadcast`、agent `received`、agent `applied`；行内字段 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析，Lead 2026-11-16 锁定） |
+| 影响（修复前） | ① TC-02 的 Δ 取证降级为**文件 mtime 代理**（教师端 mtime 早于真实广播 → Δ 保守估计；学员端 mtime = 原子替换落盘时刻）；② 「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；③ 多节点 Δ 表精度受限，30 台 p95 正式压测（M3）需要日志级锚点 |
+| QA 复验口径 | 修复后：① 三条锚点在 svc.log 中可见且含毫秒时间戳与 `item_id/file/size` 字段；② 按约定格式解析出 `broadcast`（教师）与 `applied`（学员）时间戳，计算 `Δ = T(applied) − T(broadcast)`；③ 与 mtime 代理值交叉验证（偏差应在合理范围内）；④ 「到达→落盘」间隔 `T(applied) − T(received)` 可分列 |
+| 计划影响 | Lead 承诺 E4 在 M1 验收开始前合入 main → §3.5 日志级取证口径按原计划执行，**降级口径仅作应急备份** |
+| 建议 | dev-backend 补三条 info 级 tracing 锚点（改动小、风险低，且属 #14 已约定范围） |
+
+### 3.9 E4 真实格式演练（QA 实测，2026-11-16，origin/main @ 73e17d3）
+
+在独立 worktree `.wt/verify-main` 以**真实 host + 真实 agent**（非桩）+ **真实 tracing sink**（复刻 apps/classroom-svc/src/logging.rs：文件+stderr 双写、`.with_target(false)`、EnvFilter 默认 info）跑一次真实广播（3MB 文件 + 文本），产出**真实日志**并用本方案脚本解析。实测结论：
+
+| 项目 | 真实输出 | QA 影响与处置 |
+| --- | --- | --- |
+| 行内布局 | **消息在前、字段在后**：`<ts>  INFO broadcast item_id=… file=… size=… audience="all"`（同 `received` / `applied`；非锚点行如「教师端启动 room=… port=…」亦然） | 解析器两种布局均已兼容，实测命中 |
+| target 模块路径 | 无（`.with_target(false)`） | 与 #14 更正一致，按关键词+字段匹配 |
+| **时间戳时区** | **UTC**（`2026-11-16T03:52:57.646034Z`） | ★日志时间戳为 UTC，而文件 mtime 为**本地时区**（本地 UTC+8 时相差 8 小时）→ **两种口径绝不可混用**：日志级 Δ 用日志两端对比，mtime 降级口径两端都用 mtime；报告中须注明所用时间基准 |
+| `applied` 锚点字段 | 仅 `item_id=` + `version=`，**无 file=/size=** | 与约定格式的轻微偏差；Δ 按 item_id 对齐，**不受影响**（登记 E5） |
+| 文本条目 `size` 语义 | teacher `broadcast size=9`（=正文字符数，符 PRD 3.5）；agent `received size=27`（=文本正文字节数 UTF-8） | 同名字段两侧单位不同（文件条目两侧均为字节，无差异）→ 仅影响证据表 size 列（登记 E6） |
+| 物理折行 | **文件内为完整单行**（实测 len=134/131/120）；此前观察到的「折行」是控制台视觉折行 | 解析器保留折行展开为防御性逻辑（续行以空白开头即并入上一条），不影响正确性 |
+| 文件名净化差异 | teacher `broadcast file=` 取 `item.title`（=**净化后**文件名），agent `received file=` 取 `header.file_name`（**原始**文件名） | 文件名含非法字符时两侧 file 列可能不同；Δ 按 item_id 对齐不受影响，证据表以 item_id 为准 |
+| 端到端链路 | 真实日志 → collect 脚本 → TSV → build-delta-table → Δ 与判定 | 实测 Δ=0.054s，与原始时间戳 57.700370−57.646034 精确吻合，判定 PASS/FAIL 逻辑正确 |
+
+> 演练脚本（QA 本地，未入上游）：`.wt/verify-main/crates/agent/tests/qa_anchor_rehearsal.rs`——真实 host+agent、真实 sink 写 `svc.log`、真实广播文件与文本各一条。
+
+### 3.9.1 真实服务二进制复跑（T-13 已合入 main @ 4e275b5）
+
+以 `origin/main`（含 T-13）构建的**真实** `classroom-svc.exe`，以 `--console`（降级模式，无需管理员）真实启动教师端，产出**真实** svc.log：
+
+| 检查项 | 实测结果 |
+| --- | --- |
+| 日志路径 | `%LOCALAPPDATA%\ClassShare\data\logs\svc.log`（降级模式，与 §3.4 约定一致；服务模式为 `%PROGRAMDATA%\ClassShare\data\logs\svc.log`） |
+| 行格式 | 与 §3.9 演练**完全一致**（UTC 毫秒、消息在前、字段在后、无 target），解析脚本零改动即可解析 |
+| 数据根布局 | `data\logs`、`data\repo`、`data\index.db`、`data\ipc.token` 均按文档生成 |
+| 启动日志 | `前台降级模式启动（--console）` / `IPC 令牌已创建` / `服务核心就绪` / `IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher` / `教师端启动 room=XK-204 port=47821` |
+| **异常** | `WARN icacls 限权返回非零，由握手校验兜底 code=87` → **登记 E7**（§3.8）：令牌 ACL 限权因 icacls 语法错误从未生效 |
+
 
 ## 4 分用例方案
 
@@ -92,7 +204,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 **(a) 前置环境**
 
 - 教师机 1 台、学员机 ≥2 台（重名负例需第 2 台；不足时用 1 台 VM 顶替，网络须桥接，见 (e)）。
-- 两端均为「首次运行」状态：`%APPDATA%\ClassShare\`（或实现确定的用户数据根）不存在或已备份清空；服务已安装且 Running。
+- 两端均为「首次运行」状态：服务侧 `%PROGRAMDATA%\ClassShare\`（svc.json 与 data\）与 GUI 侧 `%APPDATA%\ClassShare\`（gui.json / profile.json）均已备份清空；服务已安装且 Running（重跑用例前同样清理）。
 - 教师机与学员机接入同一交换机；学员机 GUI 未启动（或已退出）。
 - 录屏工具开启于教师机与学员机 A。
 
@@ -116,9 +228,11 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | 2 | 点击「开始上课」→ 学员端发现房间码 | ≤3 秒 | FR-T-01 |
 | 3 | 首次配置步数 | 教师 1 步（开始上课）、学生 1 步（设昵称） | 2.4 |
 | 4 | 冷启动图标出现 | ≤3 秒 | FR-G-01 / 9.1 |
-| 5 | 重名昵称 | 第二台被明确拒绝、无法进入 | FR-S-01 |
+| 5 | 重名昵称 | 第二台被明确拒绝、无法进入 | FR-S-01 / EX-02 |
 | 6 | （如执行）错误 PIN | 无法加入 | FR-T-01 |
 | 7 | 重启 GUI | 不再弹昵称窗，自动重连 | FR-S-01 |
+
+★执行前置（阻断依赖）：第 5 项依赖 **E3 修复**（§3.8）——修复前重名拒绝语义在真实 agent 上失效（活跃学员被误判僵死并驱逐，同名反而被接受）。E3 未修复时本用例第 5 项判**不通过**，并连带影响 TC-02/TC-03（被驱逐学员不再收到广播）。
 
 **(d) 需采集的证据**
 
@@ -130,6 +244,13 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - 重名负例需第 2 台学员机：可用 VM（Hyper-V **外部虚拟交换机/桥接**；Default Switch 的 NAT 不保证 UDP 广播可达），或重置学员机 A 的昵称数据后重跑（次选，等价性略弱）。
 - PIN 负例需教师重建房间：与首轮共环境时注意清空两端数据或更换房间码，避免残留状态干扰。
+- ★时延观察（#34 B 存活探测引入）：同名冲突时 join 拒绝不再瞬时，**预期 0–3s 内**返回「该昵称已被使用」；若旧连接尚未被教师机感知断开，同名重连也可能经历 ≤3s 探测后才被接受。记录实测值（PRD 对该项无时限要求，仅记录行为，不判缺陷）；「≤3s 发现房间码」指标走 beacon 发现链路，与 join 探测分离，不受此影响。
+- ★E3 修复的真机复验步骤（§3.8.1 残余风险：静默死亡变体未被自动化覆盖）：
+  1. 学员机 A 正常在线（教师机在线人数显示 +1）。
+  2. 学员机 B 用同名加入 → 必须被拒（提示「该昵称已被使用」），A 仍在线、仍能收到教师广播。
+  3. 学员机 A **静默死亡**（模拟合盖休眠/断网：挂起进程或拔网线，TCP 不断）→ 教师机应 ≤3s 探测后驱逐 → 同名 B 可加入成功。
+  4. 学员机 A **强杀**（`taskkill /F`，产生 RST）→ 同名 B 可加入成功（立即或 ≤3s 内）。
+  5. 取证：教师机 `svc.log` 中重名 join 的 info 行（活连接拒绝路径与僵死驱逐路径文案不同，各取一条）+ 在线人数截图。
 
 ### 4.2 TC-02 广播文件（10 MB，全员 5 秒）
 
@@ -152,8 +273,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 **(b) 执行步骤（点击级）**
 
 1. 教师机：资源管理器打开测试目录，选中 `payload10mb.zip`（单选）。
-2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师服务日志 broadcast/upsert 时间戳（录屏同步）。
-3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；其余机器以服务日志 received/applied 时间戳参与 Δ 计算。
+2. 右键 → 「课堂共享」（菜单显示「发送 1 个文件」，A4）→ 点击发送。记 T0 = 教师日志 `broadcast` 行时间戳（E4 约定格式；录屏同步）。
+3. 各学员机：观察浮动图标旁 tips 气泡（名称、来源、类型、倒计时条，A2）；样本机（≥2 台）录屏记出现时刻 T_tip；各机以日志 `received`/`applied` 时间戳参与 Δ 计算。
 4. 学员机：双击浮动图标 → 主界面 ≤1s 打开（FR-G-04）→「教师共享」Tab 出现该文件，状态「已下载」。
 5. 学员机：双击该条目 → 系统默认程序打开（zip 即资源管理器展开视图；PDF 即阅读器），内容可读。
 6. 抽样 ≥3 台（不足 3 台则全量）：`Get-FileHash` 对比教师端源文件，一致。
@@ -175,8 +296,8 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 
 **(d) 需采集的证据**
 
-- 教师机：右键菜单截图、发送时刻录屏、服务日志 broadcast 行。
-- 每台学员机：服务日志 received/applied 行（文本汇总成一张 Δ 表进报告）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
+- 教师机：右键菜单截图、发送时刻录屏、服务日志 `broadcast` 行（E4 约定格式 `item_id=/file=/size=`）。
+- 每台学员机：服务日志 `received` 与 `applied` 行（文本汇总成一张 Δ 表进报告）；样本机 tips 录屏与列表「已下载」截图、双击打开截图。
 - 哈希比对命令输出（教师端 + 抽样学员端）。
 - 负例提示截图 + 之后成功发送的日志行。
 
@@ -255,7 +376,7 @@ Get-FileHash payload10mb.zip, big120.bin -Algorithm SHA256
 6. 磁盘取证（教师机 + 每台学员机，PowerShell）：
 
 ```powershell
-$root = "$env:APPDATA\ClassShare\repo\teacher"   # 以实现确定的数据根为准
+$root = "$env:ProgramData\ClassShare\data\repo\teacher"   # 管理员安装数据根（降级安装为 $env:LOCALAPPDATA\ClassShare\data）
 Get-ChildItem $root -Filter "课堂讲义*" | Select-Object Name,Length,LastWriteTime
 Get-FileHash "$root\课堂讲义.docx","$root\课堂讲义.docx.bak" -Algorithm SHA256
 ```
@@ -264,10 +385,10 @@ Get-FileHash "$root\课堂讲义.docx","$root\课堂讲义.docx.bak" -Algorithm 
 7. 索引取证（同机）：
 
 ```powershell
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) for r in c.execute(\"select file_name,title,version,deleted,sync_state from share_items\").fetchall()]"
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select id,title,version,deleted,sync_state from share_items').fetchall()]"
 ```
 
-   （列名以 T-03 实际 `schema.sql` 为准。）预期：该作用域仅 1 行、`version=2`、`deleted=0`。
+   （列名以 T-03 实际 `schema.sql` 为准；降级安装机器换 `%LOCALAPPDATA%\ClassShare\data\index.db`。）预期：该作用域仅 1 行、`version=2`、`deleted=0`。
 8. 观察项（只留 1 份备份）：再发 V3 → 预期 version=3、.bak 被替换为 V2（仅 1 份）。
 
 **(c) 预期结果与判定标准**
@@ -291,7 +412,7 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 **(e) 本机限制与替代**
 
 - 多台学员机时逐台敲命令成本高：用统一取证脚本一轮跑完收集输出（脚本放 `evidence/M1/TC-06/collect.ps1`）。
-- 若服务以 LocalSystem 运行导致数据根不在用户 `%APPDATA%`（Session 0 环境），以 §6 向 dev 确认的真实路径为准，报告注明。无其他不可完成项。
+- 数据根已确认（§3.4）：管理员安装统一 `%PROGRAMDATA%\ClassShare\data`，collect.ps1 按该路径取数即可，降级安装机器按 `%LOCALAPPDATA%` 变体。无其他不可完成项。
 
 ### 4.5 TC-11 开机自启（重启且不登录仍落盘）
 
@@ -304,7 +425,7 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 
 **(b) 执行步骤（点击级）**
 
-1. 学员机：`Get-Service <服务名>` 确认 Running（截图）→ 开始菜单 → 电源 → 重启。
+1. 学员机：`Get-Service ClassShareSvc` 确认 Running（截图）→ 开始菜单 → 电源 → 重启。
 2. 等学员机到达 Windows 登录界面，**保持不登录**；手机拍摄带画面时间的登录界面照片（记录拍摄时刻）。
 3. 教师机：发送 1 个小文件 `不登录测试.docx`（约 1 MB 即可，TC 未限定大小）；记 T0（服务日志）。
 4. 等待 ≥30s（覆盖 beacon 周期与重连）。
@@ -313,10 +434,11 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) f
 7. 取证（登录后在学员机执行）：
 
 ```powershell
-Get-Item "<数据根>\repo\teacher\不登录测试.docx" | Select-Object CreationTime,LastWriteTime
+Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\不登录测试.docx" | Select-Object CreationTime,LastWriteTime
 Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 |
-  Where-Object Message -match '<服务名>' | Select-Object TimeCreated,Message
-Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
+  Where-Object Message -match 'ClassShareSvc' | Select-Object TimeCreated,Message
+# 日志锚点：E4 已合入 main（#39）：直接采集 broadcast/received/applied 三行（§3.5 格式）
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "学员加入|学员离线|已加入"
 ```
 
    预期：文件 CreationTime 与日志接收时间**早于本次登录时刻**（证明未登录期间落盘）；System 日志 7036 显示服务开机即启动。
@@ -335,13 +457,14 @@ Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
 **(d) 需采集的证据**
 
 - 重启前 `Get-Service` 截图；登录界面手机照片（含可辨时间）。
-- 登录后列表与打开成功截图；文件时间戳、System 7036、服务日志接收行的命令输出（与登录时刻同框对比，可写进同一 `.md` 证据文件）。
+- 登录后列表与打开成功截图；文件时间戳、System 7036、服务日志行（无 E4 时取会话生命周期行）的命令输出（与登录时刻同框对比，可写进同一 `.md` 证据文件）。
 - 教师机发送侧录屏/日志行。
 
 **(e) 本机限制与替代**
 
 - 单机无法同时扮演「教师」与「不登录学员」：最低 2 台真机，或「真机教师 + 桥接 VM 学员」（VM 重启到登录界面即可；宿主机不得兼任学员）。
 - 登录界面无法截屏：手机拍照（记录拍照时刻）；教师机侧日志时间戳补强。
+- 安装（管理员，install.ps1 + `-GuiExe` 必传）在真机由 QA 执行（#14 明确：开发无管理员权限，此路径留给验收）。
 - 锁屏（`Win+L`）**不等价**（会话仍在）：只可作为预检，不作为判据。
 - 若机房镜像开启自动登录，该项无法按原步骤执行：需先关闭自动登录或换机，并在报告登记环境约束。
 
@@ -357,10 +480,11 @@ Select-String -Path "<数据根>\logs\*.log" -Pattern "不登录测试"
 1. 基线取证（PowerShell，输出存档）：
 
 ```powershell
-Get-Service <服务名>                      # 预期 Running
-tasklist /FI "IMAGENAME eq <gui进程名>"    # 预期可见
-Get-ChildItem "$env:APPDATA\ClassShare" -Recurse -File | Measure-Object | Select-Object Count
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');print(c.execute('select count(*) from share_items').fetchone())"
+Get-Service ClassShareSvc                          # 预期 Running
+tasklist /FI "IMAGENAME eq classroom-gui.exe"       # 预期可见（以打包产物名为准）
+tasklist /FI "IMAGENAME eq classroom-svc.exe"       # 预期可见（服务进程）
+Get-ChildItem "$env:ProgramData\ClassShare\data" -Recurse -File | Measure-Object | Select-Object Count
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);print(c.execute('select count(*) from share_items').fetchone())"
 ```
 
 2. 右键浮动图标 → 菜单六项齐全（A3：粘贴并共享/粘贴为文本草稿/打开课堂共享/暂停接收提醒/设置/退出课堂共享，截图）。
@@ -384,7 +508,7 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');print(c.exe
 
 **(d) 需采集的证据**
 
-- 前后两次 `Get-Service` / `tasklist` / 计数命令输出（同格式对比）；右键菜单与退出过程录屏/截图；重启 GUI 后列表截图；服务日志接收行。
+- 前后两次 `Get-Service` / `tasklist` / 计数命令输出（同格式对比）；右键菜单与退出过程录屏/截图；重启 GUI 后列表截图；服务日志（退出前后对比行）。
 
 **(e) 本机限制与替代**
 
@@ -404,6 +528,8 @@ python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');print(c.exe
 PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策如下：
 
 > **执行口径（已批准）**：M1 以 **≥3 台（目标 5–8 台）真机/VM 全绿**为功能门禁；同网「多 agent 进程压测」（几台机器各跑 N 个 agent 实例、不同昵称与 data_root，凑 30 连接）观测扇出与时延趋势；**正式 30 台 p95 压测留 M3**；TC-02 按「**有条件通过**」计入放行，M1 验收报告与 v0.1.0 release note 均须注明该口径。
+>
+> 压测代理可行性已确认（#14 ⑤）：命名管道支持同机多实例并发（≥2 已测）；服务本体 SCM 单实例、同机不并存双角色（设计如此）——压测代理须以多 **agent 进程**（非多服务）方式搭建，具体吞吐口径在验收准备复核中实测确定。
 
 | 方案 | 内容 | 代价/风险 | 结论 |
 | --- | --- | --- | --- |
@@ -418,15 +544,15 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 - TC-01/03/06/11/12「通过」；TC-02 按 §5.2 已批准的方案 B 以「有条件通过」计入（报告与 release note 注明口径）。
 - `M1-report.md` 完成、证据齐备、缺陷清单与 issue 对应齐全 → 建议 Lead 打 `v0.1.0`（release note 注明 TC-02 缩减口径与 M3 压测计划）。
 
-## 6 执行前确认清单（跟踪中：第 1–5 项已写入 issue #14 验收标准，待 T-13 PR 回写；第 6/8 项已关闭）
+## 6 执行前确认清单（第 1–5 项已确认 ✅，来源 issue #14 / e42dbd5，QA 已读 install.ps1 核对；第 6/8 项已关闭）
 
-| # | 问题 | 影响 | 建议答复方 |
+| # | 问题 | 已确认值 / 状态 | 来源 |
 | --- | --- | --- | --- |
-| 1 | 服务名/显示名、GUI 与服务的进程名（取证命令参数） | 全部取证命令 | dev-backend（T-13 PR 回写文档，呼应 RK-07） |
-| 2 | 数据根的最终路径：GUI 与服务是否同根？服务（Session 0/LocalSystem）下 `%APPDATA%` 解析到哪？ | TC-06/11/12 磁盘与索引取证 | dev-backend |
-| 3 | 日志路径、是否含毫秒时间戳、broadcast/received/applied 关键行文案 | §3.5 计时与 Δ 计算 | dev-backend |
-| 4 | `install.ps1` 是否包含防火墙规则（UDP 47820 / TCP 47821 入站） | 环境预检 | dev-backend |
-| 5 | 多 agent 同机多实例（不同 data_root/昵称）是否被支持 | §5.2 方案 B 压测代理 | dev-backend |
+| 1 | 服务名 / 进程名 | 服务 `ClassShareSvc`；服务进程 `classroom-svc.exe`；GUI 进程 `classroom-gui.exe`（以打包产物名为准）；无管理员降级为 `--console` 前台进程 | ✅ #14 / e42dbd5 |
+| 2 | 数据根 | 管理员安装 `%PROGRAMDATA%\ClassShare\data`（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；降级安装 `%LOCALAPPDATA%\ClassShare\data`；GUI 侧 gui.json/profile.json 仍在 `%APPDATA%\ClassShare\` | ✅ |
+| 3 | 日志 | `<数据根>\logs\svc.log`，RFC3339 含毫秒，RUST_LOG 可调；关键行 broadcast / received / applied（host/agent tracing 事件） | ⚠️ **路径与格式已确认，但关键行与实现不符 → 缺陷 E4**（§3.8.1） |
+| 4 | 防火墙 | E1 已修复（#44 合入）：TCP/47821 仅 teacher；UDP/47820 两角色均建且程序限定 classroom-svc.exe | ✅ 已闭合（§3.2 复验口径待真机） |
+| 5 | 多实例 | 命名管道同机多实例并发（≥2 已测）；SCM 服务单实例；同机不并存双角色（设计如此）→ 压测代理以多 agent 进程搭建 | ✅ |
 | 6 | TC-02 规模口径 | 放行结论 | ✅ 已关闭：批准方案 B（2026-11-13，见 §5.2） |
 | 7 | 可用真机台数与 OS 版本（Win10/11 各几台）、是否有 Hyper-V 主机 | §3.1 矩阵落地 | **Lead**（向用户收集信息中，不阻塞方案） |
 | 8 | Task 14 验收 issue 编号 | 流程合规 | ✅ 已关闭：issue #15（2026-11-14），本方案执行以其跟踪 |
@@ -434,17 +560,35 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 ## 附录 A 命令速查
 
 ```powershell
-# 服务与进程
-Get-Service <服务名>; sc.exe query <服务名>
-tasklist /FI "IMAGENAME eq <gui进程名>"; tasklist /FI "IMAGENAME eq <svc进程名>"
-Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 | Where-Object Message -match '<服务名>'
+# 安装/卸载（管理员；-GuiExe 必传，否则 GUI 登录自启不注册）
+.\scripts\install.ps1 -Mode teacher -Room XK-204 -Pin 9527 -GuiExe <classroom-gui.exe>
+.\scripts\install.ps1 -Mode student -Nickname alice -GuiExe <classroom-gui.exe>
+.\scripts\uninstall.ps1
+Get-Content "$env:ProgramData\ClassShare\svc.json"    # 服务配置（mode/room_code/pin/nickname/manual_addr/tcp_port）
 
-# 数据与哈希
-Get-ChildItem "$env:APPDATA\ClassShare" -Recurse -File | Select-Object FullName,Length,LastWriteTime
+# 服务与进程
+Get-Service ClassShareSvc; sc.exe query ClassShareSvc; sc.exe qfailure ClassShareSvc
+tasklist /FI "IMAGENAME eq classroom-svc.exe"; tasklist /FI "IMAGENAME eq classroom-gui.exe"
+Get-WinEvent -FilterHashtable @{LogName='System';Id=7036} -MaxEvents 30 | Where-Object Message -match 'ClassShareSvc'
+
+# 数据与哈希（管理员安装数据根；降级安装换 $env:LOCALAPPDATA\ClassShare\data）
+Get-ChildItem "$env:ProgramData\ClassShare\data" -Recurse -File | Select-Object FullName,Length,LastWriteTime
 Get-FileHash <文件> -Algorithm SHA256
 
 # 索引（列名以 schema.sql 为准）
-python -c "import sqlite3;c=sqlite3.connect(r'<数据根>\index.db');[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
+python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select id,title,version,deleted,sync_state from share_items').fetchall()]"
+
+# 日志锚点（E4 约定格式：broadcast/received/applied + item_id=/file=/size=；行内无 target 模块路径）
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "broadcast|received|applied"
+# 应急降级（E4 未合入时）：用会话生命周期行 + 落盘 mtime 代理
+Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "教师端启动|学员加入|学员离线|已加入|旧连接"
+Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\<文件名>" | Select-Object LastWriteTime
+
+# —— 脚本化（推荐，证据可复现）——
+# 1) 每机采集（含 [3c] 机器可读锚点 TSV 段）
+.\docs\acceptance\scripts\collect-m1-evidence.ps1 -Role student -ItemName "课堂讲义.docx" -OutFile "TC-06-学员A.txt"
+# 2) 跨节点汇总 Delta 表 + p95 + 判定（-Offsets 为各机时钟偏差，秒）
+.\docs\acceptance\scripts\build-delta-table.ps1 -Teacher "teacher.txt" -Students "stuA.txt,stuB.txt" -Offsets "stuA=0.4" -Out "delta.csv"
 
 # 时钟
 w32tm /resync; w32tm /query /status; Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
@@ -472,5 +616,6 @@ fsutil file createnew big120.bin 125829120
 - [ ] 120 MB 超限文件、`x.exe` 风险文件、3 个多选小文件、60 MB 传输中断文件
 - [ ] 128 字标准文本（附录 §4.3）与混合内容变体
 - [ ] `课堂讲义.docx` V1/V2/V3 三版（含各版 SHA-256）
-- [ ] 取证脚本 `collect.ps1`（TC-06/12 复用：服务状态 + 进程 + 目录计数 + 索引查询一屏输出）
+- [x] 取证脚本 `docs/acceptance/scripts/collect-m1-evidence.ps1`（**已就绪并实测**：服务/进程状态、时钟与时区、E4 日志锚点 broadcast/received/applied（机器可读 TSV 段）、条目落盘属性+哈希+.bak 计数、SQLite 索引概览、仓库统计；只读；兼容 Windows PowerShell 5.1 与 PS7；UTF-8 BOM 编码，勿用无 BOM 编辑器改存，否则中文机乱码）
+- [x] 汇总脚本 `docs/acceptance/scripts/build-delta-table.ps1`（**已就绪并实测**：按 item_id 对齐教师 broadcast 与各机 received/applied → Δ 表、p95、两个判定口径、时钟偏移修正、CSV 输出）
 - [ ] 各机录屏工具可用（Xbox Game Bar `Win+Alt+R`）、手机（TC-11）
