@@ -35,7 +35,17 @@ pub async fn connect_ipc(
     role: Role,
     token: &str,
 ) -> anyhow::Result<(IpcClient, mpsc::Receiver<SvcNotify>)> {
-    let name = pipe_name(role);
+    connect_named(&pipe_name(role), token).await
+}
+
+/// 指定管名的客户端连接（测试用唯一管名；生产契约 [`pipe_name`] 不变，
+/// doc(hidden) 不入公开文档）。
+#[doc(hidden)]
+pub async fn connect_named(
+    pipe: &str,
+    token: &str,
+) -> anyhow::Result<(IpcClient, mpsc::Receiver<SvcNotify>)> {
+    let name = pipe.to_string();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let client = loop {
         match ClientOptions::new().open(&name) {

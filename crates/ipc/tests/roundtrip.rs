@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use classroom_ipc::{
-    connect_ipc, serve_ipc, GuiReply, GuiRequest, IpcClient, ItemUpdatedPayload, ListFilter,
+    connect_named, serve_named, GuiReply, GuiRequest, IpcClient, ItemUpdatedPayload, ListFilter,
     ServiceState, StatusSnapshot, SvcNotify, SvcResult,
 };
 use classroom_protocol::{Audience, ItemKind, Role, ShareItem, SyncState};
@@ -53,11 +53,15 @@ fn stub_handler(req: GuiRequest) -> SvcResult {
     }
 }
 
-async fn spawn_server(role: Role, token: &str) -> mpsc::Sender<SvcNotify> {
+/// E7 修复包回归：每测试实例唯一管名（serve_named/connect_named +
+/// test_pipe_name），根治并行同管名串扰（E7 ACL 限权耗时改变时序使
+/// 竞态显形）。
+async fn spawn_server(role: Role, token: &str, suffix: &str) -> mpsc::Sender<SvcNotify> {
     let (tx, rx) = mpsc::channel(16);
     let handler: Arc<dyn Fn(GuiRequest) -> SvcResult + Send + Sync> = Arc::new(stub_handler);
     let token = token.to_string();
-    tokio::spawn(async move { serve_ipc(role, &token, handler, rx).await });
+    let pipe = classroom_ipc::test_pipe_name(role.clone(), suffix);
+    tokio::spawn(async move { serve_named(&pipe, &token, handler, rx).await });
     tx
 }
 
@@ -65,14 +69,16 @@ async fn spawn_server(role: Role, token: &str) -> mpsc::Sender<SvcNotify> {
 async fn request_roundtrip_and_notify_push() {
     let role = Role::Teacher;
     let token = "token-abc-0000000000000000000000000000";
-    let notify_tx = spawn_server(role.clone(), token).await;
+    let suffix = "roundtrip";
+    let pipe = classroom_ipc::test_pipe_name(role.clone(), suffix);
+    let notify_tx = spawn_server(role.clone(), token, suffix).await;
 
     // 连接（内置等待服务实例就绪：FILE_NOT_FOUND/PIPE_BUSY 重试）
     let mut last_err = None;
     for _ in 0..100 {
-        match connect_ipc(role.clone(), token).await {
+        match connect_named(&pipe, token).await {
             Ok((client, notify_rx)) => {
-                return assertions(client, notify_rx, &notify_tx, role, token).await;
+                return assertions(client, notify_rx, &notify_tx, role, token, &pipe).await;
             }
             Err(e) => last_err = Some(e),
         }
@@ -86,8 +92,9 @@ async fn assertions(
     client: IpcClient,
     mut notify_rx: mpsc::Receiver<SvcNotify>,
     notify_tx: &mpsc::Sender<SvcNotify>,
-    role: Role,
+    _role: Role,
     token: &str,
+    pipe: &str,
 ) {
     // 1) 请求往返（多种应答载荷）
     match client
@@ -182,7 +189,9 @@ async fn assertions(
 
     // 3) 多实例连接：第二客户端并发请求 + 扇出可达（并入本测试，
     //    避免与其他测试并行占用同名管道造成串扰）
-    let (client2, mut notify_rx2) = connect_ipc(role, token).await.expect("第二连接（多实例）");
+    let (client2, mut notify_rx2) = connect_named(pipe, token)
+        .await
+        .expect("第二连接（多实例）");
     let (r1, r2) = tokio::join!(
         client.request(GuiRequest::Status),
         client2.request(GuiRequest::Status)
@@ -200,11 +209,13 @@ async fn assertions(
 
 #[tokio::test]
 async fn wrong_token_rejected_at_handshake() {
-    let role = Role::Student; // 与 roundtrip 测试分用管名
-    let _notify_tx = spawn_server(role.clone(), "correct-token-00000000000000000000").await;
+    let role = Role::Student;
+    let suffix = "wrong-token";
+    let pipe = classroom_ipc::test_pipe_name(role.clone(), suffix);
+    let _notify_tx = spawn_server(role.clone(), "correct-token-00000000000000000000", suffix).await;
     let mut last = None;
     for _ in 0..100 {
-        match connect_ipc(role.clone(), "wrong-token-000000000000000000000000").await {
+        match connect_named(&pipe, "wrong-token-000000000000000000000000").await {
             // 正确令牌在服务启动后应可用；错误令牌必须握手被拒
             Err(e) => {
                 let msg = format!("{e:#}");
@@ -233,9 +244,10 @@ async fn version_mismatch_rejected_with_both_versions() {
     use tokio::io::AsyncBufReadExt;
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let role = Role::Student; // 与 wrong_token 共用该 serve 的管名（多实例）
-    let _notify_tx = spawn_server(role.clone(), "version-token-000000000000000000").await;
-    let name = classroom_ipc::pipe_name(role);
+    let role = Role::Student;
+    let suffix = "version";
+    let _notify_tx = spawn_server(role.clone(), "version-token-000000000000000000", suffix).await;
+    let name = classroom_ipc::test_pipe_name(role, suffix);
     let client = loop {
         match ClientOptions::new().open(&name) {
             Ok(c) => break c,

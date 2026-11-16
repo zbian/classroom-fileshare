@@ -39,4 +39,10 @@ fn concurrent_writes_from_two_connections_all_succeed() {
     let store = Store::open(&root).unwrap();
     let all = store.list(ListFilter::default()).unwrap();
     assert_eq!(all.len(), 50, "两连接并发写的 50 条应全部在库");
+
+    // 修订 #8③：WAL 生效（journal_mode 持久化在 db 文件）
+    let wal: String = store
+        .pragma_query("journal_mode")
+        .expect("journal_mode 查询");
+    assert_eq!(wal, "wal", "WAL 应持久生效");
 }
