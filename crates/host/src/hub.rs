@@ -248,6 +248,14 @@ impl Hub {
                 self.broadcast_event(&ev).await;
                 // 文本正文同样经文件帧推送（修订 #5④：ShareItem 不含正文字段）
                 self.broadcast_file(&item).await;
+                // E4（#14 TC-02 计时锚点）：字段名稳定供 qa 解析
+                tracing::info!(
+                    item_id = %item.id,
+                    file = %item.title,
+                    size = item.size,
+                    audience = "all",
+                    "broadcast"
+                );
                 let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
             }
             Err(e) => tracing::warn!(error = %e, "教师文本入库失败"),
@@ -285,6 +293,14 @@ impl Hub {
         let _ = self.store.lock().unwrap().record_event(&ev);
         self.broadcast_event(&ev).await;
         self.broadcast_file(&item).await;
+        // E4（#14 TC-02 计时锚点）
+        tracing::info!(
+            item_id = %item.id,
+            file = %item.title,
+            size = item.size,
+            audience = "all",
+            "broadcast"
+        );
         let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
         Ok(())
     }
