@@ -126,14 +126,24 @@ if (Test-Path $log) {
     Emit ("日志: " + $log + "  (大小 " + $logItem.Length + " 字节, 最后写入 " + $logItem.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ss.fff') + ")")
     $lines = @(Get-Content $log -Encoding UTF8)
     if ($Since) { $lines = @($lines | Where-Object { $_ -ge $Since }) }
-    $anchors = @($lines | Select-String -Pattern '\b(broadcast|received|applied)\b')
+    # ★折行展开：tracing 的 ANSI writer 会按宽度把一条记录折成多个物理行（续行以空白开头），
+    #   实测 `audience="all"` 曾被拆到下一行 → 不展开会截断字段值，故先折叠为逻辑记录。
+    $records = New-Object System.Collections.Generic.List[string]
+    foreach ($l in $lines) {
+        if ($l -match '^\s+\S' -and $records.Count -gt 0) {
+            $records[$records.Count - 1] = $records[$records.Count - 1] + ' ' + $l.Trim()
+        } else {
+            $records.Add($l)
+        }
+    }
+    $anchors = @($records | Select-String -Pattern '(?<![\w])(broadcast|received|applied)(?![\w=])')
     if ($anchors.Count -gt 0) {
         foreach ($a in $anchors) { Emit $a.Line }
     } else {
         Emit '(本机无 broadcast/received/applied 锚点 —— E4 未合入，或本机未参与该次广播)'
     }
     Emit '--- [3b] 会话生命周期行（辅证 / 降级口径） ---'
-    foreach ($l in @($lines | Select-String -Pattern '教师端启动|教师端停止|学员加入|学员离线|已加入|与教师机断开|旧连接')) {
+    foreach ($l in @($records | Select-String -Pattern '教师端启动|教师端停止|学员加入|学员离线|已加入|与教师机断开|旧连接')) {
         Emit $l.Line
     }
     Emit '--- [3c] 锚点解析（机器可读 TSV：kind<TAB>timestamp<TAB>item_id<TAB>file<TAB>size） ---'

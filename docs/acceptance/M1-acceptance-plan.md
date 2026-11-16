@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.2.3（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E4 缺陷跟踪见 §3.8；E3 静态复核通过 + 自动化实测 10 轮零 flaky；PR #35 评审排队） |
+| 状态 | v1.3.0（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E6 跟踪见 §3.8；E3 复核通过、**E4 已合入 main 且真实日志演练通过**（§3.9）；PR #35 评审排队） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -119,11 +119,11 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | E1 | install.ps1 student 模式不建任何入站防火墙规则，默认防火墙下学员机收不到 47820 beacon，自动发现失败 | **issue #14**（T-13）：dev-backend 补**程序限定**入站规则；uninstall.ps1 对应清理 | §3.2 验证口径 1–3：开箱即发现 / 规则程序限定 / 卸载后清除 | **修复已推送**（feat/t13-svc @ 73304f7，待合并） |
 | E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
 | **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估（结论采 B：net 抽 client 会话运行器，M2 初） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复已推送待复验**（feat/t6-agent @ 3ab34b9；QA 静态复核通过 + 自动化实测 10 轮零 flaky，见 §3.8.1） |
-| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复中（已派单，约定格式已锁定）** |
+| **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复已合入 main**（73e17d3 / PR #39）；QA 真实日志演练通过，见 §3.9 |
+| **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | 待 Lead 决定（建议：补 file/size 以便证据表自洽，或在 #14 中确认「applied 行不含 file/size」为准） | 证据表 applied 行 file/size 为空属预期（记录在案）；若 dev 补齐则复验解析出新字段 | **轻微（待 Lead 定性）** |
+| **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | 待 Lead 决定（建议：agent 侧改用 `ev.item.size` 以与 PRD 3.5「文本为字符数」一致） | 证据表 size 列在文本条目上标注单位差异；Δ 与判定不受影响 | **一般（待 Lead 定性）** |
 
-#### 3.8.1 QA 静态复核记录
-
-**E1/E2（73304f7）——通过（脚本级）**
+### 3.8.1 QA 静态复核记录
 
 | 检查点 | 结论 |
 | --- | --- |
@@ -165,6 +165,23 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | QA 复验口径 | 修复后：① 三条锚点在 svc.log 中可见且含毫秒时间戳与 `item_id/file/size` 字段；② 按约定格式解析出 `broadcast`（教师）与 `applied`（学员）时间戳，计算 `Δ = T(applied) − T(broadcast)`；③ 与 mtime 代理值交叉验证（偏差应在合理范围内）；④ 「到达→落盘」间隔 `T(applied) − T(received)` 可分列 |
 | 计划影响 | Lead 承诺 E4 在 M1 验收开始前合入 main → §3.5 日志级取证口径按原计划执行，**降级口径仅作应急备份** |
 | 建议 | dev-backend 补三条 info 级 tracing 锚点（改动小、风险低，且属 #14 已约定范围） |
+
+### 3.9 E4 真实格式演练（QA 实测，2026-11-16，origin/main @ 73e17d3）
+
+在独立 worktree `.wt/verify-main` 以**真实 host + 真实 agent**（非桩）+ **真实 tracing sink**（复刻 apps/classroom-svc/src/logging.rs：文件+stderr 双写、`.with_target(false)`、EnvFilter 默认 info）跑一次真实广播（3MB 文件 + 文本），产出**真实日志**并用本方案脚本解析。实测结论：
+
+| 项目 | 真实输出 | QA 影响与处置 |
+| --- | --- | --- |
+| 行内布局 | **消息在前、字段在后**：`<ts>  INFO broadcast item_id=… file=… size=… audience="all"`（同 `received` / `applied`；非锚点行如「教师端启动 room=… port=…」亦然） | 解析器两种布局均已兼容，实测命中 |
+| target 模块路径 | 无（`.with_target(false)`） | 与 #14 更正一致，按关键词+字段匹配 |
+| **时间戳时区** | **UTC**（`2026-11-16T03:52:57.646034Z`） | ★日志时间戳为 UTC，而文件 mtime 为**本地时区**（本地 UTC+8 时相差 8 小时）→ **两种口径绝不可混用**：日志级 Δ 用日志两端对比，mtime 降级口径两端都用 mtime；报告中须注明所用时间基准 |
+| `applied` 锚点字段 | 仅 `item_id=` + `version=`，**无 file=/size=** | 与约定格式的轻微偏差；Δ 按 item_id 对齐，**不受影响**（登记 E5） |
+| 文本条目 `size` 语义 | teacher `broadcast size=9`（=正文字符数，符 PRD 3.5）；agent `received size=27`（=文本正文字节数 UTF-8） | 同名字段两侧单位不同（文件条目两侧均为字节，无差异）→ 仅影响证据表 size 列（登记 E6） |
+| 物理折行 | **文件内为完整单行**（实测 len=134/131/120）；此前观察到的「折行」是控制台视觉折行 | 解析器保留折行展开为防御性逻辑（续行以空白开头即并入上一条），不影响正确性 |
+| 文件名净化差异 | teacher `broadcast file=` 取 `item.title`（=**净化后**文件名），agent `received file=` 取 `header.file_name`（**原始**文件名） | 文件名含非法字符时两侧 file 列可能不同；Δ 按 item_id 对齐不受影响，证据表以 item_id 为准 |
+| 端到端链路 | 真实日志 → collect 脚本 → TSV → build-delta-table → Δ 与判定 | 实测 Δ=0.054s，与原始时间戳 57.700370−57.646034 精确吻合，判定 PASS/FAIL 逻辑正确 |
+
+> 演练脚本（QA 本地，未入上游）：`.wt/verify-main/crates/agent/tests/qa_anchor_rehearsal.rs`——真实 host+agent、真实 sink 写 `svc.log`、真实广播文件与文本各一条。
 
 ## 4 分用例方案
 
