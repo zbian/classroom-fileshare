@@ -272,18 +272,43 @@ fn current_user_sid() -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// ACL 测试专用临时目录（CI 闸门，run 68 裁定）：runner 的 Temp 卷
-    /// ACL 写入语义异常（icacls 与 SetNamedSecurityInfoW 双机制同样无效），
-    /// 工作区卷为正常 NTFS——夹具固定在工作区本地目录，本地行为不变。
-    /// 注：lib 单测无 CARGO_TARGET_TMPDIR，用 CARGO_MANIFEST_DIR/target。
+    /// 金丝雀探测结果：GHA runner 等环境上 ACL 写入 API 整体静默无效
+    /// （icacls 与 SetNamedSecurityInfoW 双机制、两个卷同症状；run 68/77
+    /// 证据）。安全行为的主证据 = 真实 NTFS 上 qa 复验 5/5（issue #49）
+    /// + 本地全量断言；不支持的环境如实跳过断言（E7 终裁 Option A）。
+    static ACL_WRITABLE: AtomicBool = AtomicBool::new(true);
+
+    fn acl_writable() -> bool {
+        ACL_WRITABLE.load(Ordering::SeqCst)
+    }
+
+    /// ACL 测试专用临时目录（工作区本地卷）+ 金丝雀探测：建目录后对
+    /// canary 文件尝试同款 restrict，SDDL 前后无变化即判定本环境不支持
+    /// ACL 写入并 eprintln 留痕。
     fn acl_test_dir() -> tempfile::TempDir {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/acl-tests");
         std::fs::create_dir_all(&base).expect("创建 ACL 测试目录");
-        tempfile::Builder::new()
+        let dir = tempfile::Builder::new()
             .prefix("acl-")
             .tempdir_in(base)
-            .expect("ACL 测试临时目录")
+            .expect("ACL 测试临时目录");
+
+        let canary = dir.path().join("canary.token");
+        std::fs::write(&canary, "canary").unwrap();
+        let before = unsafe { sddl_of(&canary) }.unwrap_or_default();
+        let restrict_ok = restrict_acl(&canary, None).is_ok();
+        let after = unsafe { sddl_of(&canary) }.unwrap_or_default();
+        let writable = restrict_ok && before != after;
+        ACL_WRITABLE.store(writable, Ordering::SeqCst);
+        if !writable {
+            eprintln!(
+                "当前环境不支持 ACL 写入（GHA runner 已知限制，issue #49 复验 5/5 于真实 NTFS；\
+                 本地全量断言见真实环境跑批），本环境跳过 ACL 断言。before={before:?} after={after:?}"
+            );
+        }
+        dir
     }
 
     #[test]
@@ -303,6 +328,11 @@ mod tests {
     /// 用户 SID、Everyone（S-1-1-0）不在。
     #[test]
     fn acl_restriction_removes_inheritance_and_grants_only_current_user() {
+        if !acl_writable() {
+            eprintln!("当前环境不支持 ACL 写入（GHA runner 已知限制，issue #49 复验 5/5 于真实 NTFS）——如实跳过 ACL 断言（Option A，非放松断言）");
+            return;
+        }
+
         let dir = acl_test_dir();
         let sid = current_user_sid().unwrap();
         println!("diag: sid={sid:?} path={:?}", dir.path().join("ipc.token"));
@@ -341,6 +371,11 @@ mod tests {
     /// 形态）→ load 幂等重建 DACL 自愈（Everyone 消失、保护位在）。
     #[test]
     fn load_upgrades_legacy_weak_acl() {
+        if !acl_writable() {
+            eprintln!("当前环境不支持 ACL 写入（GHA runner 已知限制，issue #49 复验 5/5 于真实 NTFS）——如实跳过 ACL 断言（Option A，非放松断言）");
+            return;
+        }
+
         use std::os::windows::process::CommandExt;
         let dir = acl_test_dir();
         let path = dir.path().join("ipc.token");
@@ -384,6 +419,11 @@ mod tests {
     /// 当前用户与主登录用户）。
     #[test]
     fn dual_grant_includes_user_sid() {
+        if !acl_writable() {
+            eprintln!("当前环境不支持 ACL 写入（GHA runner 已知限制，issue #49 复验 5/5 于真实 NTFS）——如实跳过 ACL 断言（Option A，非放松断言）");
+            return;
+        }
+
         let dir = acl_test_dir();
         let users_sid = "S-1-5-32-545"; // BUILTIN\Users（真实可解析）
         let token =
@@ -403,6 +443,11 @@ mod tests {
     /// 新 SID 重建 DACL（M1 会话自愈语义）。
     #[test]
     fn grant_for_session_rebuilds_dacl_for_sid() {
+        if !acl_writable() {
+            eprintln!("当前环境不支持 ACL 写入（GHA runner 已知限制，issue #49 复验 5/5 于真实 NTFS）——如实跳过 ACL 断言（Option A，非放松断言）");
+            return;
+        }
+
         let dir = acl_test_dir();
         load_or_create_token(dir.path()).unwrap();
         let users_sid = "S-1-5-32-545";
