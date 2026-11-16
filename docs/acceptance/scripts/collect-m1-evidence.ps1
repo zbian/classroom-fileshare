@@ -34,6 +34,11 @@
 .PARAMETER OutFile
   可选：将本机输出另存为文件（建议：evidence/M1/<TC>/<机器名>.txt）。
 
+.PARAMETER WorkDir
+  临时辅助文件（w32tm 输出、Python 索引助手）的落点目录。
+  **不使用 %TEMP%**：CI runner 的 Temp 卷 ACL 写入语义异常（见 issue #49 处置记录），
+  且真机取证也应尽量避免 Temp 依赖。缺省优先级：-OutFile 所在目录 > 数据根 > 当前目录。
+
 .EXAMPLE
   .\collect-m1-evidence.ps1 -Role student -ItemName "课堂讲义.docx" -OutFile "TC-06-学员A.txt"
 
@@ -46,7 +51,8 @@ param(
     [string]$DataRoot = '',
     [string]$ItemName = '',
     [string]$Since = '',
-    [string]$OutFile = ''
+    [string]$OutFile = '',
+    [string]$WorkDir = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -70,8 +76,28 @@ function Resolve-DataRoot {
 
 $root = Resolve-DataRoot
 
+# 工作目录（临时辅助文件落点）：**不使用 %TEMP%**——CI runner 的 Temp 卷 ACL 语义异常
+# （icacls 退出 0 但 ACL 未变，见 issue #49 处置记录），且真机取证也应尽量避免 Temp 依赖。
+# 优先级：-WorkDir > -OutFile 所在目录 > 数据根 > 当前目录。
+function Resolve-WorkDir {
+    if ($WorkDir) {
+        if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null }
+        return (Resolve-Path $WorkDir).Path
+    }
+    if ($OutFile) {
+        $dir = Split-Path -Parent $OutFile
+        if (-not $dir) { $dir = Get-Location }
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        return (Resolve-Path $dir).Path
+    }
+    if (Test-Path $root) { return (Resolve-Path $root).Path }
+    return (Get-Location).Path
+}
+$work = Resolve-WorkDir
+
 Emit ("===== M1 验收取证  role=" + $Role + "  machine=" + $env:COMPUTERNAME + "  at=" + (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fff') + " =====")
 Emit ("数据根: " + $root)
+Emit ("工作目录: " + $work)
 Emit ("PowerShell: " + $PSVersionTable.PSVersion.ToString())
 
 # 1) 服务与进程
@@ -100,7 +126,7 @@ Emit ''
 Emit '--- [2] 时钟（Delta 计算前提） ---'
 try {
     # w32tm 输出为本地代码页（中文机 936），经管道会被按控制台编码误解码 → 落临时文件按 ANSI 读回
-    $wtFile = Join-Path ([IO.Path]::GetTempPath()) ('cs_w32tm_' + [guid]::NewGuid().ToString('N') + '.txt')
+    $wtFile = Join-Path ($work) ('cs_w32tm_' + [guid]::NewGuid().ToString('N') + '.txt')
     & cmd /c "w32tm /query /status > `"$wtFile`" 2>&1"
     if (Test-Path $wtFile) {
         foreach ($l in @(Get-Content $wtFile -Encoding Default)) { if ($l.Trim()) { Emit $l } }
@@ -223,7 +249,7 @@ $db = Join-Path $root 'index.db'
 if (Test-Path $db) {
     $py = Get-Command python -ErrorAction SilentlyContinue
     if ($py) {
-        $pyFile = Join-Path ([IO.Path]::GetTempPath()) ('cs_index_' + [guid]::NewGuid().ToString('N') + '.py')
+        $pyFile = Join-Path ($work) ('cs_index_' + [guid]::NewGuid().ToString('N') + '.py')
         $pyCode = @'
 import sqlite3, sys
 db = sys.argv[1]
