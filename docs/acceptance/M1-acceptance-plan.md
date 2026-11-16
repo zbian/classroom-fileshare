@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.3.0（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E6 跟踪见 §3.8；E3 复核通过、**E4 已合入 main 且真实日志演练通过**（§3.9）；PR #35 评审排队） |
+| 状态 | v1.3.1（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3 复核通过、E4 已合入并经真实日志与**真实服务二进制**复跑验证（§3.9/§3.9.1）；E5 已按约定关闭、E6 修复中、**E7 待派单（严重）**；PR #35 评审排队） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -120,8 +120,9 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | E2 | install.ps1 `-GuiExe` 缺省时静默跳过 GUI 登录自启注册，无任何提示 | **issue #14**：修复为显式警告 + 安装取证摘要行明示 | 不传 `-GuiExe` 安装：出现警告与摘要行「GUI 自启：未注册」；TC-11 正向路径传参后注册生效 | **修复已推送**（@ 73304f7，待合并） |
 | **E3** | **重名存活探测误判活跃学员为僵死 → TC-01 重名拒绝主判据失效**：host `probe_or_evict`（`crates/host/src/hub.rs:207-228`，调用点 `:333`）向旧连接发 `Frame::Ping` 并等 ≤3s 的 Pong；但**真实 agent 不回 Pong**——`crates/agent/src/lib.rs` 自建读写循环（仅 import `encode_frame/read_frame`，未用 `net::session::run_session`），入站 `Frame::Ping` 落入 `:187` 的 `other => "agent 忽略该帧"` 分支（`:186` 仅忽略 Pong）。net 层的 Ping→Pong 自动应答（`crates/net/src/session.rs:162`）只被 host 使用 → 学员侧探测方向断裂 | **issue #37**（P0 / type/bug）：dev-backend 最小修（agent 补 Ping→Pong）+ 真实 agent↔host 集成用例（活连接拒绝/旧连接不被驱逐双用例）+ 双实现漂移根治评估（结论采 B：net 抽 client 会话运行器，M2 初） | ① 真实 agent（**非测试桩**）在线时，第二台同名学员被**拒绝**并提示「该昵称已被使用」，等待 ≤3s；② 旧学员**不被驱逐**、继续正常接收广播（在线人数不变）；③ 僵死场景（杀进程/断网）仍可驱逐并允许同名加入 | **修复已推送待复验**（feat/t6-agent @ 3ab34b9；QA 静态复核通过 + 自动化实测 10 轮零 flaky，见 §3.8.1） |
 | **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复已合入 main**（73e17d3 / PR #39）；QA 真实日志演练通过，见 §3.9 |
-| **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | 待 Lead 决定（建议：补 file/size 以便证据表自洽，或在 #14 中确认「applied 行不含 file/size」为准） | 证据表 applied 行 file/size 为空属预期（记录在案）；若 dev 补齐则复验解析出新字段 | **轻微（待 Lead 定性）** |
-| **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | 待 Lead 决定（建议：agent 侧改用 `ev.item.size` 以与 PRD 3.5「文本为字符数」一致） | 证据表 size 列在文本条目上标注单位差异；Δ 与判定不受影响 | **一般（待 Lead 定性）** |
+| **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | **Lead 定性（2026-11-16）：接受偏差，不修码**——applied 行不含 file/size 属约定，证据表以 item_id 为键，file/size 为冗余 | 已在 issue #14 评论留痕（applied 行不含 file/size 属约定 + 三条锚点真实行格式 + 解析口径） | **已关闭（约定达成）** |
+| **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | **Lead 定性（2026-11-16）：一般，派单修复**——agent `received` 锚点 `size=` 改用 `ev.item.size`，对齐 PRD 3.5「文本为字符数」；dev-backend fresh 分支小 PR（同 E4 模式） | 修复后：文本条目的 teacher/agent `size` 两侧相等（均为字符数）；QA 重跑 §3.9 演练核对 | **修复中（已派单）** |
+| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | 待 Lead 开 `type/bug` issue 并派单（建议：① `/grant` + **SID**（已实测有效）而非裸用户名，避免同名/域歧义；② 为管道补显式 DACL 或至少记录该项风险；③ 失败时是否应升级为启动失败由 Lead 定） | ① 修复后 `icacls <数据根>\ipc.token` 退出码 0 且 ACL 仅当前用户（无 `(I)`）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过 | **待派单（严重，QA 实证发现）** |
 
 ### 3.8.1 QA 静态复核记录
 
@@ -182,6 +183,19 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | 端到端链路 | 真实日志 → collect 脚本 → TSV → build-delta-table → Δ 与判定 | 实测 Δ=0.054s，与原始时间戳 57.700370−57.646034 精确吻合，判定 PASS/FAIL 逻辑正确 |
 
 > 演练脚本（QA 本地，未入上游）：`.wt/verify-main/crates/agent/tests/qa_anchor_rehearsal.rs`——真实 host+agent、真实 sink 写 `svc.log`、真实广播文件与文本各一条。
+
+### 3.9.1 真实服务二进制复跑（T-13 已合入 main @ 4e275b5）
+
+以 `origin/main`（含 T-13）构建的**真实** `classroom-svc.exe`，以 `--console`（降级模式，无需管理员）真实启动教师端，产出**真实** svc.log：
+
+| 检查项 | 实测结果 |
+| --- | --- |
+| 日志路径 | `%LOCALAPPDATA%\ClassShare\data\logs\svc.log`（降级模式，与 §3.4 约定一致；服务模式为 `%PROGRAMDATA%\ClassShare\data\logs\svc.log`） |
+| 行格式 | 与 §3.9 演练**完全一致**（UTC 毫秒、消息在前、字段在后、无 target），解析脚本零改动即可解析 |
+| 数据根布局 | `data\logs`、`data\repo`、`data\index.db`、`data\ipc.token` 均按文档生成 |
+| 启动日志 | `前台降级模式启动（--console）` / `IPC 令牌已创建` / `服务核心就绪` / `IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher` / `教师端启动 room=XK-204 port=47821` |
+| **异常** | `WARN icacls 限权返回非零，由握手校验兜底 code=87` → **登记 E7**（§3.8）：令牌 ACL 限权因 icacls 语法错误从未生效 |
+
 
 ## 4 分用例方案
 
