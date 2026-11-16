@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   M1 验收证据采集脚本（qa-acceptance / issue #15）。
 
@@ -229,7 +229,7 @@ import sqlite3, sys
 db = sys.argv[1]
 c = sqlite3.connect(db)
 try:
-    rows = c.execute("select id, title, version, deleted, sync_state from share_items").fetchall()
+    rows = c.execute("select id, kind, owner_id, owner_role, audience, title, size, version, deleted, sync_state from share_items").fetchall()
     for r in rows:
         print(" | ".join("" if v is None else str(v) for v in r))
     print("索引条目数: %d" % c.execute("select count(*) from share_items").fetchone()[0])
