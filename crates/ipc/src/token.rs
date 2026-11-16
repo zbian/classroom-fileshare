@@ -273,10 +273,23 @@ fn current_user_sid() -> anyhow::Result<String> {
 mod tests {
     use super::*;
 
+    /// ACL 测试专用临时目录（CI 闸门，run 68 裁定）：runner 的 Temp 卷
+    /// ACL 写入语义异常（icacls 与 SetNamedSecurityInfoW 双机制同样无效），
+    /// 工作区卷为正常 NTFS——夹具固定在工作区本地目录，本地行为不变。
+    /// 注：lib 单测无 CARGO_TARGET_TMPDIR，用 CARGO_MANIFEST_DIR/target。
+    fn acl_test_dir() -> tempfile::TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/acl-tests");
+        std::fs::create_dir_all(&base).expect("创建 ACL 测试目录");
+        tempfile::Builder::new()
+            .prefix("acl-")
+            .tempdir_in(base)
+            .expect("ACL 测试临时目录")
+    }
+
     #[test]
     fn token_stable_within_same_root_and_unique_across_roots() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
+        let a = acl_test_dir();
+        let b = acl_test_dir();
         let t1 = load_or_create_token(a.path()).unwrap();
         let t2 = load_or_create_token(a.path()).unwrap();
         let t3 = load_or_create_token(b.path()).unwrap();
@@ -290,7 +303,7 @@ mod tests {
     /// 用户 SID、Everyone（S-1-1-0）不在。
     #[test]
     fn acl_restriction_removes_inheritance_and_grants_only_current_user() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = acl_test_dir();
         let sid = current_user_sid().unwrap();
         println!("diag: sid={sid:?} path={:?}", dir.path().join("ipc.token"));
         let token = load_or_create_token(dir.path()).expect("限权必须成功（fail closed）");
@@ -312,7 +325,7 @@ mod tests {
     #[test]
     fn load_config_roundtrip_guard() {
         // 令牌文件格式守护（64 hex）已由上文覆盖；此处防 uuid 位数回退
-        let dir = tempfile::tempdir().unwrap();
+        let dir = acl_test_dir();
         let t = load_or_create_token(dir.path()).unwrap();
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -329,7 +342,7 @@ mod tests {
     #[test]
     fn load_upgrades_legacy_weak_acl() {
         use std::os::windows::process::CommandExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = acl_test_dir();
         let path = dir.path().join("ipc.token");
         std::fs::write(
             &path,
@@ -371,7 +384,7 @@ mod tests {
     /// 当前用户与主登录用户）。
     #[test]
     fn dual_grant_includes_user_sid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = acl_test_dir();
         let users_sid = "S-1-5-32-545"; // BUILTIN\Users（真实可解析）
         let token =
             load_or_create_token_for(dir.path(), Some(users_sid)).expect("双授予限权必须成功");
@@ -390,7 +403,7 @@ mod tests {
     /// 新 SID 重建 DACL（M1 会话自愈语义）。
     #[test]
     fn grant_for_session_rebuilds_dacl_for_sid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = acl_test_dir();
         load_or_create_token(dir.path()).unwrap();
         let users_sid = "S-1-5-32-545";
         grant_for_session(dir.path(), users_sid).expect("会话重授必须成功");
