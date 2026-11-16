@@ -13,6 +13,7 @@ export default function PasteTextDialog() {
   const open = useMainStore((s) => s.dialog.pasteText)
   const closeDialog = useMainStore((s) => s.closeDialog)
   const sendText = useMainStore((s) => s.sendText)
+  const role = useMainStore((s) => s.role)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -79,7 +80,7 @@ export default function PasteTextDialog() {
           清空
         </button>
         <span style={{ flex: 1 }} />
-        <span className="chip pri">接收对象：全体学员</span>
+        <span className="chip pri">接收对象：{role === 'student' ? '仅教师' : '全体学员'}</span>
       </div>
       {err ? (
         <div className="info err" style={{ marginTop: 10 }}>

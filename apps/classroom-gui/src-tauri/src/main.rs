@@ -14,6 +14,7 @@ mod windows;
 use classroom_ipc::GuiRequest;
 use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
+use tauri::Manager;
 
 fn main() {
     let config = GuiConfig::load();
@@ -40,9 +41,24 @@ fn main() {
                 a.strip_prefix("--demo-tips=")
                     .and_then(|v| v.parse::<u32>().ok())
             }) {
-                #[cfg(debug_assertions)]
-                eprintln!("[t11] demo-tips 启动参数命中：n={n}");
                 tips::demo_tips(app.handle(), n);
+            }
+            // 角色写入（M1 调试/部署占位：--role=teacher|student 持久化到 gui.json；
+            // 产品语义由 T13 安装器/T7 服务 Status 决定，届时替换此处入口）
+            if let Some(role) = std::env::args().find_map(|a| {
+                let r = a.strip_prefix("--role=")?;
+                if r == "teacher" || r == "student" {
+                    Some(r.to_string())
+                } else {
+                    None
+                }
+            }) {
+                if let Ok(mut cfg) = app.state::<state::AppState>().config.lock() {
+                    cfg.role = role;
+                    let snapshot = cfg.clone();
+                    drop(cfg);
+                    let _ = snapshot.save();
+                }
             }
             Ok(())
         })
