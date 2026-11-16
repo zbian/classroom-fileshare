@@ -76,11 +76,28 @@ fn current_user_sid() -> anyhow::Result<String> {
 /// 令牌分发（E7 追加，会话自愈）：服务收到登录会话事件后对既有令牌
 /// 重授 `*<sid>:(R,W)`（幂等，LocalSystem 授予保留）。M1 单元形态：
 /// 直接调用即覆盖 WTS 集成路径（真机由 SessionChange 触发）。
+///
+/// 防 ACE 累积（终审 nit 2）：授予前先 `/remove:g "*<sid>"`——同 SID
+/// 重复登录不会逐条累积。实测：可解析 SID 无论有无既有授予均退出 0
+/// （幂等安全）；不可解析 SID 返回 1332，仅记 warn 不阻断（授予为
+/// fail closed 主闸）。M2 备注：不同用户交替登录时旧会话 SID 的 ACE
+/// 由下一次 restrict 全量重建覆盖。
 pub fn grant_for_session(root: &Path, sid: &str) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+
     if !sid.starts_with("S-1-") {
         anyhow::bail!("非法 SID: {sid}");
     }
-    restrict_acl(&root.join("ipc.token"), Some(sid))
+    let path = root.join("ipc.token");
+    let remove_raw = format!("\"{}\" /remove:g \"*{sid}\"", path.display());
+    let remove_status = std::process::Command::new("icacls")
+        .raw_arg(remove_raw)
+        .status()
+        .map_err(|e| anyhow::anyhow!("icacls 调用失败: {e}"))?;
+    if !remove_status.success() {
+        tracing::warn!(code = remove_status.code(), %sid, "移除既有授予非零（授予步骤仍执行）");
+    }
+    restrict_acl(&path, Some(sid))
 }
 
 /// ACL 限权（fail closed）：`/inheritance:r` + 按序授予各 SID（当前用户
@@ -189,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn sid_parse_rejects_garbage() {
-        // 防御性：解析器只接受 S-1- 前缀
+    fn sid_parse_accepts_s1_prefix() {
+        // 终审 nit：断言接受 S-1- 前缀（原名 rejects_garbage 与断言相反）
         assert!(current_user_sid().unwrap().starts_with("S-1-"));
     }
 
