@@ -15,8 +15,9 @@ tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-classroom-ipc = { path = "../../crates/ipc" }
-classroom-protocol = { path = "../../crates/protocol" }
+anyhow = { workspace = true }
+classroom-ipc = { path = "../../../crates/ipc" }
+classroom-protocol = { path = "../../../crates/protocol" }
 
 # 说明：tauri 相关版本暂列于本成员 crate（lead 特批），
 # 待 T1a 合入 main 后可收编进根 [workspace.dependencies] 统一管理。

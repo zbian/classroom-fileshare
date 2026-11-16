@@ -184,36 +184,67 @@ export class MockGuiClient implements GuiClient {
 }
 
 // ---------------------------------------------------------------------------
-// Real：薄壳（T-7 合并后接线 src-tauri/src/ipc_client.rs）
+// Real：Tauri invoke/listen 薄壳（Rust 桥 src-tauri/src/ipc_client.rs）。
+//   invoke('svc_request', { request: GuiRequest }) -> GuiReply
+//   （GuiRequest/GuiReply 为 serde 外部不可辨名形态，snake_case 与 wire 一致）
+//   listen('svc://notify', SvcNotify)                            （重打标签 {t,payload}）
+// 服务未运行时 invoke reject（Error.message 为人类可读文案 → EX-10）。
 // ---------------------------------------------------------------------------
 
 export class RealGuiClient implements GuiClient {
-  list(_filter: ListFilter): Promise<ShareItem[]> {
-    return Promise.reject(new Error('ipc 未接线：等待 T-7 合并（src-tauri/src/ipc_client.rs）'))
+  private handlers = new Set<NotifyHandler>()
+
+  private async request(req: Record<string, unknown>): Promise<GuiReply> {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<GuiReply>('svc_request', { request: req })
   }
-  sendText(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+
+  list(filter: ListFilter): Promise<ShareItem[]> {
+    return this.request({ List: filter }).then((r) => (r.t === 'Items' ? r.items : []))
   }
-  sendFiles(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+  sendText(title: string, body: string): Promise<GuiReply> {
+    return this.request({ SendText: { title, body } })
   }
-  deleteItem(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+  sendFiles(paths: string[]): Promise<GuiReply> {
+    return this.request({ SendFiles: { paths } })
   }
-  openItem(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+  deleteItem(id: string): Promise<GuiReply> {
+    return this.request({ DeleteItem: { id } })
   }
-  configureRoom(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+  openItem(id: string): Promise<GuiReply> {
+    return this.request({ OpenItem: { id } })
   }
-  status(): Promise<ServiceStatus> {
-    return Promise.reject(new Error('ipc 未接线'))
+  configureRoom(room: string, pin: string | null, allow_discovery: boolean): Promise<GuiReply> {
+    return this.request({ ConfigureRoom: { room, pin, allow_discovery } })
   }
-  pauseTips(): Promise<GuiReply> {
-    return Promise.reject(new Error('ipc 未接线'))
+  async status(): Promise<ServiceStatus> {
+    // 修订 #6④：结构化快照（service_state/room/online_count）
+    const r = await this.request({ Status: null })
+    if (r.t === 'Status') {
+      return {
+        running: r.snapshot.service_state === 'running',
+        room: r.snapshot.room,
+        online: r.snapshot.online_count,
+        raw: JSON.stringify(r.snapshot),
+      }
+    }
+    return { running: false, room: '', online: 0, raw: '' }
   }
-  subscribe(_h: NotifyHandler): () => void {
-    return () => {}
+  pauseTips(paused: boolean): Promise<GuiReply> {
+    return this.request({ PauseTips: paused })
+  }
+  subscribe(h: NotifyHandler): () => void {
+    this.handlers.add(h)
+    let unlisten: (() => void) | null = null
+    void import('@tauri-apps/api/event').then(async ({ listen }) => {
+      unlisten = await listen<SvcNotify>('svc://notify', (e) => {
+        for (const fn of this.handlers) fn(e.payload)
+      })
+    })
+    return () => {
+      this.handlers.delete(h)
+      unlisten?.()
+    }
   }
 }
 

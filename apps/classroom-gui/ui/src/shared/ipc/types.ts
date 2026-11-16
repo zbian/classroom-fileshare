@@ -74,7 +74,23 @@ export type SvcNotify =
 export type GuiReply =
   | { t: 'Ok' }
   | { t: 'Items'; items: ShareItem[] }
-  | { t: 'StatusText'; text: string }
+  /** 修订 #6④：结构化状态快照（替代原 StatusText 单轨） */
+  | { t: 'Status'; snapshot: StatusSnapshot }
+  /** 修订 #7①：OpenItem 返回实体绝对路径（GUI 用户会话负责打开） */
+  | { t: 'FilePath'; path: string }
+
+/** 服务运行状态（ipc ServiceState，serde lowercase） */
+export type ServiceState = 'running' | 'stopped' | 'unreachable'
+
+/** 服务状态快照（crates/ipc StatusSnapshot，修订 #6④） */
+export interface StatusSnapshot {
+  service_state: ServiceState
+  room: string
+  online_count: number
+  nickname: string
+  role: 'Teacher' | 'Student'
+  pending_count: number
+}
 
 /** UI 侧解构后的服务状态（StatusText 为人类可读文本，真实接线时建议后端结构化，见 T9 报告） */
 export interface ServiceStatus {

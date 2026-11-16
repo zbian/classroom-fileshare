@@ -6,10 +6,13 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ipc_client;
 mod state;
 mod tips;
 mod windows;
 
+use classroom_ipc::{GuiReply, GuiRequest};
+use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
 
 fn main() {
@@ -22,12 +25,15 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new(config))
+        .manage(IpcBridge::new())
         .setup(|app| {
             windows::ensure_icon_window(app.handle())?;
             // tips 预创建隐藏：首条到达才 show（避免到达时才建窗的延迟）
             tips::ensure_tips_window(app.handle())?;
             // 主窗同样预创建隐藏（延迟创建实测 WebView2 白屏，见 windows.rs 注释）
             windows::ensure_main_window(app.handle())?;
+            // IPC 桥后台连接（服务未起不阻塞启动；svc_request 惰性重连兜底）
+            ipc_client::start_bridge(app.handle().clone());
             // dev 演示入口：--demo-tips=N 连发 N 条（仅 debug）
             #[cfg(debug_assertions)]
             if let Some(n) = std::env::args().find_map(|a| {
@@ -52,6 +58,7 @@ fn main() {
             update_tips_height,
             tips_dismissed,
             open_main_locate,
+            svc_request,
             dev_demo_tips
         ])
         .run(tauri::generate_context!())
@@ -116,6 +123,13 @@ fn tips_dismissed(app: tauri::AppHandle) {
 #[tauri::command]
 fn open_main_locate(app: tauri::AppHandle, id: String) -> Result<(), String> {
     windows::open_main_locate(&app, &id).map_err(|e| e.to_string())
+}
+
+/// GUI↔服务请求唯一入口（payload 为 GuiRequest 的 serde 外部不可辨名形态）。
+/// 错误文案原样透传前端（EX-10/EX-08 展示）。
+#[tauri::command]
+async fn svc_request(app: tauri::AppHandle, request: GuiRequest) -> Result<GuiReply, String> {
+    ipc_client::svc_request(app, request).await
 }
 
 /// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
