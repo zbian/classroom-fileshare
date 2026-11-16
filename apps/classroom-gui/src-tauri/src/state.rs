@@ -35,6 +35,10 @@ pub struct IconState {
 pub struct GuiConfig {
     #[serde(default)]
     pub version: u32,
+    /// 本机角色："teacher" | "student" | "unset"。产品语义上由安装/服务模式决定
+    /// （T13 svc.json / T7 Status）；M1 期间由 `--role=` 参数写入（debug）。
+    #[serde(default)]
+    pub role: String,
     #[serde(default)]
     pub icon: IconState,
 }
@@ -66,7 +70,7 @@ impl GuiConfig {
 }
 
 /// %APPDATA%\ClassShare\（Windows 约定；缺省回退当前目录，便于异常环境下仍可运行）
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(|p| PathBuf::from(p).join("ClassShare"))
         .unwrap_or_else(|| PathBuf::from("."))
@@ -102,6 +106,7 @@ mod tests {
     fn json_roundtrip_camel_case() {
         let cfg = GuiConfig {
             version: 1,
+            role: "teacher".into(),
             icon: IconState {
                 paused_tips: true,
                 placement: Some(IconPlacement {

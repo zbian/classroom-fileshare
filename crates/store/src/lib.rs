@@ -90,6 +90,7 @@ pub struct ListFilter {
     /// 按标题关键字过滤（大小写不敏感的包含匹配）。
     pub keyword: Option<String>,
     /// 是否包含软删除（墓碑）条目，默认不含。
+    #[serde(default)]
     pub include_deleted: bool,
 }
 

@@ -109,6 +109,20 @@ button {
   color: var(--amber);
 }
 
+/* 设置/表单行：两端对齐 + 下分隔线（设计稿 .srow）*/
+.srow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: var(--fs-13);
+  gap: 10px;
+}
+.srow:last-child {
+  border-bottom: none;
+}
+
 /* 提示条：info 默认 / pri 蓝 / ok 绿 / warn 琥珀 / err 红 */
 .info {
   font-size: var(--fs-12);
