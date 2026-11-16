@@ -20,9 +20,9 @@ pub mod token;
 #[doc(hidden)]
 pub use client::connect_named;
 pub use client::{connect_ipc, IpcClient};
+pub use server::serve_ipc;
 #[doc(hidden)]
 pub use server::serve_named;
-pub use server::serve_ipc;
 pub use token::load_or_create_token;
 
 use std::path::PathBuf;

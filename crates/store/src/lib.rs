@@ -225,14 +225,51 @@ pub struct Store {
     root: PathBuf,
 }
 
+/// BUSY/LOCKED 类瞬时错误判定（open 重试依据）。
+fn is_busy_like(e: &StoreError) -> bool {
+    matches!(
+        e,
+        StoreError::Sql(rusqlite::Error::SqliteFailure(ffi_err, _))
+            if ffi_err.code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                || ffi_err.code == rusqlite::ffi::ErrorCode::DatabaseLocked
+    )
+}
+
 impl Store {
     /// 打开（或初始化）`root` 下的仓库与索引，执行 schema v1 幂等迁移。
+    ///
+    /// 对 BUSY/LOCKED 类瞬时错误重试 3 次 × 200ms（`journal_mode=WAL`
+    /// 切换需短暂独占，busy_timeout 对 mode 切换不兜底；E7 同分支实测
+    /// 全 workspace 并行跑批时单发）。
     pub fn open(root: &Path) -> Result<Self> {
+        let mut last_err: Option<StoreError> = None;
+        for attempt in 0..3 {
+            match Self::open_once(root) {
+                Ok(s) => return Ok(s),
+                Err(e) if is_busy_like(&e) => {
+                    last_err = Some(e);
+                    tracing::warn!(attempt = attempt + 1, "store open 遇 busy，200ms 后重试");
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| StoreError::UnsupportedSchema(-1)))
+    }
+
+    fn open_once(root: &Path) -> Result<Self> {
         std::fs::create_dir_all(root.join("repo"))?;
         let conn = Connection::open(root.join("index.db"))?;
-        // busy_timeout：handler store 与核心 store 并发写时的 SQLITE_BUSY
-        // 瞬时报错改为内部短暂等待（PR #38 发现 5；WAL 未启用下的兜底）
-        conn.busy_timeout(std::time::Duration::from_millis(500))?;
+        // WAL（接口/行为修订 #8③，仅 PRAGMA 无签名变化）：并发读写解耦——
+        // 服务内 handler store 与核心 store 两个连接长期并存，WAL 使 busy
+        // 窗口趋近于零（CI 慢速卷上 500ms 超时被建表写锁撞穿，run 82）。
+        // journal_mode 需以查询方式设置（返回生效模式）；持久化在 db 文件，
+        // 重复打开幂等。注意落盘产生 index.db-wal/-shm 同目录文件（数据
+        // 保留与卸载语义不变，PRD 9.5）。
+        let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        tracing::debug!(%mode, "journal_mode");
+        // busy_timeout 提到 5000ms：慢速卷（CI）上写锁等待兜底
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if v > SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(v));
@@ -250,6 +287,14 @@ impl Store {
 
     fn repo(&self) -> PathBuf {
         self.root.join("repo")
+    }
+
+    /// 查询 PRAGMA（测试/诊断用；doc(hidden) 不入公开文档）。
+    #[doc(hidden)]
+    pub fn pragma_query(&self, name: &str) -> Result<String> {
+        self.conn
+            .query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .map_err(Into::into)
     }
 
     /// 相对 `root/repo/` 的正斜杠路径（入库 rel_path）。
