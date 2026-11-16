@@ -136,6 +136,46 @@ if (Test-Path $log) {
     foreach ($l in @($lines | Select-String -Pattern '教师端启动|教师端停止|学员加入|学员离线|已加入|与教师机断开|旧连接')) {
         Emit $l.Line
     }
+    Emit '--- [3c] 锚点解析（机器可读 TSV：kind<TAB>timestamp<TAB>item_id<TAB>file<TAB>size） ---'
+    # 解析口径按 issue #14 更正：实现已 .with_target(false)，日志行**不含模块路径**，
+    # 故只按「关键词 + 字段」匹配，不做整行模板匹配；容忍 tracing 的两种行内布局：
+    #   A) 消息在前： <ts> INFO broadcast item_id=.. file=.. size=..
+    #   B) 字段在前： <ts> INFO item_id=.. file=.. size=.. broadcast
+    $tsv = @()
+    foreach ($a in $anchors) {
+        $line = $a.Line
+        $ts = $null
+        if ($line -match '(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)') { $ts = $Matches[1] }
+        $kind = $null
+        if ($line -match '(?<![\w])(broadcast|received|applied)(?![\w=])') { $kind = $Matches[1] }
+        $itemId = ''
+        if ($line -match '(?<![\w])item_id="?([^\s",]+)') { $itemId = $Matches[1] }
+        $fileName = ''
+        if ($line -match '(?<![\w])file=(.+)$') {
+            # 文件名可能含空格（如「第一课 讲义.pptx」）：引号优先，否则截到下一个字段或行尾，
+            # 再剔除尾部的锚点关键词（布局差异：关键词可能在字段之前或之后）
+            $v = $Matches[1].Trim()
+            if ($v.StartsWith('"')) {
+                $end = $v.IndexOf('"', 1)
+                if ($end -gt 0) { $fileName = $v.Substring(1, $end - 1) }
+                else { $fileName = $v.Trim('"') }
+            } else {
+                $nx = [regex]::Match($v, '\s+[a-z_]+=')
+                if ($nx.Success) { $fileName = $v.Substring(0, $nx.Index).Trim() } else { $fileName = $v }
+                $fileName = ($fileName -replace '\s+(broadcast|received|applied)$', '').Trim()
+            }
+        }
+        $size = ''
+        if ($line -match '(?<![\w])size=(\d+)') { $size = $Matches[1] }
+        $tsv += ($kind + "`t" + $ts + "`t" + $itemId + "`t" + $fileName + "`t" + $size)
+    }
+    if ($tsv.Count -gt 0) {
+        Emit "kind`tTimestamp`titem_id`tfile`tsize"
+        foreach ($r in $tsv) { Emit $r }
+        Emit ("锚点条数: " + $tsv.Count)
+    } else {
+        Emit '(无可解析锚点)'
+    }
 } else {
     Emit ("日志不存在: " + $log)
 }

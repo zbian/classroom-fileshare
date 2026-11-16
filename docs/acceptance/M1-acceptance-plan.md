@@ -90,9 +90,10 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 > - store：`text put` / 文件落盘等为 **debug 级**（默认 info 不输出，`RUST_LOG=debug` 可开）
 >
 > **E4 修复后的目标状态（Lead 已派单，字段格式已约定）**：host 补 `broadcast`、agent 补 `received` 与 `applied` 三条 **info 级**锚点，行内字段固定为 `item_id=`、`file=`、`size=`（字段名稳定，QA 按此解析）。
+> - ★**行内无模块路径**：实现已 `.with_target(false)` 抑制 target 段（issue #14 评论区示例中的模块路径段以实际输出为准，忽略）。QA 解析**按「关键词 + 字段」匹配，不做整行模板匹配**，并容忍 tracing 的两种行内布局：① 消息在前 `<ts> INFO broadcast item_id=.. file=.. size=..` ② 字段在前 `<ts> INFO item_id=.. file=.. size=.. broadcast`；文件名含空格（如「第一课 讲义.pptx」）也能正确截取。
 > - 解析式：`broadcast`/`received`/`applied` + `item_id=<uuid>` + `file=<文件名>` + `size=<字节>`（文本条目 `size` 为字符数）；
 > - Δ 计算：`Δ_node = T(applied, 学员机) − T(broadcast, 教师机)`；「到达→落盘」间隔 = `T(applied) − T(received)`；
-> - 采集命令见附录 A（`Select-String` 模式），批量脚本见 `docs/acceptance/scripts/collect-m1-evidence.ps1`（已就绪并实测通过：EXIT=0，兼容 PS 5.1/PS7，UTF-8 BOM）。
+> - 采集命令见附录 A；脚本见 `docs/acceptance/scripts/collect-m1-evidence.ps1`（单机采集，输出机器可读 TSV 锚点段）与 `docs/acceptance/scripts/build-delta-table.ps1`（跨节点 Δ 汇总 + p95 + 判定 + 时钟偏移修正）。
 >
 > **应急降级口径（仅当 E4 未能赶在 M1 验收开始前合入时启用）**：以文件 mtime 代理（教师端副本 mtime 早于真实广播 → Δ 为**保守估计**；学员端 mtime = 原子替换落盘时刻，可脚本化批量采集）；「到达」与「落盘」不可区分 → FR-G-02「tips ≤1s」只能靠样本机录屏核对；报告须声明所用口径与保守性，不以代理口径冒充日志级精度。
 
@@ -546,11 +547,17 @@ Get-FileHash <文件> -Algorithm SHA256
 # 索引（列名以 schema.sql 为准）
 python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);[print(r) for r in c.execute('select file_name,title,version,deleted,sync_state from share_items').fetchall()]"
 
-# 日志锚点（E4 约定格式：broadcast/received/applied + item_id=/file=/size=）
+# 日志锚点（E4 约定格式：broadcast/received/applied + item_id=/file=/size=；行内无 target 模块路径）
 Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "broadcast|received|applied"
 # 应急降级（E4 未合入时）：用会话生命周期行 + 落盘 mtime 代理
 Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "教师端启动|学员加入|学员离线|已加入|旧连接"
 Get-Item "$env:ProgramData\ClassShare\data\repo\teacher\<文件名>" | Select-Object LastWriteTime
+
+# —— 脚本化（推荐，证据可复现）——
+# 1) 每机采集（含 [3c] 机器可读锚点 TSV 段）
+.\docs\acceptance\scripts\collect-m1-evidence.ps1 -Role student -ItemName "课堂讲义.docx" -OutFile "TC-06-学员A.txt"
+# 2) 跨节点汇总 Delta 表 + p95 + 判定（-Offsets 为各机时钟偏差，秒）
+.\docs\acceptance\scripts\build-delta-table.ps1 -Teacher "teacher.txt" -Students "stuA.txt,stuB.txt" -Offsets "stuA=0.4" -Out "delta.csv"
 
 # 时钟
 w32tm /resync; w32tm /query /status; Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
@@ -578,5 +585,6 @@ fsutil file createnew big120.bin 125829120
 - [ ] 120 MB 超限文件、`x.exe` 风险文件、3 个多选小文件、60 MB 传输中断文件
 - [ ] 128 字标准文本（附录 §4.3）与混合内容变体
 - [ ] `课堂讲义.docx` V1/V2/V3 三版（含各版 SHA-256）
-- [x] 取证脚本 `docs/acceptance/scripts/collect-m1-evidence.ps1`（**已就绪并实测**：服务/进程状态、时钟与时区、E4 日志锚点 broadcast/received/applied、条目落盘属性+哈希+.bak 计数、SQLite 索引概览、仓库统计；只读；兼容 Windows PowerShell 5.1 与 PS7；UTF-8 BOM 编码，勿用无 BOM 编辑器改存，否则中文机乱码）
+- [x] 取证脚本 `docs/acceptance/scripts/collect-m1-evidence.ps1`（**已就绪并实测**：服务/进程状态、时钟与时区、E4 日志锚点 broadcast/received/applied（机器可读 TSV 段）、条目落盘属性+哈希+.bak 计数、SQLite 索引概览、仓库统计；只读；兼容 Windows PowerShell 5.1 与 PS7；UTF-8 BOM 编码，勿用无 BOM 编辑器改存，否则中文机乱码）
+- [x] 汇总脚本 `docs/acceptance/scripts/build-delta-table.ps1`（**已就绪并实测**：按 item_id 对齐教师 broadcast 与各机 received/applied → Δ 表、p95、两个判定口径、时钟偏移修正、CSV 输出）
 - [ ] 各机录屏工具可用（Xbox Game Bar `Win+Alt+R`）、手机（TC-11）
