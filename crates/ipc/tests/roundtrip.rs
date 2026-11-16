@@ -224,3 +224,47 @@ async fn wrong_token_rejected_at_handshake() {
     }
     panic!("wrong token 测试未达成: {last:?}");
 }
+
+/// PR #38 发现 2：IPC 协议版本不匹配 → HandshakeRejected，且文案含
+/// 服务端与客户端双版本号（PRD 4.5）。裸 JSON 行客户端（绕开
+/// connect_ipc 的固定版本注入错误版本）。
+#[tokio::test]
+async fn version_mismatch_rejected_with_both_versions() {
+    use tokio::io::AsyncBufReadExt;
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let role = Role::Student; // 与 wrong_token 共用该 serve 的管名（多实例）
+    let _notify_tx = spawn_server(role.clone(), "version-token-000000000000000000").await;
+    let name = classroom_ipc::pipe_name(role);
+    let client = loop {
+        match ClientOptions::new().open(&name) {
+            Ok(c) => break c,
+            Err(e) if matches!(e.raw_os_error(), Some(2) | Some(231)) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("连接失败: {e}"),
+        }
+    };
+    let (r, mut w) = tokio::io::split(client);
+    let mut reader = tokio::io::BufReader::new(r);
+    // 注入错误协议版本 99（服务端为 IPC_PROTOCOL_VERSION = 1）
+    let line =
+        br#"{"Handshake":{"protocol_version":99,"token":"version-token-000000000000000000"}}"#;
+    tokio::io::AsyncWriteExt::write_all(&mut w, &line[..])
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut w, b"\n")
+        .await
+        .unwrap();
+    let mut reply = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_until(b'\n', &mut reply))
+        .await
+        .expect("应答超时")
+        .expect("读取失败");
+    let text = String::from_utf8_lossy(&reply);
+    assert!(text.contains("HandshakeRejected"), "应拒握手: {text}");
+    assert!(
+        text.contains("1") && text.contains("99"),
+        "文案应含双版本号: {text}"
+    );
+}

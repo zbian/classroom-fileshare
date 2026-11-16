@@ -4,7 +4,8 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-/// 读取或创建 IPC 令牌（hex，128 bit 随机）：同一 root 下稳定，跨 root 唯一。
+/// 读取或创建 IPC 令牌（hex，256 bit 表示 = 64 个十六进制字符）：同一
+/// root 下稳定，跨 root 唯一。
 ///
 /// ACL：创建后尝试用 `icacls` 移除继承并仅授予当前用户读写（纵深防御；
 /// 管道握手本身仍校验 token）。限权失败不阻断——告警并继续，由握手兜底。

@@ -1,7 +1,7 @@
 //! 行分帧 JSON 编解码：每条消息一行（本地管道，无需二进制紧凑性）。
 
 use anyhow::Context;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use crate::{GuiRequest, SvcNotify, SvcResult, IPC_PROTOCOL_VERSION};
 
@@ -25,6 +25,10 @@ pub(crate) enum IpcMessage {
     Notify(SvcNotify),
 }
 
+/// 单行上限：1MB（消息均为小载荷，对齐 net 8MB 帧上限先例；
+/// 超限断连防内存放大——PR #38 发现 3）。
+pub const MAX_LINE: usize = 1024 * 1024;
+
 /// 编码为单行 JSON（含结尾换行）。
 pub(crate) fn encode(msg: &IpcMessage) -> anyhow::Result<Vec<u8>> {
     let mut line = serde_json::to_vec(msg).context("IPC 消息序列化失败")?;
@@ -41,12 +45,19 @@ pub(crate) async fn write_msg<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-/// 读一条消息（读到 EOF 返回 Err）。
+/// 读一条消息（读到 EOF 返回 Err；行超过 [`MAX_LINE`] 断连拒绝）。
 pub(crate) async fn read_msg<R: AsyncBufReadExt + Unpin>(r: &mut R) -> anyhow::Result<IpcMessage> {
     let mut line = Vec::new();
-    let n = r.read_until(b'\n', &mut line).await?;
+    // take 限制单行读取量：超过上限即拒绝（无换行的超长流不会无限积累）
+    let n = r
+        .take(MAX_LINE as u64 + 1)
+        .read_until(b'\n', &mut line)
+        .await?;
     if n == 0 {
         anyhow::bail!("IPC 对端已关闭");
+    }
+    if line.len() > MAX_LINE {
+        anyhow::bail!("IPC 行超过 {MAX_LINE} 字节上限，断开（防内存放大）");
     }
     serde_json::from_slice(&line).context("IPC 消息解码失败")
 }
@@ -83,6 +94,28 @@ mod tests {
             deleted: false,
             sync_state: SyncState::Synced,
         }
+    }
+
+    #[tokio::test]
+    async fn oversized_line_rejected() {
+        // 1MB + 1 无换行超长行：读取必须拒绝而非无限积累（PR #38 发现 3）
+        let mut payload = vec![b'a'; MAX_LINE + 1];
+        payload.push(b'\n');
+        let mut reader = payload.as_slice();
+        let err = read_msg(&mut tokio::io::BufReader::new(&mut reader))
+            .await
+            .expect_err("超长行必须被拒绝");
+        assert!(
+            format!("{err:#}").contains("上限"),
+            "应报行上限错误: {err:#}"
+        );
+        // 恰好 1MB（含换行）不触发上限（会因 JSON 解码失败而 Err，但非上限错误）
+        let mut edge = vec![b'a'; MAX_LINE - 1];
+        edge.push(b'\n');
+        let mut reader = edge.as_slice();
+        let result = read_msg(&mut tokio::io::BufReader::new(&mut reader)).await;
+        assert!(result.is_err(), "非法 JSON 应解码失败");
+        assert!(!format!("{:#}", result.unwrap_err()).contains("上限"));
     }
 
     #[tokio::test]
