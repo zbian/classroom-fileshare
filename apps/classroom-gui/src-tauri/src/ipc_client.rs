@@ -94,6 +94,11 @@ pub fn start_bridge(app: AppHandle) {
                 let role = role_from_config(&app);
                 eprintln!("[ipc] 服务管道已连接（role={role:?}）");
                 *app.state::<IpcBridge>().client.lock().expect("ipc lock") = Some(client);
+                // 连接成功即通知前端重拉结构化状态（主窗已开时自愈 EX-10）
+                let _ = app.emit(
+                    "svc://notify",
+                    retag(&SvcNotify::StatusChanged(String::new())),
+                );
                 forward_loop(&app, rx).await;
             }
             Err(e) => eprintln!("[ipc] 连接失败（服务未起？）：{e:#}"),
@@ -108,12 +113,10 @@ async fn forward_loop(app: &AppHandle, mut rx: tokio::sync::mpsc::Receiver<SvcNo
         }
     }
     eprintln!("[ipc] 通知通道关闭（服务退出）");
-    // 不可达态通知前端（EX-10/EX-08 文案由前端按角色选择），并清空连接待重连
+    // 不可达态：通知前端（文本不携带语义，前端收到后重拉结构化 status 判定）
     let _ = app.emit(
         "svc://notify",
-        retag(&SvcNotify::StatusChanged(
-            "service=down;room=;online=0".into(),
-        )),
+        retag(&SvcNotify::StatusChanged(String::new())),
     );
     *app.state::<IpcBridge>().client.lock().expect("ipc lock") = None;
 }
@@ -140,7 +143,7 @@ async fn ensure_client(app: &AppHandle) -> Result<IpcClient, String> {
 
 /// svc_request：前端唯一入口（GuiRequest 外部不可辨名形态 → 反序列化 → 转发）。
 /// 服务侧错误文案（SvcResult::Err）原样透传给前端（EX-xx 展示）。
-pub async fn svc_request(app: AppHandle, request: GuiRequest) -> Result<GuiReply, String> {
+pub async fn svc_request(app: AppHandle, request: GuiRequest) -> Result<Value, String> {
     let client = ensure_client(&app).await?;
     // 双层结果：外层传输错误（anyhow）→ 统一 EX-10 文案；内层服务业务错误（String）原样透传
     let svc = client
@@ -151,9 +154,33 @@ pub async fn svc_request(app: AppHandle, request: GuiRequest) -> Result<GuiReply
     // 修订 #7①：OpenItem 返回实体绝对路径，由 GUI（用户会话）用默认程序打开
     if let GuiReply::FilePath(path) = &reply {
         tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| format!("打开失败：{e}"))?;
-        return Ok(GuiReply::Ok);
+        return Ok(json!({ "t": "Ok" }));
     }
-    Ok(reply)
+    // 与 notify 同型：GuiReply 走外部不可辨名序列化（{"Items":[…]}），而前端
+    // client.ts 按 {"t":"Items","items":[…]} 解包——不做对称 retag 时真实模式
+    // List 恒空 / Status 恒 down（reviewer 实锤的第三次同型逃逸，此处修复）。
+    Ok(retag_reply(&reply))
+}
+
+/// GuiReply → 前端契约形态 {"t": 变体名, <契约键>: 载荷}：
+/// Ok → {"t":"Ok"}；Items → items；Status → snapshot；FilePath → path
+/// （FilePath 已被桥内 opener 拦截，正常不外泄；兜底保持契约）。
+fn retag_reply(reply: &GuiReply) -> Value {
+    let raw = serde_json::to_value(reply).expect("GuiReply 序列化");
+    match raw {
+        Value::String(k) => json!({ "t": k }), // 单元变体（Ok 等）序列化为裸串
+        Value::Object(map) => {
+            let (k, v) = map.into_iter().next().expect("外部不可辨名枚举单键");
+            let key = match k.as_str() {
+                "Items" => "items",
+                "Status" => "snapshot",
+                "FilePath" => "path",
+                other => other,
+            };
+            json!({ "t": k, key: v })
+        }
+        other => other,
+    }
 }
 
 /// SvcNotify → 前端形态 {"t": 变体名, "payload": …}（见 client.ts 类型镜像）。
@@ -170,5 +197,43 @@ fn retag(n: &SvcNotify) -> Value {
             json!({ "t": k, "payload": payload })
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前端契约：unit 变体经 {"Status": null} 形态反序列化（client.ts 的 request 形态）
+    #[test]
+    fn gui_request_deserializes_null_map_form() {
+        let v: GuiRequest = serde_json::from_value(json!({ "Status": null })).expect("map 形态");
+        assert!(matches!(v, GuiRequest::Status));
+        let v2: GuiRequest = serde_json::from_value(json!("Status")).expect("裸串形态");
+        assert!(matches!(v2, GuiRequest::Status));
+    }
+
+    /// 阻断修复回归：reply 对称 retag 后为前端契约形态（{"t":…} + 契约键）
+    #[test]
+    fn retag_reply_matches_frontend_contract() {
+        let ok = retag_reply(&GuiReply::Ok);
+        assert_eq!(ok, json!({ "t": "Ok" }));
+
+        let items = retag_reply(&GuiReply::Items(Vec::new()));
+        assert_eq!(items, json!({ "t": "Items", "items": [] }));
+
+        let snap = classroom_ipc::StatusSnapshot {
+            service_state: classroom_ipc::ServiceState::Running,
+            room: "XK-204".into(),
+            online_count: 3,
+            nickname: String::new(),
+            role: Role::Teacher,
+            pending_count: 0,
+        };
+        let st = retag_reply(&GuiReply::Status(snap));
+        assert_eq!(st["t"], "Status");
+        assert_eq!(st["snapshot"]["room"], "XK-204");
+        assert_eq!(st["snapshot"]["service_state"], "running");
+        assert_eq!(st["snapshot"]["online_count"], 3);
     }
 }

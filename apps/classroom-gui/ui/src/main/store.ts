@@ -65,6 +65,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
     const filter: ListFilter = {
       keyword: keyword || null,
       kind: kindFilter === 'all' ? null : kindFilter,
+      include_deleted: false, // wire 契约：bool 无 serde default，必须显式携带
     }
     try {
       const [items, status] = await Promise.all([client.list(filter), client.status()])
@@ -160,9 +161,8 @@ export const useMainStore = create<MainStore>((set, get) => ({
         set((s) => ({ items: s.items.filter((i) => i.id !== n.id) }))
         break
       case 'StatusChanged': {
-        // mock 约定文本；真实服务接线时改为结构化解析（T-7 对齐点）
-        const running = /service=running/.test(n.text)
-        set({ serviceDown: !running, status: get().status ? { ...get().status!, running, raw: n.text } : null })
+        // 真实服务的通知文本不携带可解析语义（格式不受契约约束）；
+        // 一律重拉结构化 status()（修订 #6④ 快照）判定连接态，避免文本误判。
         void get().refresh()
         break
       }

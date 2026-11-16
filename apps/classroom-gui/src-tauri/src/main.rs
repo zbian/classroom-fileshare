@@ -11,7 +11,7 @@ mod state;
 mod tips;
 mod windows;
 
-use classroom_ipc::{GuiReply, GuiRequest};
+use classroom_ipc::GuiRequest;
 use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
 
@@ -125,10 +125,13 @@ fn open_main_locate(app: tauri::AppHandle, id: String) -> Result<(), String> {
     windows::open_main_locate(&app, &id).map_err(|e| e.to_string())
 }
 
-/// GUI↔服务请求唯一入口（payload 为 GuiRequest 的 serde 外部不可辨名形态）。
-/// 错误文案原样透传前端（EX-10/EX-08 展示）。
+/// GUI↔服务请求唯一入口（payload 为 GuiRequest 的 serde 外部不可辨名形态；
+/// 应答已对称 retag 为前端契约 {"t":…} 形态）。错误文案原样透传（EX-10/EX-08）。
 #[tauri::command]
-async fn svc_request(app: tauri::AppHandle, request: GuiRequest) -> Result<GuiReply, String> {
+async fn svc_request(
+    app: tauri::AppHandle,
+    request: GuiRequest,
+) -> Result<serde_json::Value, String> {
     ipc_client::svc_request(app, request).await
 }
 
