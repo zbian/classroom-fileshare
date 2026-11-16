@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.3.4（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3/E4/E5/E6 已闭环；**E7 复验 5/5 通过，待 #50 合并即关闭**，残余 `/remove:g` → M2 备案；PR #51/#54 已合入 main） |
+| 状态 | v1.3.5（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3/E4/E5/E6 已闭环；**E7 在 windows-rs API 路径下复验通过**（§3.9.3，含最恶劣 ACL 形态自愈），CI 失败归因为 runner Temp 卷环境特性；M2 `/remove:g` 备案建议撤销；取证脚本已脱离 Temp 依赖；PR #55 评审中） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -123,7 +123,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复已合入 main**（73e17d3 / PR #39）；QA 真实日志演练通过，见 §3.9 |
 | **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | **Lead 定性（2026-11-16）：接受偏差，不修码**——applied 行不含 file/size 属约定，证据表以 item_id 为键，file/size 为冗余 | 已在 issue #14 评论留痕（applied 行不含 file/size 属约定 + 三条锚点真实行格式 + 解析口径） | **已关闭（约定达成）** |
 | **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | **Lead 定性（2026-11-16）：一般，派单修复**——agent `received` 锚点 `size=` 改用 `ev.item.size`，对齐 PRD 3.5「文本为字符数」；PR #48 → **已合并 main（3603f23）** | 修复后：文本条目的 teacher/agent `size` 两侧相等（均为字符数）；QA 重跑 §3.9 演练核对 | **已闭环**：QA 复验通过（2026-11-16，PR #48）——真实日志实测文本条目两侧均 `size=9`（字符数），文件条目两侧均 3145728（字节）；上游测试 EXIT=0 全绿；PR 新增断言把「字符数 5 / 正文实体 UTF-8 15 字节」固化。**已于 3603f23 合入 main** |
-| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（9c1797d）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因；追加**存量令牌幂等重限权**、`user_sid` 双授予（svc.json / install.ps1 自动探测+`-UserSid` / SessionChange 登录自愈）、`--console` 打印 `{e}`。**残余加固 `/remove:g`（清理非预期显式 ACE）经 Lead 裁定列为 M2 备案**（低危：显式 ACE 非旧版产生形态；令牌限权 + 双授予已闭合 M1 暴露面）——待并入 #14 的 M2 残余风险清单 | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **QA 复验 5/5 通过**（实测记录见 §3.9.2）；**待 #50 合并后关闭**（关闭证据已满足）；残余 `/remove:g` 加固 → M2 备案（Lead 裁定 2026-11-16） |
+| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（9c1797d）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因；追加**存量令牌幂等重限权**、`user_sid` 双授予（svc.json / install.ps1 自动探测+`-UserSid` / SessionChange 登录自愈）、`--console` 打印 `{e}`。**残余加固 `/remove:g`（清理非预期显式 ACE）经 Lead 裁定列为 M2 备案**（低危：显式 ACE 非旧版产生形态；令牌限权 + 双授予已闭合 M1 暴露面）——**注：windows-rs API 路径（7083a5f）因全量重建 DACL 已连显式 ACE 一并清除，该备案项已被覆盖，建议撤销（待 Lead 确认，见 §3.9.3）**——待并入 #14 的 M2 残余风险清单 | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **QA 复验 5/5 通过**（实测记录见 §3.9.2）；**待 #50 合并后关闭**（关闭证据已满足）；残余 `/remove:g` 加固 → M2 备案（Lead 裁定 2026-11-16） |
 
 ### 3.8.1 QA 静态复核记录
 
@@ -214,6 +214,21 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 **修复建议（最小改动，已由 dev 于 9c1797d 采纳）**：`path.exists()` 分支在 `return Ok(token)` 前也调用一次限权（icacls 幂等，成本极低），即可自愈所有已安装旧版的机器；并补单测「存量令牌文件被重新限权」（`load_upgrades_legacy_weak_acl`，QA 复核该单测以**真实继承形态**构造脆弱 ACL——首版单测用显式 ACE 会被 `/inheritance:r` 意外通过，属测试缺陷，已由 dev 自纠）。
 
 **次要发现（建议一并处理）**：`--console` 模式的 bootstrap 失败分支用 `let Ok(..) = .. else` **丢弃了原始错误**，只打印「svc.json 配置损坏，无法启动」——ACL 限权失败时也会打印这句，运维会查错方向（服务模式分支正确打印 `{e}`）。建议 console 分支改为打印 `{e}`。
+
+### 3.9.3 E7 在 windows-rs API 路径下的复验（7083a5f，QA 实测）
+
+E7 的 icacls 路线在 **GHA runner 上「退出 0 + 自报成功但 ACL 未变」**（外部进程路线在该环境不可信，run 68 raw 命令行直证）→ dev 落地**假设 3：icacls 全线退役，改 `windows-rs` API 直写**（`SetNamedSecurityInfoW` + `SE_DACL_PROTECTED` + `SetEntriesInAclW` **全量重建 DACL**）。QA 以**真实** `classroom-svc.exe` 复验：
+
+| 复验项 | 实测结果 | 判定 |
+| --- | --- | --- |
+| 最恶劣形态自愈 | 预置「继承 `BUILTIN\Users:(I)(RX)` + **显式** `BUILTIN\Users:(R)` + SYSTEM/管理员/本用户继承项」→ 修复版真实启动后 DACL **仅剩** `SYSTEM:(R,W)`、`Administrators:(R,W)`、`Bian:(R,W)`，**继承项与显式 ACE 全部清除** | ✅ 通过（强于 icacls 路线） |
+| 新建令牌 | 同上形态，ACL 同样仅含三类受托人 | ✅ |
+| 本地测试套件 | `cargo test -p classroom-ipc` → **9 单测 + 3 回环全绿**（含 `acl_restriction_removes_inheritance_and_grants_only_current_user`、`load_upgrades_legacy_weak_acl`、`dual_grant_includes_user_sid`、`grant_for_session_rebuilds_dacl_for_sid`） | ✅ 本地（真实 NTFS）全绿 |
+| CI 差异归因 | 上述测试用 `tempfile::tempdir()`（Temp 卷）→ 在 GHA runner Temp 卷上 ACL 写入语义异常；**本地实机 Temp 卷全部通过** | 结论：**CI 失败为 runner 卷环境特性，非产品缺陷**；真机（真实 NTFS）不受影响 |
+
+★**M2 备案项影响**：`/remove:g`（清理非预期**显式** ACE）原为低危 M2 备案——API 路径因**全量重建 DACL**（`SetEntriesInAclW` 传空旧 DACL）**连显式 ACE 一并清除**，该加固项已被实现覆盖，**建议撤销 M2 备案**（请 Lead 确认）。
+
+★**取证脚本的 Temp 依赖已消除**（按 Lead 预案）：`collect-m1-evidence.ps1` 临时辅助文件（w32tm 输出、Python 索引助手）改落**工作目录**（优先级 `-WorkDir` > `-OutFile` 所在目录 > 数据根 > 当前目录），不再使用 `%TEMP%`；QA 演练脚本的产出目录同样锚定仓库工作区卷 `target/qa-rehearsal/`。真机取证亦受益。
 
 ## 4 分用例方案
 
