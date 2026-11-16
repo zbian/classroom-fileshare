@@ -152,6 +152,10 @@ mod tests {
                 id: 8,
                 result: Err("失败原因".into()),
             },
+            IpcMessage::Reply {
+                id: 9,
+                result: Ok(GuiReply::FilePath(r"C:\Data\repo\teacher\课件.pdf".into())),
+            },
             IpcMessage::Notify(SvcNotify::ShareReceived(sample_item("课件"))),
             IpcMessage::Notify(SvcNotify::ItemUpdated(ItemUpdatedPayload {
                 item: sample_item("作业"),
