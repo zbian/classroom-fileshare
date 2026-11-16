@@ -15,6 +15,7 @@ use classroom_protocol::{
     Role, ShareItem, SyncState, TextReject,
 };
 use rusqlite::{params, params_from_iter, Connection};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -76,7 +77,9 @@ pub enum PutOutcome {
 }
 
 /// 列表过滤条件（全部为可选项）。
-#[derive(Debug, Default, Clone)]
+/// 接口修订 #6③：补 Serialize/Deserialize/PartialEq（作为 ipc 层
+/// `GuiRequest::List` 载荷跨命名管道传输所需）。
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListFilter {
     /// 按发送者过滤。
     pub owner: Option<String>,

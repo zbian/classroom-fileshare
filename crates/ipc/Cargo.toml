@@ -2,3 +2,17 @@
 name = "classroom-ipc"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+classroom-protocol = { path = "../protocol" }
+classroom-net = { path = "../net" }
+classroom-store = { path = "../store" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
