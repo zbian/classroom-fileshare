@@ -140,6 +140,16 @@ async fn text_received_persisted_and_readable() {
     let store = Store::open(agent_dir.path()).unwrap();
     let got = store.get(&item.id).unwrap().expect("索引存在");
     assert_eq!(got.title, "通知");
+    // E6：size 语义 = PRD 3.5 字符数（"明天带教材" 5 字）；received 锚点
+    // 的 size= 与此同源（ev.item.size），不再使用文件帧字节数
+    assert_eq!(item.size, 5, "文本条目 size 应为字符数");
+    // 正文实体字节数（UTF-8）与 size 列语义不同：15 字节 ≠ 5 字符，属预期
+    assert_eq!(
+        std::fs::metadata(store.file_body(&got).unwrap())
+            .unwrap()
+            .len(),
+        15
+    );
     let body = store.file_body(&got).unwrap();
     assert_eq!(std::fs::read_to_string(&body).unwrap(), "明天带教材");
 }

@@ -347,10 +347,12 @@ impl Incoming {
         };
         self.install(&ev.item, &header, &path)?;
         // E4（#14 TC-02 计时锚点）：收到（校验安装完成、即将入索引）
+        // E6：size 用 item.size（PRD 3.5：文本 size=字符数、文件=字节数），
+        // 与 broadcast 侧同源，证据表列自洽
         tracing::info!(
             item_id = %ev.item.id,
             file = %header.file_name,
-            size = header.size,
+            size = ev.item.size,
             from = %ev.item.owner_id,
             "received"
         );
