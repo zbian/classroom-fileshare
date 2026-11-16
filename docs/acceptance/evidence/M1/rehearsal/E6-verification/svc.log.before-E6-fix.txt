@@ -1,0 +1,9 @@
+2026-11-16T03:52:57.488974Z  INFO 教师端启动 room=XK-204 port=1690
+2026-11-16T03:52:57.547664Z  INFO 学员加入 nickname=alice session_id=eef7cf44-ee28-4fc1-b2ae-309cbf1f7430
+2026-11-16T03:52:57.547817Z  INFO 已加入 addr=127.0.0.1:1690
+2026-11-16T03:52:57.646034Z  INFO broadcast item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 file=课堂讲义 副本.pptx size=3145728 audience="all"
+2026-11-16T03:52:57.681246Z  INFO received item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 file=课堂讲义 副本.pptx size=3145728 from=teacher
+2026-11-16T03:52:57.700370Z  INFO applied item_id=fcb980db-641e-4dd2-ae1e-1185d95d0c88 version=1
+2026-11-16T03:52:57.719377Z  INFO broadcast item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 file=课堂通知 size=9 audience="all"
+2026-11-16T03:52:57.720554Z  INFO received item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 file=课堂通知 size=27 from=teacher
+2026-11-16T03:52:57.740378Z  INFO applied item_id=0cbe9431-9eaf-4869-a420-7b491fdc2b33 version=1
