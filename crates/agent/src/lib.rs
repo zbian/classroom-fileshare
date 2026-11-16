@@ -346,8 +346,20 @@ impl Incoming {
             return Ok(None);
         };
         self.install(&ev.item, &header, &path)?;
+        // E4（#14 TC-02 计时锚点）：收到（校验安装完成、即将入索引）
+        tracing::info!(
+            item_id = %ev.item.id,
+            file = %header.file_name,
+            size = header.size,
+            from = %ev.item.owner_id,
+            "received"
+        );
         match store.apply_remote(&ev) {
-            Ok(MergeDecision::Overwrite(applied)) => Ok(Some(*applied)),
+            Ok(MergeDecision::Overwrite(applied)) => {
+                // E4：落盘成功（Δ=applied−broadcast 供 qa 计时）
+                tracing::info!(item_id = %applied.id, version = applied.version, "applied");
+                Ok(Some(*applied))
+            }
             Ok(_) => Ok(None),
             Err(e) => Err(e.into()),
         }
