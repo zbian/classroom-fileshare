@@ -191,10 +191,13 @@ fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
 /// 读取 DACL 的 SDDL 表示（测试断言用；纯 ASCII 编码安全）。
 #[cfg(test)]
 use windows::Win32::Security::Authorization::{
-    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetExplicitEntriesFromAclW,
+    GetNamedSecurityInfoW,
 };
 #[cfg(test)]
-use windows::Win32::Security::PSECURITY_DESCRIPTOR;
+use windows::Win32::Security::{
+    CopySid, EqualSid, GetSidLengthRequired, GetSidSubAuthorityCount, PSECURITY_DESCRIPTOR,
+};
 
 #[cfg(test)]
 unsafe fn sddl_of(path: &Path) -> anyhow::Result<String> {
@@ -324,8 +327,70 @@ mod tests {
         assert!(t1.chars().all(|c| c.is_ascii_hexdigit()), "纯 hex");
     }
 
-    /// E7 真实单测（API 断言）：限权后 SDDL 保护位在（继承移除）、含当前
-    /// 用户 SID、Everyone（S-1-1-0）不在。
+    /// 读取 DACL 的显式授予条目：[(SID 字节, 掩码)]——SID 级 EqualSid
+    /// 比对，彻底免别名（GHA runner 把内建管理员别名化为 LA）/大小写/
+    /// 代码页问题（终审：断言跟着语义走）。
+    #[cfg(test)]
+    unsafe fn explicit_entries_of(path: &Path) -> anyhow::Result<Vec<(Vec<u8>, u32)>> {
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let mut dacl: *mut windows::Win32::Security::ACL = std::ptr::null_mut();
+        let code = GetNamedSecurityInfoW(
+            PCWSTR(path_wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(&mut dacl),
+            None,
+            &mut sd,
+        );
+        if code != WIN32_ERROR(0) {
+            return Err(win32_err("GetNamedSecurityInfoW", code));
+        }
+        let mut count = 0u32;
+        let mut entries: *mut EXPLICIT_ACCESS_W = std::ptr::null_mut();
+        let code = GetExplicitEntriesFromAclW(dacl, &mut count, &mut entries);
+        if code != WIN32_ERROR(0) {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            return Err(win32_err("GetExplicitEntriesFromAclW", code));
+        }
+        let mut out = Vec::new();
+        for i in 0..count as usize {
+            let e = entries.add(i).read();
+            if e.Trustee.TrusteeForm == TRUSTEE_IS_SID {
+                let psid = PSID(e.Trustee.ptstrName.0 as *mut c_void);
+                let len = GetSidLengthRequired(GetSidSubAuthorityCount(psid).read());
+                let mut buf = vec![0u8; len as usize];
+                CopySid(len, PSID(buf.as_mut_ptr() as *mut c_void), psid).expect("CopySid 失败");
+                out.push((buf, e.grfAccessPermissions));
+            }
+        }
+        let _ = LocalFree(Some(HLOCAL(entries as *mut c_void)));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        Ok(out)
+    }
+
+    /// EqualSid 语义比对（返回 Err = 不相等）。
+    #[cfg(test)]
+    unsafe fn entries_contain_sid(entries: &[(Vec<u8>, u32)], sid: &str) -> bool {
+        let Ok(expected) = sid_from_string(sid) else {
+            return false;
+        };
+        let hit = entries
+            .iter()
+            .any(|(bytes, _)| EqualSid(PSID(bytes.as_ptr() as *mut c_void), expected).is_ok());
+        free_sid(expected);
+        hit
+    }
+
+    /// E7 真实单测（API 语义断言）：恰 3 条授予（SYSTEM/管理员/当前用户）
+    /// 掩码含 R+W，Everyone 与 Users trustee 缺席。
     #[test]
     fn acl_restriction_removes_inheritance_and_grants_only_current_user() {
         if !acl_writable() {
@@ -341,15 +406,26 @@ mod tests {
 
         let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
         println!("diag: sddl={sddl}");
+        let entries = unsafe { explicit_entries_of(&dir.path().join("ipc.token")).unwrap() };
+        println!("diag: entries={entries:?}");
+        assert_eq!(entries.len(), 3, "恰 SY/BA/当前用户三条: {entries:?}");
+        // SetEntriesInAclW 把 GENERIC R|W 规范化为文件专属掩码
+        // 0x12019F = FILE_GENERIC_READ | FILE_GENERIC_WRITE
+        const FILE_RW: u32 = 0x0012_019F;
         assert!(
-            sddl.contains("D:P"),
-            "DACL 必须为保护形态（继承移除）: {sddl}"
+            entries.iter().all(|(_, mask)| mask & FILE_RW == FILE_RW),
+            "全部条目应含规范化文件 R+W: {entries:?}"
         );
-        assert!(sddl.contains(&sid), "必须含当前用户 ACE: {sddl}");
-        assert!(
-            !sddl.contains(";;;WD)"),
-            "Everyone 不得保留（SDDL 别名 WD）: {sddl}"
-        );
+        unsafe {
+            assert!(entries_contain_sid(&entries, &sid), "当前用户命中");
+            assert!(entries_contain_sid(&entries, "S-1-5-18"), "SYSTEM 命中");
+            assert!(
+                entries_contain_sid(&entries, "S-1-5-32-544"),
+                "Administrators 命中"
+            );
+            assert!(!entries_contain_sid(&entries, "S-1-1-0"), "Everyone 缺席");
+            assert!(!entries_contain_sid(&entries, "S-1-5-32-545"), "Users 缺席");
+        }
     }
 
     #[test]
@@ -403,20 +479,28 @@ mod tests {
         let token = load_or_create_token(dir.path()).expect("存量令牌自愈必须成功");
         assert_eq!(token.len(), 64);
 
-        let sddl = unsafe { sddl_of(&path).unwrap() };
-        assert!(sddl.contains("D:P"), "继承必须移除（保护位）: {sddl}");
-        assert!(
-            !sddl.contains(";;;WD)"),
-            "Everyone 必须清除（SDDL 别名 WD）: {sddl}"
-        );
-        assert!(
-            sddl.contains(&current_user_sid().unwrap()),
-            "必须含当前用户 ACE: {sddl}"
-        );
+        // API 语义断言：Everyone(S-1-1-0) 缺席 + 当前用户/SYSTEM/BA 命中
+        let entries = unsafe { explicit_entries_of(&path).unwrap() };
+        assert_eq!(entries.len(), 3, "恰 SY/BA/当前用户三条: {entries:?}");
+        unsafe {
+            assert!(
+                !entries_contain_sid(&entries, "S-1-1-0"),
+                "Everyone 必须清除"
+            );
+            assert!(
+                entries_contain_sid(&entries, &current_user_sid().unwrap()),
+                "当前用户命中"
+            );
+            assert!(entries_contain_sid(&entries, "S-1-5-18"), "SYSTEM 命中");
+            assert!(
+                entries_contain_sid(&entries, "S-1-5-32-544"),
+                "Administrators 命中"
+            );
+        }
     }
 
-    /// 令牌分发机制（E7 追加）：user_sid 存在 → 双授予（SDDL 同时含
-    /// 当前用户与主登录用户）。
+    /// 令牌分发机制（E7 追加）：user_sid 存在 → 恰 4 条授予，四个 SID
+    /// 逐一 EqualSid 命中（SY/BA/当前用户/user_sid）。
     #[test]
     fn dual_grant_includes_user_sid() {
         if !acl_writable() {
@@ -430,13 +514,21 @@ mod tests {
             load_or_create_token_for(dir.path(), Some(users_sid)).expect("双授予限权必须成功");
         assert_eq!(token.len(), 64);
 
-        let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
-        assert!(
-            sddl.contains(&current_user_sid().unwrap()),
-            "应含当前用户：\n{sddl}"
-        );
-        // 知名 SID 在 SDDL 中确定性别名化（BUILTIN\Users → "BU"）
-        assert!(sddl.contains(";;;BU)"), "应含主登录用户授予：\n{sddl}");
+        let entries = unsafe { explicit_entries_of(&dir.path().join("ipc.token")).unwrap() };
+        assert_eq!(entries.len(), 4, "恰 4 条授予: {entries:?}");
+        unsafe {
+            for sid in [
+                "S-1-5-18",
+                "S-1-5-32-544",
+                &current_user_sid().unwrap(),
+                users_sid,
+            ] {
+                assert!(
+                    entries_contain_sid(&entries, sid),
+                    "应含 {sid}: {entries:?}"
+                );
+            }
+        }
     }
 
     /// grant_for_session 单元形态（WTS 集成真机覆盖）：对既有令牌以
@@ -452,11 +544,20 @@ mod tests {
         load_or_create_token(dir.path()).unwrap();
         let users_sid = "S-1-5-32-545";
         grant_for_session(dir.path(), users_sid).expect("会话重授必须成功");
-        let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
-        assert!(
-            sddl.contains(";;;BU)"),
-            "应含会话用户授予（SDDL 别名 BU）: {sddl}"
-        );
-        assert!(sddl.contains("D:P"), "保护位保持: {sddl}");
+        let entries = unsafe { explicit_entries_of(&dir.path().join("ipc.token")).unwrap() };
+        unsafe {
+            assert!(
+                entries_contain_sid(&entries, users_sid),
+                "应含会话用户授予: {entries:?}"
+            );
+            assert!(
+                entries_contain_sid(&entries, "S-1-5-18"),
+                "SYSTEM 命中: {entries:?}"
+            );
+            assert!(
+                !entries_contain_sid(&entries, "S-1-1-0"),
+                "Everyone 缺席: {entries:?}"
+            );
+        }
     }
 }
