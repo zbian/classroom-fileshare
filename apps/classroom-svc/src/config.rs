@@ -42,6 +42,10 @@ pub struct SvcConfig {
     /// TCP 监听端口（teacher；0 = 自动分配，冲突自动更换）。
     #[serde(default = "default_tcp_port")]
     pub tcp_port: u16,
+    /// 主登录用户 SID（E7 令牌分发：install.ps1 写入；服务模式 GUI 读
+    /// 令牌的授权对象；None 时服务模式 GUI 不可用，启动告警）。
+    #[serde(default)]
+    pub user_sid: Option<String>,
 }
 
 fn default_room_code() -> String {
@@ -61,6 +65,7 @@ impl Default for SvcConfig {
             nickname: String::new(),
             manual_addr: None,
             tcp_port: default_tcp_port(),
+            user_sid: None,
         }
     }
 }
@@ -103,7 +108,7 @@ mod tests {
         assert_eq!(cfg.tcp_port, 47821);
         assert_eq!(cfg.pin, None);
 
-        // 完整 student 配置往返（含 manual_addr）
+        // 完整 student 配置往返（含 manual_addr 与 user_sid）
         let full = SvcConfig {
             mode: SvcMode::Student,
             room_code: "XK-204".into(),
@@ -111,6 +116,7 @@ mod tests {
             nickname: "alice".into(),
             manual_addr: Some("127.0.0.1:47821".parse().unwrap()),
             tcp_port: 47821,
+            user_sid: Some("S-1-5-21-1-2-3-1001".into()),
         };
         let json = serde_json::to_string(&full).unwrap();
         let back: SvcConfig = serde_json::from_str(&json).unwrap();

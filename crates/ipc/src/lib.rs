@@ -23,7 +23,7 @@ pub use client::{connect_ipc, IpcClient};
 pub use server::serve_ipc;
 #[doc(hidden)]
 pub use server::serve_named;
-pub use token::load_or_create_token;
+pub use token::{grant_for_session, load_or_create_token, load_or_create_token_for};
 
 use std::path::PathBuf;
 

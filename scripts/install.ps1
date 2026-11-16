@@ -24,7 +24,8 @@ param(
     [string]$Nickname = '',
     [string]$ManualAddr = '',
     [string]$SvcExe = '',
-    [string]$GuiExe = ''
+    [string]$GuiExe = '',
+    [string]$UserSid = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -52,6 +53,39 @@ $svcConfig = [ordered]@{
     nickname    = if ($Nickname) { $Nickname } else { '' }
     manual_addr = if ($ManualAddr) { $ManualAddr } else { $null }
     tcp_port    = 47821
+    user_sid    = $null
+}
+
+# E7 令牌分发（issue #49）：主登录用户 SID——服务模式 GUI 读令牌的授权
+# 对象。-UserSid 显式传入优先；否则自动探测活动控制台会话用户
+# （quser → CIM Win32_UserAccount 查 SID）；裸机镜像探测不到时跳过并
+# WARN（GUI 令牌待首次登录后由服务 SessionChange 自愈）。
+function Resolve-UserSid([string]$Explicit) {
+    if ($Explicit) {
+        if ($Explicit -notlike 'S-1-*') { throw "-UserSid 必须是 SID（S-1-...）形式" }
+        return $Explicit
+    }
+    try {
+        $quser = quser.exe 2>$null | Out-String
+        $row = ($quser -split "`r?`n") |
+            Where-Object { $_ -match '^\s*(.+?)\s+\d+\s+Console\s' } |
+            Select-Object -First 1
+        if ($row) {
+            $userName = $Matches[1].Trim('>', ' ').Trim()
+            $sid = (Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True AND Name='$userName'" |
+                Select-Object -First 1).SID
+            if ($sid) { return $sid }
+        }
+    } catch {
+        Write-Warning "自动探测登录用户 SID 失败：$_"
+    }
+    return $null
+}
+$userSid = Resolve-UserSid $UserSid
+if ($userSid) {
+    $svcConfig.user_sid = $userSid
+} else {
+    Write-Warning '未捕获主登录用户 SID：服务模式 GUI 令牌待首次登录后由服务自愈（SessionChange）授权；如需立即可用请携带 -UserSid 重装'
 }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -115,5 +149,6 @@ Write-Host "运行方式:   $runMode"
 Write-Host "数据根:     $dataRoot"
 Write-Host "日志:       $(Join-Path $dataRoot 'logs\svc.log')（RFC3339 毫秒时间戳，RUST_LOG 可调）"
 Write-Host "防火墙:     $firewallSummary"
-Write-Host "GUI 自启:   $(if ($guiExe) { "HKCU Run → $guiExe" } else { '未注册（未指定 -GuiExe）' })"
+Write-Host "GUI 自启:   $(if ($guiExe) { "HKCU Run → $guiExe" } else { '未注册（未指定 -GuiExe）——TC-11 步骤 5 依赖此注册项' })"
+Write-Host "令牌授权:   $(if ($userSid) { "LocalSystem + 主登录用户（$userSid）" } else { '仅 LocalSystem——GUI 待首次登录自愈或 -UserSid 重装' })"
 Write-Host "多实例:     命名管道多连接并发（每 GUI 一连接，已测 ≥2）；服务本体单实例（SCM 语义）"
