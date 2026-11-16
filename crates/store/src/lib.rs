@@ -229,6 +229,9 @@ impl Store {
     pub fn open(root: &Path) -> Result<Self> {
         std::fs::create_dir_all(root.join("repo"))?;
         let conn = Connection::open(root.join("index.db"))?;
+        // busy_timeout：handler store 与核心 store 并发写时的 SQLITE_BUSY
+        // 瞬时报错改为内部短暂等待（PR #38 发现 5；WAL 未启用下的兜底）
+        conn.busy_timeout(std::time::Duration::from_millis(500))?;
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if v > SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(v));
