@@ -17,7 +17,11 @@ pub mod codec;
 pub mod server;
 pub mod token;
 
+#[doc(hidden)]
+pub use client::connect_named;
 pub use client::{connect_ipc, IpcClient};
+#[doc(hidden)]
+pub use server::serve_named;
 pub use server::serve_ipc;
 pub use token::load_or_create_token;
 
@@ -40,6 +44,13 @@ pub fn pipe_name(role: Role) -> String {
         Role::Student => "student",
     };
     format!(r"\\.\pipe\classshare-svc-{tag}")
+}
+
+/// 测试专用：带后缀的管名（每个测试实例唯一，防并行串扰；
+/// 生产契约 [`pipe_name`] 不变，doc(hidden) 不入公开文档）。
+#[doc(hidden)]
+pub fn test_pipe_name(role: Role, suffix: &str) -> String {
+    format!("{}-{}", pipe_name(role), suffix)
 }
 
 /// GUI → 服务的请求（计划接口 + 修订 #4 全量）。

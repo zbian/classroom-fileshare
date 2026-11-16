@@ -31,9 +31,21 @@ pub async fn serve_ipc(
     role: Role,
     token: &str,
     handler: Handler,
+    notify_rx: mpsc::Receiver<SvcNotify>,
+) -> anyhow::Result<()> {
+    serve_named(&crate::pipe_name(role), token, handler, notify_rx).await
+}
+
+/// 指定管名的服务运行器（测试用唯一管名防并行实例串扰；
+/// 生产契约 [`crate::pipe_name`] 不变，故 doc(hidden) 不入公开文档）。
+#[doc(hidden)]
+pub async fn serve_named(
+    pipe: &str,
+    token: &str,
+    handler: Handler,
     mut notify_rx: mpsc::Receiver<SvcNotify>,
 ) -> anyhow::Result<()> {
-    let name = crate::pipe_name(role);
+    let name = pipe.to_string();
     let conns: Conns = Arc::new(Mutex::new(Vec::new()));
 
     // 通知扇出：服务核心 → 全部已握手连接（发送失败即剔除该连接）。
