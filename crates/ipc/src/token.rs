@@ -49,6 +49,10 @@ pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::
 }
 
 /// 当前用户 SID（`whoami /user /fo csv` 末行第二列）。
+///
+/// 健壮性加固（CI 诊断，PR #50 run 43867884669）：管道输出 `\r\n` 结尾，
+/// `\r` 混入 SID 会让 icacls 授予静默落空——trim 全部尾随空白 + SID
+/// 字符集白名单（`S-1-` 前缀、其余仅数字与连字符）双重防御。
 fn current_user_sid() -> anyhow::Result<String> {
     let output = std::process::Command::new("whoami")
         .arg("/user")
@@ -67,9 +71,14 @@ fn current_user_sid() -> anyhow::Result<String> {
     let sid = last
         .split(',')
         .nth(1)
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| s.starts_with("S-1-"))
-        .ok_or_else(|| anyhow::anyhow!("whoami 输出未解析到 SID: {last}"))?;
+        .map(|s| {
+            s.trim()
+                .trim_matches('"')
+                .trim_end_matches(['\r', '\n', ' '])
+        })
+        .filter(|s| s.starts_with("S-1-") && s[4..].chars().all(|c| c.is_ascii_digit() || c == '-'))
+        .ok_or_else(|| anyhow::anyhow!("whoami 输出未解析到合法 SID: {last:?}"))?
+        .to_string();
     Ok(sid)
 }
 
@@ -122,17 +131,26 @@ fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
         path.display(),
         grants.join(" ")
     );
-    let status = std::process::Command::new("icacls")
-        .raw_arg(raw)
-        .status()
+    // CI 诊断（PR #50 run 43867884669）：用 .output() 捕获 icacls 全部
+    // 输出——失败 Err 文案与测试 stdout 都带上三元组，环境差异一眼可诊
+    let out = std::process::Command::new("icacls")
+        .raw_arg(&raw)
+        .output()
         .map_err(|e| anyhow::anyhow!("icacls 调用失败: {e}"))?;
-    if !status.success() {
+    tracing::debug!(
+        exit = ?out.status.code(),
+        stdout = %String::from_utf8_lossy(&out.stdout),
+        stderr = %String::from_utf8_lossy(&out.stderr),
+        "icacls restrict 完成"
+    );
+    if !out.status.success() {
         anyhow::bail!(
-            "IPC 令牌 ACL 限权失败（icacls 退出码 {:?}）。手工修复命令：\
-             icacls \"{}\" /inheritance:r /grant {}（issue #49）",
-            status.code(),
-            path.display(),
-            grants.join(" ")
+            "IPC 令牌 ACL 限权失败（icacls 退出码 {:?}，stdout: {:?}，stderr: {:?}）。\
+             手工修复命令：icacls {}（issue #49）",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+            raw
         );
     }
     Ok(())
@@ -157,9 +175,13 @@ mod tests {
 
     /// E7 真实单测（CI=windows 可跑 icacls）：限权后输出无继承项 (I)、
     /// 仅当前用户一条 (R,W)——把「降级兜底掩盖缺陷」这类问题永久堵住。
+    /// CI 诊断（PR #50 run 43867884669）：SID/路径/icacls 输出全部打进
+    /// stdout 与失败消息，环境差异一眼可诊。
     #[test]
     fn acl_restriction_removes_inheritance_and_grants_only_current_user() {
         let dir = tempfile::tempdir().unwrap();
+        let sid = current_user_sid().unwrap();
+        println!("diag: sid={sid:?} path={:?}", dir.path().join("ipc.token"));
         let token = load_or_create_token(dir.path()).expect("限权必须成功（fail closed）");
         assert_eq!(token.len(), 64);
 
@@ -168,12 +190,16 @@ mod tests {
             .output()
             .expect("icacls 查询");
         let text = String::from_utf8_lossy(&out.stdout);
+        println!("diag: icacls 查询输出:\n{text}");
         assert!(!text.contains("(I)"), "继承项必须全部移除，实际:\n{text}");
         let aces = text
             .lines()
             .filter(|l| l.contains("(R,W)") || l.contains("(F)"))
             .count();
-        assert_eq!(aces, 1, "仅当前用户一条授予 ACE，实际:\n{text}");
+        assert_eq!(
+            aces, 1,
+            "仅当前用户一条授予 ACE（diag sid={sid:?}），实际:\n{text}"
+        );
         // 归属校验用 SDDL（icacls /save，纯 ASCII 编码安全——icacls 标准
         // 输出走 OEM 代码页，跨代码页比账户名会乱码）
         let sddl_path = dir.path().join("sddl.txt");
