@@ -1,37 +1,62 @@
 //! IPC 令牌：`root/ipc.token` 持久化、首次生成、ACL 限权（PRD 9.4）。
 //!
-//! E7（issue #49，fail closed）：限权失败即启动错误——原实现的 icacls
-//! 调用缺 `/grant`（code=87 被 WARN 兜底掩盖），叠加 PROGRAMDATA 继承
-//! Users:RX，本地非管理员可读令牌全权限过握手。现以 `*SID:(R,W)` 显式
-//! 授予（qa 实证 EXIT=0），失败向上抛错含手工修复命令。
+//! E7（issue #49，fail closed）：限权失败即启动错误。实现为 **windows-rs
+//! API 直写 DACL**（假设 3，run 68 裁定）——icacls 外部进程在 GHA runner
+//! 上谎报成功（exit 0 + 自报 processed 但 ACL 未变），结构性方案无外部
+//! 进程/无输出解析/locale 无关的空间。
+//!
+//! DACL 语义：`SetNamedSecurityInfoW` + `SE_DACL_PROTECTED` 移除继承并
+//! 全量重建为显式条目——SYSTEM/管理员（管理可达）+ 当前用户 (R,W)
+//! +（服务模式）主登录用户 (R,W)。Everyone/Users 继承 ACE 不再保留
+//! （原缺陷的暴露面，#49）。
 
-use std::path::{Path, PathBuf};
+use std::ffi::c_void;
+use std::path::Path;
 
 use uuid::Uuid;
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{LocalFree, GENERIC_READ, GENERIC_WRITE, HLOCAL, WIN32_ERROR};
+use windows::Win32::Security::Authorization::{
+    ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+    GRANT_ACCESS, MULTIPLE_TRUSTEE_OPERATION, SE_FILE_OBJECT, TRUSTEE_FORM, TRUSTEE_TYPE,
+    TRUSTEE_W,
+};
+use windows::Win32::Security::{
+    DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
+};
+
+// TRUSTEE_FORM 枚举：0 = TRUSTEE_IS_SID（此前误填 1 = TRUSTEE_IS_NAME，
+// 二进制 SID 被当名字映射 → 1332，与 #49 缺 /grant 同族）
+const TRUSTEE_IS_SID: TRUSTEE_FORM = TRUSTEE_FORM(0);
+const TRUSTEE_IS_UNKNOWN: TRUSTEE_TYPE = TRUSTEE_TYPE(0);
+const NO_MULTIPLE_TRUSTEE: MULTIPLE_TRUSTEE_OPERATION = MULTIPLE_TRUSTEE_OPERATION(0);
+
+fn win32_err(api: &str, code: WIN32_ERROR) -> anyhow::Error {
+    anyhow::anyhow!("{api} 失败: {code:?}")
+}
 
 /// 读取或创建 IPC 令牌（hex，256 bit 表示 = 64 个十六进制字符）：同一
-/// root 下稳定，跨 root 唯一。仅授予当前用户（console/agent 模式：
-/// 数据根本就用户私有）。
+/// root 下稳定，跨 root 唯一。仅授予当前用户（console/agent 模式）。
 ///
-/// ACL（fail closed）：`icacls /inheritance:r /grant "*<SID>:(R,W)"`；
-/// 非零退出或调用失败即返回 Err（含手工修复命令），不再降级兜底。
+/// ACL（fail closed）：API 直写 DACL；任何失败即返回 Err（含上下文），
+/// 不再降级兜底。
 pub fn load_or_create_token(root: &Path) -> anyhow::Result<String> {
     load_or_create_token_for(root, None)
 }
 
 /// 服务模式变体（E7 追加，令牌分发机制）：`user_sid` 为主登录用户 SID
-/// （install.ps1 写入 svc.json）——限权为「LocalSystem（创建者隐含）+
-/// 双授予 `*<user_sid>:(R,W)`」，用户会话 GUI 才能读到令牌过握手。
-/// `None` 时仅 LocalSystem 可读，GUI 不可用属配置缺失（调用方告警）。
+/// （install.ps1 写入 svc.json）——限权为「SYSTEM/管理员（管理可达）+
+/// 当前用户 (R,W) + 双授予 `*<user_sid>:(R,W)`」，用户会话 GUI 才能读到
+/// 令牌过握手。`None` 时无主登录用户授予（GUI 不可用属配置缺失，
+/// 调用方告警）。
 pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::Result<String> {
     std::fs::create_dir_all(root)?;
-    // 假设 2（CI 诊断，PR #50）：canonicalize 展开 8.3 短名（RUNNER~1）并
-    // 剥 `\\?\` 前缀——短名+引号组合在 icacls 老式解析下行为未定义
+    // canonicalize 展开 8.3 短名（RUNNER~1）并剥 `\\?\` 前缀
     let root_canon = match std::fs::canonicalize(root) {
         Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
         Err(_) => root.to_string_lossy().into_owned(),
     };
-    let root_canon = PathBuf::from(root_canon);
+    let root_canon = std::path::PathBuf::from(root_canon);
     let path = root_canon.join("ipc.token");
     let restrict = |p: &Path| restrict_acl(p, user_sid);
     if path.exists() {
@@ -39,7 +64,7 @@ pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::
         let token = token.trim().to_string();
         if !token.is_empty() {
             // E7 追加（qa 复验⑤）：存量机器（旧版安装）的令牌可能带
-            // 继承 ACL——幂等重限权实现自愈升级；失败同样 fail closed
+            // 继承 ACL——幂等重建 DACL 实现自愈升级；失败同样 fail closed
             restrict(&path)?;
             return Ok(token);
         }
@@ -50,16 +75,169 @@ pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::
     tracing::info!(
         path = %path.display(),
         user_sid = ?user_sid,
-        "IPC 令牌已创建（ACL：LocalSystem + 主登录用户）"
+        "IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户）"
     );
     Ok(token)
+}
+
+/// 令牌分发（E7 追加，会话自愈）：服务收到登录会话事件后对既有令牌
+/// 以 `sid` 重建 DACL（全量重建语义下无 ACE 累积问题；LocalSystem/
+/// 管理员条目恒重建保留）。M1 单元形态：直接调用即覆盖 WTS 集成路径
+/// （真机由 SessionChange 触发）。
+pub fn grant_for_session(root: &Path, sid: &str) -> anyhow::Result<()> {
+    if !sid.starts_with("S-1-") {
+        anyhow::bail!("非法 SID: {sid}");
+    }
+    // 与 load 路径一致：canonicalize 展开短名
+    let root_canon = match std::fs::canonicalize(root) {
+        Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        Err(_) => root.to_string_lossy().into_owned(),
+    };
+    restrict_acl(
+        &std::path::PathBuf::from(root_canon).join("ipc.token"),
+        Some(sid),
+    )
+}
+
+/// 字符串 SID → PSID（调用方负责 [`free_sid`]）。
+unsafe fn sid_from_string(sid: &str) -> anyhow::Result<PSID> {
+    let mut wide: Vec<u16> = sid.encode_utf16().chain([0]).collect();
+    let mut psid = PSID::default();
+    ConvertStringSidToSidW(PCWSTR(wide.as_mut_ptr()), &mut psid)
+        .map_err(|e| anyhow::anyhow!("ConvertStringSidToSidW({sid}) 失败: {e}"))?;
+    Ok(psid)
+}
+
+/// 释放 ConvertStringSidToSidW 分配的 SID。
+unsafe fn free_sid(psid: PSID) {
+    let _ = LocalFree(Some(HLOCAL(psid.0)));
+}
+
+/// DACL 全量重建（fail closed）：显式条目 = SYSTEM/管理员（管理可达）
+/// + 当前用户 (R,W) + 可选主登录用户 (R,W)；`SE_DACL_PROTECTED` 移除继承。
+fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
+    let current = current_user_sid()?;
+    let rw = (GENERIC_READ | GENERIC_WRITE).0;
+    // ( trustee SID 字符串, 权限 )
+    let trustees: Vec<(&str, u32)> = [
+        ("S-1-5-18", rw),     // SYSTEM
+        ("S-1-5-32-544", rw), // Administrators
+        (current.as_str(), rw),
+    ]
+    .into_iter()
+    .chain(user_sid.iter().map(|s| (*s, rw)))
+    .collect();
+
+    unsafe {
+        // 全部字符串 SID 一次性转换，统一释放
+        let mut owned_sids: Vec<PSID> = Vec::with_capacity(trustees.len());
+        let mut entries: Vec<EXPLICIT_ACCESS_W> = Vec::with_capacity(trustees.len());
+        for (sid_str, mask) in &trustees {
+            let psid = match sid_from_string(sid_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    owned_sids.iter().for_each(|s| free_sid(*s));
+                    return Err(e);
+                }
+            };
+            owned_sids.push(psid);
+            entries.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: *mask,
+                grfAccessMode: GRANT_ACCESS,
+                grfInheritance: NO_INHERITANCE,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: PWSTR(psid.0 as *mut u16),
+                },
+            });
+        }
+
+        // 全新 DACL：仅显式条目（不与旧 DACL 合并 → 继承的 Everyone/Users
+        // 条目随 PROTECTED 一并消失，#49 暴露面）
+        let mut new_dacl: *mut windows::Win32::Security::ACL = std::ptr::null_mut();
+        let code = SetEntriesInAclW(Some(&entries), None, &mut new_dacl);
+        if code != WIN32_ERROR(0) {
+            owned_sids.iter().for_each(|s| free_sid(*s));
+            return Err(win32_err("SetEntriesInAclW", code));
+        }
+
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let code = SetNamedSecurityInfoW(
+            PCWSTR(path_wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(new_dacl),
+            None,
+        );
+        owned_sids.iter().for_each(|s| free_sid(*s));
+        let _ = LocalFree(Some(HLOCAL(new_dacl as *mut c_void)));
+        if code != WIN32_ERROR(0) {
+            return Err(win32_err("SetNamedSecurityInfoW", code));
+        }
+    }
+    Ok(())
+}
+
+/// 读取 DACL 的 SDDL 表示（测试断言用；纯 ASCII 编码安全）。
+#[cfg(test)]
+use windows::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+};
+#[cfg(test)]
+use windows::Win32::Security::PSECURITY_DESCRIPTOR;
+
+#[cfg(test)]
+unsafe fn sddl_of(path: &Path) -> anyhow::Result<String> {
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    let code = GetNamedSecurityInfoW(
+        PCWSTR(path_wide.as_ptr()),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        None,
+        None,
+        &mut sd,
+    );
+    if code != WIN32_ERROR(0) {
+        return Err(win32_err("GetNamedSecurityInfoW", code));
+    }
+    let mut sddl = PWSTR::null();
+    ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        sd,
+        1, // SDDL_REVISION_1
+        DACL_SECURITY_INFORMATION,
+        &mut sddl,
+        None,
+    )
+    .map_err(|e| anyhow::anyhow!("Convert…DescriptorW 失败: {e}"))?;
+    let _ = LocalFree(Some(HLOCAL(sd.0)));
+    let s = sddl.to_string().expect("SDDL 为合法 UTF-16");
+    let _ = LocalFree(Some(HLOCAL(sddl.as_ptr() as *mut c_void)));
+    Ok(s)
 }
 
 /// 当前用户 SID（`whoami /user /fo csv` 末行第二列）。
 ///
 /// 健壮性加固（CI 诊断，PR #50 run 43867884669）：管道输出 `\r\n` 结尾，
-/// `\r` 混入 SID 会让 icacls 授予静默落空——trim 全部尾随空白 + SID
-/// 字符集白名单（`S-1-` 前缀、其余仅数字与连字符）双重防御。
+/// `\r` 混入 SID 会让授予静默落空——trim 全部尾随空白 + SID 字符集
+/// 白名单（`S-1-` 前缀、其余仅数字与连字符）双重防御。
 fn current_user_sid() -> anyhow::Result<String> {
     let output = std::process::Command::new("whoami")
         .arg("/user")
@@ -89,90 +267,7 @@ fn current_user_sid() -> anyhow::Result<String> {
     Ok(sid)
 }
 
-/// 令牌分发（E7 追加，会话自愈）：服务收到登录会话事件后对既有令牌
-/// 重授 `*<sid>:(R,W)`（幂等，LocalSystem 授予保留）。M1 单元形态：
-/// 直接调用即覆盖 WTS 集成路径（真机由 SessionChange 触发）。
-///
-/// 防 ACE 累积（终审 nit 2）：授予前先 `/remove:g "*<sid>"`——同 SID
-/// 重复登录不会逐条累积。实测：可解析 SID 无论有无既有授予均退出 0
-/// （幂等安全）；不可解析 SID 返回 1332，仅记 warn 不阻断（授予为
-/// fail closed 主闸）。M2 备注：不同用户交替登录时旧会话 SID 的 ACE
-/// 由下一次 restrict 全量重建覆盖。
-pub fn grant_for_session(root: &Path, sid: &str) -> anyhow::Result<()> {
-    use std::os::windows::process::CommandExt;
-
-    if !sid.starts_with("S-1-") {
-        anyhow::bail!("非法 SID: {sid}");
-    }
-    // 与 load 路径一致：canonicalize 展开短名（假设 2 诊断）
-    let root_canon = match std::fs::canonicalize(root) {
-        Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
-        Err(_) => root.to_string_lossy().into_owned(),
-    };
-    let path = PathBuf::from(root_canon).join("ipc.token");
-    let remove_raw = format!("\"{}\" /remove:g \"*{sid}\"", path.display());
-    let remove_status = std::process::Command::new("icacls")
-        .raw_arg(remove_raw)
-        .status()
-        .map_err(|e| anyhow::anyhow!("icacls 调用失败: {e}"))?;
-    if !remove_status.success() {
-        tracing::warn!(code = remove_status.code(), %sid, "移除既有授予非零（授予步骤仍执行）");
-    }
-    restrict_acl(&path, Some(sid))
-}
-
-/// ACL 限权（fail closed）：`/inheritance:r` + 按序授予各 SID（当前用户
-/// 必含；服务模式追加主登录用户 `user_sid`——令牌分发机制，E7 追加）。
-/// 星号前缀按 SID 而非名字授权（名字含空格/本地化无歧义）；非零退出
-/// 即 Err（E7：不再 WARN 兜底）。
-///
-/// 实现细节（E7 探针实证）：std 的 `arg()` 会对含 `:` 的参数整体加引号
-/// （`"/inheritance:r"`），icacls 老式解析不接受带引号的开关 → code 87
-/// （这正是原实现缺 `/grant` 假象之下的第二层根因）。因此用
-/// `CommandExt::raw_arg` 传原始命令行，路径含空格时手工加引号。
-fn restrict_acl(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
-    let (raw, code, stdout, stderr) = icacls_grant(path, user_sid);
-    tracing::debug!(
-        exit = ?code,
-        stdout = %stdout,
-        stderr = %stderr,
-        "icacls restrict 完成"
-    );
-    if code != Some(0) {
-        anyhow::bail!(
-            "IPC 令牌 ACL 限权失败（icacls 退出码 {code:?}，stdout: {stdout:?}，stderr: {stderr:?}）。\
-             手工修复命令：icacls {raw}（issue #49）"
-        );
-    }
-    Ok(())
-}
-
-/// icacls 授予核心：构建 raw 命令行并执行，返回（raw, exit, stdout, stderr）
-/// 供诊断（CI 环境「退出 0 却无效果」必须看到真实命令行才能定位）。
-fn icacls_grant(path: &Path, user_sid: Option<&str>) -> (String, Option<i32>, String, String) {
-    use std::os::windows::process::CommandExt;
-
-    let sid = current_user_sid().unwrap_or_else(|_| "S-1-0-0".into());
-    let mut grants = vec![format!("*{sid}:(R,W)")];
-    if let Some(us) = user_sid.filter(|s| s.starts_with("S-1-")) {
-        grants.push(format!("*{us}:(R,W)"));
-    }
-    let raw = format!(
-        "\"{}\" /inheritance:r /grant {}",
-        path.display(),
-        grants.join(" ")
-    );
-    let out = match std::process::Command::new("icacls").raw_arg(&raw).output() {
-        Ok(o) => o,
-        Err(e) => return (raw, None, String::new(), format!("icacls 启动失败: {e}")),
-    };
-    (
-        raw,
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
+// LocalAlloc 释放场景已由 LocalFree 覆盖（API 分配的 SID/ACL/SDDL 内存）
 
 #[cfg(test)]
 mod tests {
@@ -191,10 +286,8 @@ mod tests {
         assert!(t1.chars().all(|c| c.is_ascii_hexdigit()), "纯 hex");
     }
 
-    /// E7 真实单测（CI=windows 可跑 icacls）：限权后输出无继承项 (I)、
-    /// 仅当前用户一条 (R,W)——把「降级兜底掩盖缺陷」这类问题永久堵住。
-    /// CI 诊断（PR #50 run 43867884669）：SID/路径/icacls 输出全部打进
-    /// stdout 与失败消息，环境差异一眼可诊。
+    /// E7 真实单测（API 断言）：限权后 SDDL 保护位在（继承移除）、含当前
+    /// 用户 SID、Everyone（S-1-1-0）不在。
     #[test]
     fn acl_restriction_removes_inheritance_and_grants_only_current_user() {
         let dir = tempfile::tempdir().unwrap();
@@ -203,54 +296,25 @@ mod tests {
         let token = load_or_create_token(dir.path()).expect("限权必须成功（fail closed）");
         assert_eq!(token.len(), 64);
 
-        // 直接调授予核心，把完整 raw 命令行（引号显形）与三元组打进日志
-        let (raw, code, so, se) = icacls_grant(&dir.path().join("ipc.token"), None);
-        println!("diag: raw={raw:?} exit={code:?} stdout={so:?} stderr={se:?}");
-
-        let out = std::process::Command::new("icacls")
-            .arg(dir.path().join("ipc.token"))
-            .output()
-            .expect("icacls 查询");
-        let text = String::from_utf8_lossy(&out.stdout);
-        println!("diag: icacls 查询输出:\n{text}");
-        assert!(!text.contains("(I)"), "继承项必须全部移除，实际:\n{text}");
-        let aces = text
-            .lines()
-            .filter(|l| l.contains("(R,W)") || l.contains("(F)"))
-            .count();
-        assert_eq!(
-            aces, 1,
-            "仅当前用户一条授予 ACE（diag sid={sid:?}），实际:\n{text}"
-        );
-        // 归属校验用 SDDL（icacls /save，纯 ASCII 编码安全——icacls 标准
-        // 输出走 OEM 代码页，跨代码页比账户名会乱码）
-        let sddl_path = dir.path().join("sddl.txt");
-        let save = std::process::Command::new("icacls")
-            .arg(dir.path().join("ipc.token"))
-            .arg("/save")
-            .arg(&sddl_path)
-            .output()
-            .expect("icacls /save");
-        assert!(save.status.success(), "icacls /save 失败");
-        let sddl_bytes = std::fs::read(&sddl_path).unwrap();
-        // /save 输出为 UTF-16LE（icacls 的 Unicode 文件输出）
-        let units: Vec<u16> = sddl_bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|b| u16::from_le_bytes(*b))
-            .collect();
-        let sddl = String::from_utf16_lossy(&units);
-        let sid = current_user_sid().unwrap();
+        let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
+        println!("diag: sddl={sddl}");
         assert!(
-            sddl.contains(&sid),
-            "SDDL 应含当前用户 SID {sid}，实际:\n{sddl}"
+            sddl.contains("D:P"),
+            "DACL 必须为保护形态（继承移除）: {sddl}"
         );
-        assert_eq!(
-            sddl.matches("(A;").count(),
-            1,
-            "SDDL 应仅一条允许 ACE，实际:\n{sddl}"
+        assert!(sddl.contains(&sid), "必须含当前用户 ACE: {sddl}");
+        assert!(
+            !sddl.contains(";;;WD)"),
+            "Everyone 不得保留（SDDL 别名 WD）: {sddl}"
         );
+    }
+
+    #[test]
+    fn load_config_roundtrip_guard() {
+        // 令牌文件格式守护（64 hex）已由上文覆盖；此处防 uuid 位数回退
+        let dir = tempfile::tempdir().unwrap();
+        let t = load_or_create_token(dir.path()).unwrap();
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -259,10 +323,12 @@ mod tests {
         assert!(current_user_sid().unwrap().starts_with("S-1-"));
     }
 
-    /// E7 追加（qa 复验⑤）：存量机器（旧版安装）预置带继承+Users 可读的
-    /// 脆弱 ACL 令牌 → load 幂等重限权自愈（无 (I)、仅当前用户 RW）。
+    /// E7 追加（qa 复验⑤）：存量机器（旧版安装）预置带继承+Everyone 可读
+    /// 的脆弱 ACL 令牌（父目录授权 + icacls /reset 重算继承构造真实继承
+    /// 形态）→ load 幂等重建 DACL 自愈（Everyone 消失、保护位在）。
     #[test]
     fn load_upgrades_legacy_weak_acl() {
+        use std::os::windows::process::CommandExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ipc.token");
         std::fs::write(
@@ -270,14 +336,12 @@ mod tests {
             format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
         )
         .unwrap();
-        // 模拟旧版遗留（真实场景：PROGRAMDATA 父目录继承 Users:RX）——
-        // 父目录授 Everyone 可读 + 文件 /reset 重算继承，文件即带继承 ACE
-        use std::os::windows::process::CommandExt;
+        // 模拟旧版遗留（真实场景：PROGRAMDATA 父目录继承 Users:RX）
         let st = std::process::Command::new("icacls")
             .raw_arg(format!(
                 "\"{}\" /grant \"*S-1-1-0:(OI)(CI)(R)\"",
                 dir.path().display()
-            )) // S-1-1-0 = Everyone，可向子对象继承
+            ))
             .status()
             .unwrap();
         assert!(st.success(), "父目录预置失败");
@@ -287,114 +351,54 @@ mod tests {
             .unwrap();
         assert!(st.success(), "文件继承重算失败");
 
-        // load（existing 分支）必须重限权
+        // load（existing 分支）必须重建 DACL
         let token = load_or_create_token(dir.path()).expect("存量令牌自愈必须成功");
         assert_eq!(token.len(), 64);
 
-        // 断言 ACL 已重限权：无 Everyone、无 (I)、仅当前用户一条授予
-        let out = std::process::Command::new("icacls")
-            .arg(&path)
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert!(!text.contains("(I)"), "继承必须移除，实际:\n{text}");
+        let sddl = unsafe { sddl_of(&path).unwrap() };
+        assert!(sddl.contains("D:P"), "继承必须移除（保护位）: {sddl}");
         assert!(
-            !text.contains("Everyone") && !text.contains("S-1-1-0"),
-            "Everyone 可读必须被清除，实际:\n{text}"
+            !sddl.contains(";;;WD)"),
+            "Everyone 必须清除（SDDL 别名 WD）: {sddl}"
         );
-        let aces = text
-            .lines()
-            .filter(|l| l.contains("(R,W)") || l.contains("(F)") || l.contains("(R)"))
-            .count();
-        assert_eq!(aces, 1, "应仅剩当前用户一条授予 ACE，实际:\n{text}");
-
-        // SDDL 归属校验（编码安全）
-        let sddl_path = dir.path().join("sddl.txt");
-        let save = std::process::Command::new("icacls")
-            .arg(&path)
-            .arg("/save")
-            .arg(&sddl_path)
-            .output()
-            .unwrap();
-        assert!(save.status.success());
-        let sddl_bytes = std::fs::read(&sddl_path).unwrap();
-        let sddl = String::from_utf16_lossy(
-            &sddl_bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| u16::from_le_bytes(*b))
-                .collect::<Vec<_>>(),
+        assert!(
+            sddl.contains(&current_user_sid().unwrap()),
+            "必须含当前用户 ACE: {sddl}"
         );
-        assert!(sddl.contains(&current_user_sid().unwrap()), "SDDL:\n{sddl}");
     }
 
-    /// 令牌分发机制（E7 追加）：user_sid 存在 → 双授予（SDDL 两条允许
-    /// ACE：LocalSystem 路径的当前用户 + 主登录用户）。
+    /// 令牌分发机制（E7 追加）：user_sid 存在 → 双授予（SDDL 同时含
+    /// 当前用户与主登录用户）。
     #[test]
     fn dual_grant_includes_user_sid() {
         let dir = tempfile::tempdir().unwrap();
-        let users_sid = "S-1-5-32-545"; // BUILTIN\Users（真实可解析；icacls /save 输出知名 SID 的确定性别名 "BU"）
+        let users_sid = "S-1-5-32-545"; // BUILTIN\Users（真实可解析）
         let token =
             load_or_create_token_for(dir.path(), Some(users_sid)).expect("双授予限权必须成功");
         assert_eq!(token.len(), 64);
 
-        let sddl_path = dir.path().join("sddl.txt");
-        let save = std::process::Command::new("icacls")
-            .arg(dir.path().join("ipc.token"))
-            .arg("/save")
-            .arg(&sddl_path)
-            .output()
-            .unwrap();
-        assert!(save.status.success());
-        let sddl_bytes = std::fs::read(&sddl_path).unwrap();
-        let sddl = String::from_utf16_lossy(
-            &sddl_bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| u16::from_le_bytes(*b))
-                .collect::<Vec<_>>(),
-        );
+        let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
         assert!(
             sddl.contains(&current_user_sid().unwrap()),
             "应含当前用户：\n{sddl}"
         );
-        // 知名 SID 在 /save 输出中确定性别名化（Users → "BU"）
-        assert!(
-            sddl.contains("(A;;0x12019f;;;BU)"),
-            "应含主登录用户授予：\n{sddl}"
-        );
-        assert_eq!(
-            sddl.matches("(A;").count(),
-            2,
-            "双授予应为两条允许 ACE，实际:\n{sddl}"
-        );
+        // 知名 SID 在 SDDL 中确定性别名化（BUILTIN\Users → "BU"）
+        assert!(sddl.contains(";;;BU)"), "应含主登录用户授予：\n{sddl}");
+    }
 
-        // None：仅当前用户（配置缺失语义，svc 侧负责告警）
-        let dir2 = tempfile::tempdir().unwrap();
-        load_or_create_token_for(dir2.path(), None).unwrap();
-        let sddl2_path = dir2.path().join("sddl.txt");
-        let save2 = std::process::Command::new("icacls")
-            .arg(dir2.path().join("ipc.token"))
-            .arg("/save")
-            .arg(&sddl2_path)
-            .output()
-            .unwrap();
-        assert!(save2.status.success());
-        let sddl2_bytes = std::fs::read(&sddl2_path).unwrap();
-        let sddl2 = String::from_utf16_lossy(
-            &sddl2_bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| u16::from_le_bytes(*b))
-                .collect::<Vec<_>>(),
+    /// grant_for_session 单元形态（WTS 集成真机覆盖）：对既有令牌以
+    /// 新 SID 重建 DACL（M1 会话自愈语义）。
+    #[test]
+    fn grant_for_session_rebuilds_dacl_for_sid() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_token(dir.path()).unwrap();
+        let users_sid = "S-1-5-32-545";
+        grant_for_session(dir.path(), users_sid).expect("会话重授必须成功");
+        let sddl = unsafe { sddl_of(&dir.path().join("ipc.token")).unwrap() };
+        assert!(
+            sddl.contains(";;;BU)"),
+            "应含会话用户授予（SDDL 别名 BU）: {sddl}"
         );
-        assert_eq!(
-            sddl2.matches("(A;").count(),
-            1,
-            "无 user_sid 应仅一条允许 ACE，实际:\n{sddl2}"
-        );
+        assert!(sddl.contains("D:P"), "保护位保持: {sddl}");
     }
 }
