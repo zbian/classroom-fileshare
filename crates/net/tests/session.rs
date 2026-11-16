@@ -366,6 +366,50 @@ async fn disconnect_after_join_triggers_on_disconnect() {
     assert!(seen, "join 成功后断线必须触发 on_disconnect");
 }
 
+/// 接口扩展 #5⑤：优雅停机关闭全部会话并释放端口。
+#[tokio::test]
+async fn server_shutdown_closes_sessions_and_port() {
+    let (handler, _rx) = MockHandler::new(None);
+    let h = handler.clone();
+    let server = Server::bind("127.0.0.1:0".parse().unwrap(), handler)
+        .await
+        .unwrap();
+    let addr = server.local_addr();
+    let handle = server.handle();
+    let _ = h;
+    let task = tokio::spawn(server.run());
+
+    // 建立一个已 join 的会话
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    send(
+        &mut sock,
+        &Frame::Hello(Hello::Join {
+            protocol_version: PROTOCOL_VERSION,
+            nickname: "eve".into(),
+            role: Role::Student,
+            pin: None,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        read_frame(&mut sock).await.unwrap(),
+        Frame::HelloReply(HelloReply::Ok { .. })
+    ));
+
+    // 停机：run 退出、会话 abort、对端读到 EOF、端口可复用
+    handle.shutdown();
+    tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .expect("run 应在停机后退出")
+        .expect("run 任务正常结束")
+        .unwrap();
+    assert!(read_frame(&mut sock).await.is_err(), "会话连接应随停机关闭");
+    let relisten = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("端口应已释放");
+    drop(relisten);
+}
+
 /// 接口修订 #4：ManifestReq 经 on_manifest_req 回调应答。
 #[tokio::test]
 async fn manifest_req_answered_via_callback() {

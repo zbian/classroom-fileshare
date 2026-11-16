@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,8 @@ pub(crate) struct Hub {
 struct Conn {
     nickname: String,
     tx: mpsc::Sender<Frame>,
+    /// 最近一次 Pong 的秒级时间戳（0=从未应答；PR #34 B 存活探测）。
+    pong_at: Arc<AtomicI64>,
 }
 
 fn unix_now() -> i64 {
@@ -56,6 +58,27 @@ fn latest_item(out: PutOutcome) -> ShareItem {
         PutOutcome::Created(item) => item,
         PutOutcome::Overwritten { latest, .. } => latest,
     }
+}
+
+/// 确定性 event_id：`H(item_id|version|kind)` 前 32 hex。
+///
+/// 接口修订 #5③（lead 建议采纳）：重连重推复用同一 event_id，接收端
+/// `seen_event` 直接幂等去重，`event_log` 不随重连次数膨胀。
+fn deterministic_event_id(item_id: &str, version: u64, kind: &EventKind) -> String {
+    use sha2::{Digest, Sha256};
+    let kind_name = match kind {
+        EventKind::Upsert => "upsert",
+        EventKind::Delete => "delete",
+        EventKind::Rename => "rename",
+        EventKind::Ack => "ack",
+    };
+    let mut h = Sha256::new();
+    h.update(item_id.as_bytes());
+    h.update(b"|");
+    h.update(version.to_string().as_bytes());
+    h.update(b"|");
+    h.update(kind_name.as_bytes());
+    classroom_store::files::to_hex(&h.finalize())[..32].to_string()
 }
 
 impl Hub {
@@ -108,13 +131,54 @@ impl Hub {
 
     fn make_event(kind: EventKind, item: ShareItem, now: i64) -> Event {
         Event {
-            event_id: Uuid::new_v4().to_string(),
+            event_id: deterministic_event_id(&item.id, item.version, &kind),
             kind,
             item,
             new_name: None,
             acked_by: None,
             ts: now,
         }
+    }
+
+    async fn push_file_to(&self, item: &ShareItem, tx: &mut mpsc::Sender<Frame>) {
+        let Ok(body_path) = self.store.lock().unwrap().file_body(item) else {
+            tracing::warn!(item_id = %item.id, "文件实体缺失，跳过推送");
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&body_path) else {
+            tracing::warn!(item_id = %item.id, "文件读取失败，跳过推送");
+            return;
+        };
+        // 文本条目 sha256=None（PRD 3.5），广播时对正文现算整体哈希
+        let sha = match item.sha256.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                use sha2::{Digest, Sha256};
+                classroom_store::files::to_hex(&Sha256::digest(&bytes))
+            }
+        };
+        let _ = tx
+            .send(Frame::FileHeader(FileHeader {
+                item_id: item.id.clone(),
+                file_name: item.title.clone(),
+                size: bytes.len() as u64,
+                sha256: sha.clone(),
+            }))
+            .await;
+        for (seq, part) in bytes.chunks(CHUNK_SIZE).enumerate() {
+            let _ = tx
+                .send(Frame::FileChunk(FileChunk {
+                    item_id: item.id.clone(),
+                    seq: seq as u64,
+                    bytes: part.to_vec(),
+                }))
+                .await;
+        }
+        let _ = tx
+            .send(Frame::FileEnd(FileEnd {
+                item_id: item.id.clone(),
+            }))
+            .await;
     }
 
     async fn broadcast_event(&self, ev: &Event) {
@@ -124,38 +188,8 @@ impl Hub {
     }
 
     async fn broadcast_file(&self, item: &ShareItem) {
-        let Ok(body_path) = self.store.lock().unwrap().file_body(item) else {
-            tracing::warn!(item_id = %item.id, "文件实体缺失，跳过推送");
-            return;
-        };
-        let Ok(bytes) = std::fs::read(&body_path) else {
-            tracing::warn!(item_id = %item.id, "文件读取失败，跳过推送");
-            return;
-        };
-        let sha = item.sha256.clone().unwrap_or_default();
-        for tx in self.targets() {
-            let _ = tx
-                .send(Frame::FileHeader(FileHeader {
-                    item_id: item.id.clone(),
-                    file_name: item.title.clone(),
-                    size: bytes.len() as u64,
-                    sha256: sha.clone(),
-                }))
-                .await;
-            for (seq, part) in bytes.chunks(CHUNK_SIZE).enumerate() {
-                let _ = tx
-                    .send(Frame::FileChunk(FileChunk {
-                        item_id: item.id.clone(),
-                        seq: seq as u64,
-                        bytes: part.to_vec(),
-                    }))
-                    .await;
-            }
-            let _ = tx
-                .send(Frame::FileEnd(FileEnd {
-                    item_id: item.id.clone(),
-                }))
-                .await;
+        for mut tx in self.targets() {
+            self.push_file_to(item, &mut tx).await;
         }
     }
 
@@ -166,6 +200,34 @@ impl Hub {
             HostCommand::Delete { id } => self.delete_item(id).await,
             HostCommand::Shutdown => {}
         }
+    }
+
+    /// PR #34 B：探测旧连接——存活 → Some(())（调用方拒绝新 join）；
+    /// 无响应 → 驱逐旧表项并返回 None（新 join 可用该昵称）。
+    async fn probe_or_evict(&self, old_sid: &str, nickname: &str) -> Option<()> {
+        let probe_start = unix_now();
+        let (ping_tx, pong_at) = {
+            let conns = self.conns.lock().unwrap();
+            let conn = conns.get(old_sid)?;
+            (conn.tx.clone(), conn.pong_at.clone())
+        };
+        let _ = ping_tx.send(Frame::Ping).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if pong_at.load(Ordering::SeqCst) >= probe_start {
+                tracing::info!(nickname = %nickname, "旧连接存活，拒绝重名加入（EX-02）");
+                return Some(());
+            }
+            // 探测期间旧连接可能自然断开（on_disconnect 已移除表项）
+            self.conns.lock().unwrap().get(old_sid)?;
+        }
+        // 僵死：驱逐旧表项（广播不再发它；writer 因 tx 释放而关闭，旧客户端
+        // 读到 EOF 自行退出）。旧会话任务的读循环可能仍挂——M1 接受：
+        // 其后续事件被 owner 过滤（PR #34 A2）忽略
+        self.conns.lock().unwrap().remove(old_sid);
+        tracing::info!(nickname = %nickname, "旧连接无响应，已驱逐（昵称可重新加入）");
+        None
     }
 
     async fn send_text(&self, title: &str, body: &str) {
@@ -184,6 +246,8 @@ impl Hub {
                 let ev = Self::make_event(EventKind::Upsert, item.clone(), now);
                 let _ = self.store.lock().unwrap().record_event(&ev);
                 self.broadcast_event(&ev).await;
+                // 文本正文同样经文件帧推送（修订 #5④：ShareItem 不含正文字段）
+                self.broadcast_file(&item).await;
                 let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
             }
             Err(e) => tracing::warn!(error = %e, "教师文本入库失败"),
@@ -253,9 +317,20 @@ impl SessionHandler for Hub {
                 code: HelloErr::InvalidNickname,
             };
         }
-        {
+        // PR #34 B 项（重名存活探测）：同名已在线时先探测旧连接——
+        // 课堂合盖休眠/断网（无 RST）极常见，无条件拒绝会把昵称锁死到
+        // 教师重启；无脑替换又破坏 PRD EX-02/TC-01 的重名拒绝语义。
+        // 折中：向旧连接发 Ping，至多 3s 内收到 Pong 视为存活（拒绝新
+        // join）；超时判定僵死，驱逐旧表项后接受新 join。
+        let dup_sid = {
             let conns = self.conns.lock().unwrap();
-            if conns.values().any(|c| c.nickname == *nickname) {
+            conns
+                .iter()
+                .find(|(_, c)| c.nickname == *nickname)
+                .map(|(sid, _)| sid.clone())
+        };
+        if let Some(old_sid) = dup_sid {
+            if self.probe_or_evict(&old_sid, nickname).await.is_some() {
                 return HelloReply::Err {
                     code: HelloErr::DupNickname,
                 };
@@ -267,6 +342,7 @@ impl SessionHandler for Hub {
             Conn {
                 nickname: nickname.clone(),
                 tx: tx.clone(),
+                pong_at: Arc::new(AtomicI64::new(0)),
             },
         );
         tracing::info!(nickname = %nickname, session_id = %session_id, "学员加入");
@@ -279,6 +355,16 @@ impl SessionHandler for Hub {
     }
 
     async fn on_event(&self, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
+        // PR #34 A2（最小加固）：仅接受教师端 owner 的事件，其余忽略——
+        // 阻止定制客户端伪造任意 owner 入库；M2 回传的会话身份绑定另走接口修订
+        if ev.item.owner_id != TEACHER_OWNER {
+            tracing::warn!(
+                owner = %ev.item.owner_id,
+                event_id = %ev.event_id,
+                "忽略非教师 owner 的事件"
+            );
+            return;
+        }
         // 先取出决策再 match，确保 MutexGuard 不跨 await
         let decision = self.store.lock().unwrap().apply_remote(&ev);
         match decision {
@@ -318,21 +404,33 @@ impl SessionHandler for Hub {
         }
     }
 
+    async fn on_pong(&self, session_id: &str) {
+        if let Some(conn) = self.conns.lock().unwrap().get(session_id) {
+            conn.pong_at.store(unix_now(), Ordering::SeqCst);
+        }
+    }
+
     async fn on_manifest_req(&self, tx: &mut mpsc::Sender<Frame>) {
+        // PR #34 A1：清单仅含教师广播内容（owner=teacher + audience=All），
+        // 不泄露学员提交条目
         let filter = ListFilter {
+            owner: Some(TEACHER_OWNER.to_string()),
+            audience: Some(Audience::All),
             include_deleted: true,
             ..Default::default()
         };
-        let entries = match self.store.lock().unwrap().list(filter) {
-            Ok(items) => items
-                .into_iter()
-                .map(|i| (i.id, i.version, i.deleted))
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "读取版本清单失败");
-                Vec::new()
-            }
-        };
+        let items = self.store.lock().unwrap().list(filter).unwrap_or_default();
+        // 先回版本清单，再对未删条目整体重推（Event + 文件/正文件帧）：
+        // 确定性 event_id 使接收端幂等去重，缺失条目 Overwrite、已有条目忽略
+        let entries = items
+            .iter()
+            .map(|i| (i.id.clone(), i.version, i.deleted))
+            .collect();
         let _ = tx.send(Frame::Manifest(entries)).await;
+        for item in items.into_iter().filter(|i| !i.deleted) {
+            let ev = Self::make_event(EventKind::Upsert, item.clone(), unix_now());
+            let _ = tx.send(Frame::Event(ev)).await;
+            self.push_file_to(&item, tx).await;
+        }
     }
 }

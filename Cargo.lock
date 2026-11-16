@@ -523,6 +523,18 @@ dependencies = [
 [[package]]
 name = "classroom-agent"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "classroom-host",
+ "classroom-net",
+ "classroom-protocol",
+ "classroom-store",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "classroom-gui"

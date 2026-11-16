@@ -10,6 +10,7 @@ classroom-net = { path = "../net" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+sha2 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 

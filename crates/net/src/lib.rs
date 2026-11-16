@@ -12,7 +12,7 @@ pub use frame::{
     encode_frame, read_frame, FileAck, FileChunk, FileEnd, FileHeader, Frame, Hello, HelloErr,
     HelloReply, MAX_FRAME_SIZE,
 };
-pub use session::{run_session, Server, SessionHandler};
+pub use session::{run_session, Server, ServerHandle, SessionHandler};
 
 /// UDP 发现端口（教师机 beacon 广播 / 学员端监听）。
 pub const DISCOVERY_PORT: u16 = 47820;

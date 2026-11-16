@@ -53,6 +53,10 @@ pub enum MergeDecision {
 }
 
 /// 幂等合并：None(本地无) 或 version 较高 → Overwrite；event 重复/旧版 → Ignore*。
+///
+/// 例外（接口修订 #5①，PRD 7.4 删除同步）：同 version 但事件携带删除意图
+/// （`deleted=true`）而本地未删 → Overwrite——教师删除不加 version，若按重放
+/// 忽略将使删除永远无法在学员端落地；本地已是墓碑的重复 delete 仍幂等忽略。
 pub fn merge(local: Option<&ShareItem>, ev: &Event) -> MergeDecision {
     let Some(local) = local else {
         return MergeDecision::Overwrite(Box::new(ev.item.clone()));
@@ -60,6 +64,12 @@ pub fn merge(local: Option<&ShareItem>, ev: &Event) -> MergeDecision {
     match ev.item.version.cmp(&local.version) {
         Ordering::Greater => MergeDecision::Overwrite(Box::new(ev.item.clone())),
         Ordering::Less => MergeDecision::IgnoreStale,
-        Ordering::Equal => MergeDecision::IgnoreDuplicate,
+        Ordering::Equal => {
+            if ev.item.deleted && !local.deleted {
+                MergeDecision::Overwrite(Box::new(ev.item.clone()))
+            } else {
+                MergeDecision::IgnoreDuplicate
+            }
+        }
     }
 }
