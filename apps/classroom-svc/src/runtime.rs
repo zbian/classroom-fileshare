@@ -279,6 +279,13 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
         CoreEvent::Agent(AgentEvent::Synced) => {
             vec![SvcNotify::StatusChanged("已与教师机对齐".into())]
         }
+        // 评审随包项 3：EX-08「教师机离线只读缓存」信号通路（T-10 前端
+        // 消费 StatusChanged 展示离线横幅与待发提示）
+        CoreEvent::Agent(AgentEvent::Disconnected) => {
+            vec![SvcNotify::StatusChanged(
+                "与教师机断开，本地为只读缓存，恢复后自动补发".into(),
+            )]
+        }
         _ => Vec::new(),
     }
 }
@@ -343,6 +350,11 @@ mod tests {
         assert!(matches!(
             map_notify(&CoreEvent::Agent(AgentEvent::Removed("x".into()))).as_slice(),
             [SvcNotify::ItemRemoved(id)] if id == "x"
+        ));
+        // 评审随包项 3：Disconnected → StatusChanged（EX-08 信号通路）
+        assert!(matches!(
+            map_notify(&CoreEvent::Agent(AgentEvent::Disconnected)).as_slice(),
+            [SvcNotify::StatusChanged(_)]
         ));
         assert!(matches!(
             map_notify(&CoreEvent::Agent(AgentEvent::Discovered(vec![]))).as_slice(),
