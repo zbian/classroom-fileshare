@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.3.2（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3/E4/E5/E6 已闭环；**E7 修复 PR #50 复验 4/5 通过、存量令牌路径未覆盖（§3.9.2）**；PR #51 评审中） |
+| 状态 | v1.3.3（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3/E4/E5/E6 已闭环；**E7 修复 PR #50 @ 9c1797d 复验 5/5 通过**（§3.9.2），残余低危项已备案；PR #51 评审中） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -72,6 +72,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 - M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + SCM failure 自动重启 5s/5s/30s + 防火墙（TCP 47821 仅 teacher；UDP 47820 两角色，E1）+ GUI HKCU Run）与 `uninstall.ps1`。NSIS 安装包属 M3。
 - 已确认安装参数（e42dbd5，QA 已读脚本核对）：
   - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> [-ManualAddr <ip>:47821] -GuiExe <…>`（对应 RK-04 备用手动地址）。
+  - ★**`-UserSid`（E7 令牌分发，#49）**：服务模式下 GUI 需以登录用户身份读取 `ipc.token`，故 install.ps1 须写入 `user_sid`（`svc.json`）→ 令牌 ACL 双授予「服务账号 + 主登录用户」。缺省时自动探测活动控制台会话用户（`quser` → `Win32_UserAccount` 取 SID）；探测不到（裸机镜像未登录）则 WARN 并**跳过**，待首次登录后由服务 SessionChange 自愈。**验收要求**：安装须以目标登录用户身份执行（或显式传 `-UserSid S-1-…`），并核验令牌 ACL 同时含服务账号与该登录用户。
   - 服务名 `ClassShareSvc`、服务进程 `classroom-svc.exe`、GUI 进程 `classroom-gui.exe`（以打包产物名为准）。
   - **数据根（管理员安装）= `%PROGRAMDATA%\ClassShare\data`**（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；日志 `<数据根>\logs\svc.log`。降级安装（无管理员）数据根 = `%LOCALAPPDATA%\ClassShare\data`。GUI 侧 `gui.json` / `profile.json` 仍在 `%APPDATA%\ClassShare\`。
   - `-GuiExe` 缺省时 **GUI 登录自启不注册**（TC-11 步骤 5 依赖它，安装时必传）——原为静默跳过，已判定**缺陷 E2**（2026-11-15），修复为**显式警告 + 安装摘要行明示「未注册」**；E2 合入后验收执行时若仍静默跳过即复验失败。HKCU Run 仅对执行安装的用户生效（机房多用户需逐用户或镜像配置，登记为部署注意事项）。
@@ -122,7 +123,7 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | **E4** | **TC-02 计时取证锚点缺失**：#14 约定关键行 `broadcast/received/applied` 在实现中不存在（QA 枚举全部 tracing 调用确认），Δ 取证被迫降级为文件 mtime 代理 | **已派单**（Lead 2026-11-16）：host 补 `broadcast`、agent 补 `received` + `applied` 三条 info 级锚点，行内字段固定 `item_id=` / `file=` / `size=`（字段名稳定，QA 按此解析）；reviewer-2 终审覆盖后进合并序列 | 修复后：日志直采 Δ（`Δ = T(applied,学员) − T(broadcast,教师)`），并与 mtime 代理交叉验证；E4 合入前按 §3.5 应急降级口径执行并声明 | **修复已合入 main**（73e17d3 / PR #39）；QA 真实日志演练通过，见 §3.9 |
 | **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | **Lead 定性（2026-11-16）：接受偏差，不修码**——applied 行不含 file/size 属约定，证据表以 item_id 为键，file/size 为冗余 | 已在 issue #14 评论留痕（applied 行不含 file/size 属约定 + 三条锚点真实行格式 + 解析口径） | **已关闭（约定达成）** |
 | **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | **Lead 定性（2026-11-16）：一般，派单修复**——agent `received` 锚点 `size=` 改用 `ev.item.size`，对齐 PRD 3.5「文本为字符数」；PR #48 → **已合并 main（3603f23）** | 修复后：文本条目的 teacher/agent `size` 两侧相等（均为字符数）；QA 重跑 §3.9 演练核对 | **已闭环**：QA 复验通过（2026-11-16，PR #48）——真实日志实测文本条目两侧均 `size=9`（字符数），文件条目两侧均 3145728（字节）；上游测试 EXIT=0 全绿；PR 新增断言把「字符数 5 / 正文实体 UTF-8 15 字节」固化。**已于 3603f23 合入 main** |
-| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（acf4a72）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因 | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **修复中（issue #49 / PR #50）：QA 复验 4/5 通过，存量路径未覆盖**（见 §3.9.2） |
+| **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（9c1797d）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因；追加**存量令牌幂等重限权**、`user_sid` 双授予（svc.json / install.ps1 自动探测+`-UserSid` / SessionChange 登录自愈）、`--console` 打印 `{e}` | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **修复中（issue #49 / PR #50 @ 9c1797d）：QA 复验 5/5 通过**（实测记录见 §3.9.2），残余低危项（显式 ACE 不清理）已备案；**待合并** |
 
 ### 3.8.1 QA 静态复核记录
 
@@ -207,9 +208,10 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | ② 非管理员不可读 | 同上（ACL 仅当前用户 RW） | ✅ 通过（服务模式待真机复核） |
 | ③ 管道仍须令牌握手 | `classroom-ipc` 回环测试 `wrong_token_rejected_at_handshake` 通过 | ✅ 通过 |
 | ④ 限权失败 fail closed（拒绝启动） | `bootstrap` 失败 → `std::process::exit(1)`；服务模式打印 `{e}` 含手工修复命令 | ✅ 通过（见下方「次要发现」） |
-| ⑤ **存量令牌重新限权（升级场景）** | **不通过**：令牌文件已存在时 `load_or_create_token` 直接提前 `return Ok(token)`，**跳过 `restrict_acl_to_current_user`**。QA 实测：预置带 `BUILTIN\Users:(R)` 与继承项 `(I)` 的令牌文件 → 真实启动后 **ACL 完全未变**（Users:R 与 `(I)` 均仍在）→ **升级到修复版的机器仍保留脆弱 ACL，PRD 9.4 仍未满足** | ❌ **未通过** |
+| ⑤ **存量令牌重新限权（升级场景）** | **QA 实测通过（修复后）**：预置「真实继承形态」的脆弱 ACL（`BUILTIN\Users:(I)(RX)` + SYSTEM/Administrators/用户继承项，与 `%PROGRAMDATA%` 同构）→ 修复版真实启动后 ACL **仅剩 `Bian:(R,W)`**，继承项与 Users 可读全部清除 → **升级到修复版的机器可自愈，PRD 9.4 满足**。（首版修复未覆盖：令牌已存在时提前 `return Ok(token)` 跳过限权，QA 曾实测 ACL 完全未变；已在 9c1797d 修正并补单测 `load_upgrades_legacy_weak_acl`） | ✅ **通过** |
+| ⑥ 显式 ACE 残余（低危） | `/inheritance:r` 只清**继承**项，管理员手工授予的**显式** ACE 不被移除（QA 注入 `BUILTIN\Users:(R)` 显式 ACE 后仍残留）——非旧版产生的形态，属加固建议（可加 `/remove:g` 清理非预期 ACE） | 备案（不阻断） |
 
-**修复建议（最小改动）**：`path.exists()` 分支在 `return Ok(token)` 前也调用一次 `restrict_acl_to_current_user(&path)?`（icacls 幂等，成本极低），即可自愈所有已安装旧版的机器；并建议单测补一例「存量令牌文件被重新限权」。
+**修复建议（最小改动，已由 dev 于 9c1797d 采纳）**：`path.exists()` 分支在 `return Ok(token)` 前也调用一次限权（icacls 幂等，成本极低），即可自愈所有已安装旧版的机器；并补单测「存量令牌文件被重新限权」（`load_upgrades_legacy_weak_acl`，QA 复核该单测以**真实继承形态**构造脆弱 ACL——首版单测用显式 ACE 会被 `/inheritance:r` 意外通过，属测试缺陷，已由 dev 自纠）。
 
 **次要发现（建议一并处理）**：`--console` 模式的 bootstrap 失败分支用 `let Ok(..) = .. else` **丢弃了原始错误**，只打印「svc.json 配置损坏，无法启动」——ACL 限权失败时也会打印这句，运维会查错方向（服务模式分支正确打印 `{e}`）。建议 console 分支改为打印 `{e}`。
 
@@ -474,6 +476,7 @@ Select-String -Path "$env:ProgramData\ClassShare\data\logs\svc.log" -Pattern "�
 
 - 重启前 `Get-Service` 截图；登录界面手机照片（含可辨时间）。
 - 登录后列表与打开成功截图；文件时间戳、System 7036、服务日志行（无 E4 时取会话生命周期行）的命令输出（与登录时刻同框对比，可写进同一 `.md` 证据文件）。
+- ★令牌 ACL 取证（E7/#49）：安装后与首次登录后各取一次 `icacls "<数据根>\ipc.token"`，应显示**双授予**（服务账号 + 主登录用户）、无继承项 `(I)`、无其他用户 ACE；若无 `user_sid` 则首次登录后由 SessionChange 自愈，需取到自愈后的 ACL 作为证据。
 - 教师机发送侧录屏/日志行。
 
 **(e) 本机限制与替代**
@@ -501,6 +504,7 @@ tasklist /FI "IMAGENAME eq classroom-gui.exe"       # 预期可见（以打包�
 tasklist /FI "IMAGENAME eq classroom-svc.exe"       # 预期可见（服务进程）
 Get-ChildItem "$env:ProgramData\ClassShare\data" -Recurse -File | Measure-Object | Select-Object Count
 python -c "import sqlite3,os;p=os.path.expandvars(r'%PROGRAMDATA%\ClassShare\data\index.db');c=sqlite3.connect(p);print(c.execute('select count(*) from share_items').fetchone())"
+icacls "$env:ProgramData\ClassShare\data\ipc.token"   # E7：双授予（服务账号+登录用户）、无继承项 (I)
 ```
 
 2. 右键浮动图标 → 菜单六项齐全（A3：粘贴并共享/粘贴为文本草稿/打开课堂共享/暂停接收提醒/设置/退出课堂共享，截图）。
