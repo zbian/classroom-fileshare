@@ -28,7 +28,21 @@
 
 ## 待办（下回合）
 
-- 拖放入口（Unicode 文本 OLE + 目录提示）——文件 DragDrop 已接 SendFiles 链路
+- 拖放入口（文件）：`windows.rs` 的 DragDrop::Drop 已接 SendFiles 真链路 + 目录跳过提示，待提交联测
 - HKCU 右键扩展（脚本已写：`scripts/register-context-menu.ps1`，含 `-Remove`；实测注册/清理/重注册 roundtrip 0.17s，
   **关键坑**：键路径含 `*` 通配符，读写必须 `-LiteralPath` 否则遍历 Classes 树长时间无响应）
 - argv 多选转发单实例（`share_files_from_argv` 已实现，待右键盘点后联测）
+- 卸载清理与 T-13 `uninstall.ps1` 的右键键名对齐
+
+## 已批准的降级项（Deferral → #13 备注）
+
+**Unicode 文本拖放延后 M2**（lead 2026-11-17 裁定）。依据：
+
+- PRD 第 12 章：拖拽投放整体属 **P1**（M2），不在 M1 P0 交付范围
+- M1 P0 的文本共享入口已有两个可用：右键图标「粘贴并共享」、主界面「+ 粘贴文本」
+- 完整实现需自写 COM `IDropTarget`（`RegisterDragDrop` 于 icon HWND + `CF_UNICODETEXT` 解析，
+  约 150–200 行，含 COM 引用计数与线程套间管理），风险/收益不划算
+- M1 已实现的拖拽能力：**文件拖放**（Tauri 内置 DragDrop → `SendFiles` 真链路）✅
+
+M1 文本入口矩阵（F2 规则速查口径）：右键粘贴 ✅ / 主界面 + 粘贴文本 ✅ / 选中文本拖到图标 ⏳ M2。
+
