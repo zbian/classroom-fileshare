@@ -9,7 +9,15 @@ export type ItemKind = 'Text' | 'File'
 export type Audience = 'All' | 'Teacher'
 export type Role = 'Teacher' | 'Student'
 /** SyncState：Synced 已同步 …RetryLocked 被占用重试（PRD 7.6 状态字典） */
-export type SyncState = 'Synced' | 'PendingSend' | 'PendingSync' | 'DeleteDeferred' | 'RetryLocked' | 'Failed'
+export type SyncState =
+  | 'Synced'
+  | 'PendingSend'
+  | 'PendingSync'
+  | 'DeleteDeferred'
+  | 'RetryLocked'
+  | 'Failed'
+  // #114：删除同步终态（全部在线端 ack 后 host 置 Deleted；列表默认不含墓碑，故仅状态映射用）
+  | 'Deleted'
 
 export interface ShareItem {
   id: string
@@ -89,6 +97,9 @@ export type SvcNotify =
   | { t: 'ItemRemoved'; payload: { id: string } }
   | { t: 'StatusChanged'; payload: string }
   | { t: 'TransferProgress'; payload: { item_id: string; pct: number } }
+  /** #114（S5 ack 聚合）：删除同步进度（done/total 台）；retag 统一外壳，读 payload；
+   *  done 可能 > total（离线端后到 ack）→ UI 侧 min 收敛；total=0 不显示进度 */
+  | { t: 'DeleteProgress'; payload: { item_id: string; done: number; total: number } }
   | { t: 'Discovered'; payload: { beacons: Beacon[] } }
   /** #103：同步异常告警（占用重试耗尽/备份写入失败/磁盘不足）；图形化聚合展示 */
   | {

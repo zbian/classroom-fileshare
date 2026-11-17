@@ -13,6 +13,7 @@ import SubmissionsTab from './views/SubmissionsTab'
 import PasteTextDialog from './dialogs/PasteTextDialog'
 import CreateRoomDialog from './dialogs/CreateRoomDialog'
 import DeleteConfirmDialog from './dialogs/DeleteConfirmDialog'
+import DeleteProgressBar from './components/DeleteProgressBar'
 import RenameDialog from './dialogs/RenameDialog'
 import NicknameDialog from './dialogs/NicknameDialog'
 
@@ -372,6 +373,7 @@ export default function App() {
       <StatusBar />
       <TabBar />
       <Toolbar />
+      <DeleteProgressBar />
       <main className="app-content">
         {role === 'teacher' && activeTab === 'submissions' ? (
           <SubmissionsTab />

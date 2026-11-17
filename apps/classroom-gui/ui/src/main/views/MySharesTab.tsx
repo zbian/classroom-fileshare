@@ -35,6 +35,9 @@ function stateChip(
         return { cls: 'warn', label: '待删除' }
       case 'RetryLocked':
         return { cls: 'err', label: '被占用重试' + retryLabel }
+      // #114：删除同步终态（全部在线端 ack 后置 Deleted）
+      case 'Deleted':
+        return { cls: 'ok', label: '已删除' }
       case 'Failed':
         return { cls: 'err', label: '失败' }
     }
@@ -50,6 +53,9 @@ function stateChip(
       return { cls: 'warn', label: '延迟删除' }
     case 'RetryLocked':
       return { cls: 'err', label: '被占用重试' + retryLabel }
+    // #114：删除同步终态（全部在线端 ack 后置 Deleted）
+    case 'Deleted':
+      return { cls: 'ok', label: '已删除' }
     case 'Failed':
       return { cls: 'err', label: '失败' }
   }

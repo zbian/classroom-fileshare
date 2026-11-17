@@ -21,6 +21,14 @@ export interface SyncWarning {
 export type TabKey = 'mine' | 'submissions' | 'records' | 'teacher'
 export type Role = LocalRole
 
+/** #114：删除同步进度（done/total 台；completed_at 非空表示已完成展示窗口） */
+export interface DeleteProgressState {
+  item_id: string
+  done: number
+  total: number
+  completed_at: number | null
+}
+
 export interface DialogState {
   pasteText: boolean
   createRoom: boolean
@@ -60,6 +68,8 @@ interface MainStore {
   /** 选中学员的提交条目（只读展示；来源 ListFilter{audience:Teacher, owner}） */
   submissionItems: UiShareItem[]
   /** #16：本地已读水位（owner → 已读到的 latest_at）。后端无未读字段，前端本地维护 */
+  /** #114：删除同步进度（null = 无进行中进度或展示窗口已结束） */
+  deleteProgress: DeleteProgressState | null
   warnings: SyncWarning[]
   seenOwners: Record<string, number>
   dialog: DialogState
@@ -108,6 +118,8 @@ const SUBMISSION_SEEN_KEY = 'classshare.submissions.seen'
 /** #127 内容搜索防抖（ms）：服务端 keyword 每次击键都发 IPC 会抖 → 200ms 合并 */
 const SEARCH_DEBOUNCE_MS = 200
 let searchTimer: number | null = null
+/** #114：完成态进度条的自动隐藏定时器 */
+let progressTimer: number | null = null
 
 export const useMainStore = create<MainStore>((set, get) => ({
   client: getClient(),
@@ -134,6 +146,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
   groups: [],
   selectedOwner: null,
   submissionItems: [],
+  deleteProgress: null,
   warnings: [],
   seenOwners: {},
   dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null, rename: null },
@@ -497,6 +510,31 @@ export const useMainStore = create<MainStore>((set, get) => ({
       case 'TransferProgress':
         // T12 接进度条；当前不消费
         break
+      case 'DeleteProgress': {
+        // #114（S5 ack 聚合）：删除同步进度。口径：
+        // - done 收敛为 min(done,total)（离线端补删 ack 可能后到使 done>total）
+        // - total<=0（无参与端）不显示进度，沿用「离线端上线后自动删除」文案
+        // - 完成后保留 2.5s 展示窗口（「已同步删除 N/N 台」）再自动隐藏
+        const { item_id, done, total } = n.payload
+        if (progressTimer !== null) {
+          window.clearTimeout(progressTimer)
+          progressTimer = null
+        }
+        if (total <= 0) {
+          set({ deleteProgress: null })
+          break
+        }
+        const capped = Math.min(Math.max(done, 0), total)
+        const completedAt = capped >= total ? Date.now() : null
+        set({ deleteProgress: { item_id, done: capped, total, completed_at: completedAt } })
+        if (completedAt !== null) {
+          progressTimer = window.setTimeout(() => {
+            progressTimer = null
+            set({ deleteProgress: null })
+          }, 2500)
+        }
+        break
+      }
       case 'Warning': {
         // #20b：真实告警（#103）——追加展示；同一 (kind,item_id,detail) 去重，最多 50 条
         const w = n.payload
