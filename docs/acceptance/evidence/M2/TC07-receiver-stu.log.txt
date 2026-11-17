@@ -1,0 +1,20 @@
+2026-11-17T18:23:48.568825Z  INFO 前台降级模式启动（--console） mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\stu\ClassShare\data
+2026-11-17T18:23:48.585209Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\stu\ClassShare\data\ipc.token user_sid=None
+2026-11-17T18:23:48.588199Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T18:23:48.623999Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\stu\ClassShare\data
+2026-11-17T18:23:48.624127Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T18:23:48.630886Z  INFO 已加入房间 session_id=d2155aff-ec43-446e-b940-d35d1e45453c
+2026-11-17T18:23:48.631019Z  INFO 会话已就绪（Joined） epoch=1
+2026-11-17T18:23:54.657536Z  INFO received item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 file=接收占用测试.bin size=65536 from=teacher
+2026-11-17T18:23:54.663339Z  INFO applied item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 version=1
+2026-11-17T18:23:54.885547Z  INFO 接收端目标被占用：已入重试队列（不阻塞会话） item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7
+2026-11-17T18:23:55.646879Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=1
+2026-11-17T18:23:56.676940Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=2
+2026-11-17T18:23:58.635846Z  WARN 接收端重试队列部分内容缺失，已丢弃（不阻塞其他条目） dropped=1
+2026-11-17T18:23:58.640478Z  INFO 接收端占用重试成功 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7
+2026-11-17T18:24:01.763562Z  INFO 接收端目标被占用：已入重试队列（不阻塞会话） item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7
+2026-11-17T18:24:02.647782Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=1
+2026-11-17T18:24:03.644234Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=2
+2026-11-17T18:24:05.633637Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=3
+2026-11-17T18:24:09.643883Z  INFO 接收端重试退避 item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=4
+2026-11-17T18:24:17.648679Z  WARN 接收端占用重试耗尽，条目转 Failed item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 attempts=5

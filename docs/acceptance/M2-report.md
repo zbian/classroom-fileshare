@@ -5,10 +5,10 @@
 | 报告 | M2 验收报告（TC-04 / 05 / 08 / 09 + 扩展项）——阶段版，已验项完成；待 #129（E17 回执）与「内容搜索 GUI」合入后定稿 |
 | 执行人 | qa-acceptance |
 | 日期 | 2026-11-17 起（2026-11-18 01:5x 更新） |
-| 基线 | `main @ 61e651a`（#131 #121/#128；**实测 198 passed**）|
+| 基线 | `main @ cc378ee`（#135 #117 接收端；**实测 207 passed**）|
 | 依据 | [PRD](../../../final_draft.md) 第 11 章 / 3.3 / 3.6 / 7.4 / 7.5；[M2 验收方案](M2-acceptance-plan.md) |
 | 跟踪 issue | #21（M2 验收）；关联 #16/#17/#18/#19/#20/#91；缺陷 #114/#117/#119/#121/#123/#128/#129 |
-| 状态 | TC-04/05 **通过**（#121 已关闭）；TC-08 **通过**；TC-09 **通过**（E15/E16 闭环）；TC-07 教师侧通过 / 接收端 #117；#19 后端+rename GUI 通过；#125 banner 通过；**E13/E14/E15/E16 闭环，E17 待修（#129）** |
+| 状态 | TC-04/05 **通过**（#121 关闭）；TC-08 **通过**；TC-09 **通过**（E15/E16 闭环）；**TC-07 教师侧 + 接收端均通过（#117 关闭；E18 轻微观察）**；#19 后端+rename GUI 通过；#125 banner 通过；**E13/E14/E15/E16 闭环，E17 待修（#129），E18 轻微待确认** |
 
 > 判定原则沿用 M1：结论须可追溯到 PRD 用例编号/FR 与实际证据；需求真机的判据标注延后，不以代理结果替代。
 
@@ -21,7 +21,7 @@
 | TC-08 | 删除同步 + 延迟补删 | ✅ **通过**（§3.3：在线 12–51 ms 消失、离线 1342/1539 ms 补删、幂等、不阻塞、墓碑可取；#112 锚点与 O-A 修复复验） | ✅ 教师端通过（§3.3.1：确认框/toast 真实 online_count/只读树）；学员端 chip 记已知限制 | **通过** |
 | TC-09 | 离线补发 | ✅ **通过**（§3.4：pending=2 持久化、2031 ms ≤10s、0 重复、队列清空、**断电不丢 0/5**、**pending_count 877ms 归零（E16 闭环）**） | — | **通过** |
 | 扩展 | 重命名 / 内容搜索（#19） | ✅ 通过（§3.6：rename Δ=10 ms、冲突服务端拒绝、文本正文可搜/文件正文不参与） | ✅ **rename GUI 通过**（§3.6.1，QA 独立 CDP：预填/成功 toast/列表刷新/冲突行内提示）；内容搜索 GUI 待后续小项；E17 全局回执待 #129 | **通过** |
-| 扩展 | 占用退避重试（TC-07） | ✅ **教师侧通过**（§3.5：RetryLocked/≤5 次/`.bak`/不阻塞/耗尽 Failed） | ⏸ 接收端待 **#117** | **有条件通过**（教师侧） |
+| 扩展 | 占用退避重试（TC-07） | ✅ **教师侧 + 接收端均通过**（§3.5：教师侧 RetryLocked/≤5/`.bak`/不阻塞；接收端不断连/自动完成/耗尽 Warning） | ✅ 数据面 + 学员端 IPC Warning；**E18** 为 retry_count 显示轻微问题 | **通过**（#117 收尾） |
 | 扩展 | EX-06 告警 banner（#20b/#125） | ✅ 通过（§3.7：IPC Warning 契约 + GUI 渲染/聚合去重复核） | ✅ 通过（黄/红两态截图 + 忽略按钮；文案轻微冗余观察） | **通过** |
 
 ## 2 环境与规模口径
@@ -192,7 +192,7 @@
 
 建议修复：`resend_pump` 在 `confirm_sent(...)` 之后（队列长度变化时）调用 `notify_pending()`；或每个 tick 固定上报一次。验证：补发完成后 `pending_count` 应归 0。
 
-### 3.5 TC-07 占用退避重试（扩展项，教师侧）
+### 3.5 TC-07 占用退避重试 —— 教师侧 + 接收端均通过（#103 / #117）
 
 基线 `main @ 78c6358`（#103/#115）。方法：隔离 teacher svc + 真实 IPC 广播，**用排他句柄锁住教师端 `repo/teacher/<file>`** 模拟「阅读器占用」，再发同名新版；另跑持续占用至耗尽的用例。证据 `evidence/M2/TC07-teacher-retry-result.json`、`TC07-exhaust-result.json`。
 
@@ -214,6 +214,26 @@
 **接收端当前行为（已知缺口，#117）**：学员端 `install()` 直接 `fs::rename` 覆盖，目标被锁 → Err → 文件流回调失败 → 会话断开并按 1s→5s 重连；重连后靠 Manifest 重推「碰巧」重试。**无队列语义**（无 `RetryLocked`/`retry_count`/`≤5` 上限/`RetryExhausted` 告警），锁长期存在会反复断连重连。
 
 **M2 已知限制（#103 reviewer 提出 + Lead 确认记录）**：**孤儿 `RetryLocked`**——`upsert_item` 成功但 `save_queue` 失败（磁盘满/权限）时，重启后队列空但 DB 条目仍 `RetryLocked` → 永久显示「被占用重试」、永不重试也永不 `Failed`。建议记 follow-up（随 #117/#114 一并）。
+
+
+#### 3.5.1 接收端占用重试（#135 / PR #117 已合入；main cc378ee，实测 207 passed）
+
+方法：隔离 teacher svc + 学员 svc（alice，真实 agent）；教师广播 v1 落盘 → **QA 用排他句柄锁住学员本地文件** → 教师发同名 v2 → 观察入队/退避/自动完成/耗尽。证据 `evidence/M2/TC07-receiver-*`。
+
+| # | 判据 | 实测 | 判定 |
+| --- | --- | --- | --- |
+| 1 | 占用时**不断连** | 学员日志「与教师机断开」**0 次**（全程 total_disconnects=0）；教师端 `online=1` 保持 | ✅ |
+| 2 | `RetryLocked` + 入队日志 | `sync=RetryLocked`；`INFO 接收端目标被占用：已入重试队列（不阻塞会话）`；`INFO 接收端重试退避 attempts=1/2` | ✅ |
+| 3 | 释放后**自动完成** | `INFO 接收端占用重试成功`；内容哈希=**v2**；`.bak` **恰 1 份**且=**v1**；列表 `sync=Synced`；`retry_recv/` 清空 | ✅ |
+| 4 | 持续占用 → ≤5 次耗尽 | `attempts=1..4` 后 `WARN 接收端占用重试耗尽，条目转 Failed attempts=5`；列表 `sync=Failed`、`retry=5`；**学员端 IPC 通知** `warning kind=RetryExhausted item_id=… detail=目标文件被占用，重试 5 次仍未成功`（banner 数据源） | ✅ |
+| 5 | 日志锚点 | 入队/退避/成功/耗尽 四类锚点齐全（见上） | ✅ |
+
+**E18（P3，轻微，待确认）：接收端 `retry_count` 列表层不递增**
+
+现象：占用期间学员端 `List` 的 `retry_count` **恒为 0**（此时日志 `attempts` 已到 1–2）；耗尽后显示 5（来自 #103 `with_retry_state` 的「Failed 且不在队列 → 上限值」规则，非接收端队列叠加）。
+根因：`crates/agent/src/recv_retry.rs` 的 `RecvRetryEntry.attempts` 只在 `recv_retry.json` 中维护，`crates/store/src/lib.rs::with_retry_state` 只叠加 host 的 `retry_queue.json`，**未叠加接收端队列**；agent 仅调用 `set_sync_state`（状态），未回写 `retry_count`。
+影响：学员端 UI 无法显示「被占用重试（第 n/5 次）」（n 恒 0/5）；功能与状态（RetryLocked/Failed/Synced）均正确，不阻塞 TC-07 判定。
+建议：agent 每次 `retry_later` 后把 attempts 写回条目（store 增 `set_retry_count` 或 list 时叠加 `recv_retry.json`），或由 svc 在 `list` 时合并队列 attempts。
 
 ### 3.6 #19 重命名与内容搜索（后端验收）
 
@@ -284,7 +304,7 @@
 
 | 项 | 当前状态 | 依据/跟踪 |
 | --- | --- | --- |
-| TC-07 接收端占用重试 | **未实现**（agent 落盘直接 rename，失败→断连重连+Manifest 重推，非队列语义） | **#117**；M2 缩范围经 Lead 裁定 |
+| TC-07 接收端占用重试 | ✅ **已实现（#135）并通过**；`retry_count` 列表叠加轻微问题见 **E18** | 已验（§3.5.1） |
 | 学员「我共享的」为空 | 预期（#104 学员上行不落本地库） | **#121** |
 | 学员端「待删除 chip」 | 实现存在、DOM 可见窗口 1–2 帧不可稳定取证 | 已知限制；#106 后续 UX 小项（300–500ms） |
 
@@ -300,6 +320,7 @@
 | **E15** | **P1（已修复闭环）** | 离线补发在会话未就绪时被判成功 → 静默丢件（间歇→该窗口实测 5/5 丢）：先报「补发送成功」后 4s 才 `已加入房间`；断连瞬间提交被记「上行发送成功」未入队 | **#123 → PR #124 已合入**；QA 复验：丢件 **5/5 → 0/5**、`flush_before_join=0`、送达 5/5 ≤10s；TC-09 判据 6 通过 |
 | **E16** | **P2（已修复闭环）** | 补发完成后 `pending_count` 不归零（队列已空、教师已收到，状态条仍显示「待发送 N 条」）；根因 `resend_pump` 在 `confirm_sent` 出队后未 `notify_pending` | **#128 → PR #131 已合入**；QA 复验：`pending 2→0` 用时 **877 ms** ✅ |
 | **E17** | **P2（待修，issue #129）** | 教师操作 fire-and-forget：`RenameItem` 同名冲突被服务端拒绝（WARN `名称已被占用`），但 IPC 返回 `REPLY ok` → GUI 可能提示成功而实际未生效；`SendFiles`/`DeleteItem` 同模式 | **#129**；建议 await host 结果或 GUI 操作后校验状态 |
+| **E18** | **P3（轻微，待确认）** | 接收端占用重试期间 `retry_count` 列表层恒 0（日志 attempts 正常递增）；耗尽后因 #103 规则显示 5。根因：`with_retry_state` 只叠加 host `retry_queue.json`，未叠加接收端 `recv_retry.json` | 待 Lead 决定是否开 issue / 随 #117 收尾 |
 
 
 ## 5 已知限制与延后项

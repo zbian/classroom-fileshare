@@ -1,0 +1,4 @@
+LISTEN start 40s
+NOTIFY ShareReceived(ShareItem { id: "5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7", kind: File, owner_id: "teacher", owner_role: Teacher, audience: All, title: "接收占用测试.bin", 
+NOTIFY ItemUpdated(ItemUpdatedPayload { item: ShareItem { id: "5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7", kind: File, owner_id: "teacher", owner_role: Teacher, audience: A
+NOTIFY warning kind=RetryExhausted item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 detail=目标文件被占用，重试 5 次仍未成功
