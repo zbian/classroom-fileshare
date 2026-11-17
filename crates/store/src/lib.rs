@@ -542,20 +542,6 @@ impl Store {
     }
 
     /// 标记条目为 `Synced`（M2 #121：学员本地提交收到 host `FileAck{ok}` 后）。
-    /// 设置条目同步状态（M2 #114：删除进度收敛 `Deleted`；与 #117 接收端
-    /// 重试的同一 API，先合者保留）。
-    pub fn set_sync_state(&self, id: &str, state: SyncState) -> Result<Option<ShareItem>> {
-        let n = self.conn.execute(
-            "UPDATE share_items SET sync_state = ?1 WHERE id = ?2",
-            params![sync_state_name(&state), id],
-        )?;
-        if n == 0 {
-            return Ok(None);
-        }
-        self.get(id)
-    }
-
-    /// 标记条目为 Synced（M2 #121：学员本地提交收到 host FileAck{ok} 后）。
     pub fn mark_synced(&self, id: &str) -> Result<Option<ShareItem>> {
         let n = self.conn.execute(
             "UPDATE share_items SET sync_state = 'Synced' WHERE id = ?1",
