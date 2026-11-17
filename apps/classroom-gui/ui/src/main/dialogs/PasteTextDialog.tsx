@@ -2,7 +2,7 @@
  * E1 粘贴文本并共享：标题必填（同名按标题覆盖）、内容+字数、重新粘贴/清空、
  * 接收对象=全体学员（教师端固定）；上限 10000 字（PRD 5.2）。
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Modal from '../../shared/components/Modal'
 import { useMainStore } from '../store'
 
@@ -14,9 +14,15 @@ export default function PasteTextDialog() {
   const closeDialog = useMainStore((s) => s.closeDialog)
   const sendText = useMainStore((s) => s.sendText)
   const role = useMainStore((s) => s.role)
+  const pasteBody = useMainStore((s) => s.pasteBody)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [err, setErr] = useState<string | null>(null)
+
+  // intent 预填：gui://paste-text 携带的剪贴板内容（T12 右键路径）
+  useEffect(() => {
+    if (open && pasteBody) setBody(pasteBody)
+  }, [open, pasteBody])
 
   if (!open) return null
 

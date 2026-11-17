@@ -34,8 +34,14 @@ interface Tip extends TipDto {
   remainMs: number
 }
 
+interface ToastItem {
+  id: string
+  text: string
+}
+
 export default function TipsStack() {
   const [queue, setQueue] = useState<Tip[]>([])
+  const [toasts, setToasts] = useState<ToastItem[]>([])
   const [hover, setHover] = useState(false)
   const hoverRef = useRef(false)
 
@@ -48,14 +54,26 @@ export default function TipsStack() {
     const unlisten = listen<TipDto>('svc://share-received', (e) => {
       setQueue((q) => [...q, { ...e.payload, remainMs: TOTAL_MS }])
     })
+    // T12：toast 提示（拖放/粘贴共享结果等，桌面可见；3s 消失，无倒计时）
+    const unlistenToast = listen<string>('gui://toast', (e) => {
+      setToasts((t) => [...t, { id: `${Date.now()}-${Math.random()}`, text: e.payload }])
+    })
     const fromQuery = new URLSearchParams(window.location.search).get('demoTips')
     const fromHash = /#demo=(\d+)/.exec(window.location.hash)?.[1]
     const n = Number(fromQuery ?? fromHash ?? 0)
     if (n > 0) void invoke('dev_demo_tips', { n }).catch(() => {})
     return () => {
       void unlisten.then((f) => f())
+      void unlistenToast.then((f) => f())
     }
   }, [])
+
+  // toast 3s 自动消失
+  useEffect(() => {
+    if (toasts.length === 0) return
+    const timer = window.setTimeout(() => setToasts((t) => t.slice(1)), 3000)
+    return () => window.clearTimeout(timer)
+  }, [toasts])
 
   // 倒计时：悬停整体暂停（TC-10：悬停 30s 不消失），仅显示中的前 3 条计时
   useEffect(() => {
@@ -75,12 +93,13 @@ export default function TipsStack() {
 
   // 窗高同步（命中区=可见区）
   useEffect(() => {
-    if (cards.length === 0) return
+    if (cards.length === 0 && toasts.length === 0) return
     const h =
       PAD * 2 +
       cards.length * CARD_H +
       (cards.length - 1) * GAP +
-      (overflowCount > 0 ? GAP + MORE_H : 0)
+      (overflowCount > 0 ? GAP + MORE_H : 0) +
+      toasts.length * (GAP + 36)
     void invoke('update_tips_height', { h }).catch(() => {})
   }, [cards.length, overflowCount])
 
@@ -89,7 +108,8 @@ export default function TipsStack() {
     if (queue.length === 0) void invoke('tips_dismissed').catch(() => {})
   }, [queue.length])
 
-  if (cards.length === 0) return null
+  const hasToast = toasts.length > 0
+  if (cards.length === 0 && !hasToast) return null
 
   return (
     <div
@@ -108,6 +128,11 @@ export default function TipsStack() {
           remainMs={t.remainMs}
           totalMs={TOTAL_MS}
         />
+      ))}
+      {toasts.map((t) => (
+        <div key={t.id} className="info warn" style={{ borderRadius: 8, flex: 'none' }}>
+          {t.text}
+        </div>
       ))}
       {overflowCount > 0 && (
         <div className="tip-more" onClick={() => void invoke('open_main')}>

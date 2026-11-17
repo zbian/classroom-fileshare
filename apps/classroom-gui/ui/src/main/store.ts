@@ -34,6 +34,7 @@ interface MainStore {
   /** 已查看条目（D1「新」标记消除，客户端态） */
   seenIds: string[]
   dialog: DialogState
+  pasteBody: string
   toast: string | null
   // 动作
   init(): Promise<void>
@@ -50,6 +51,7 @@ interface MainStore {
   confirmDelete(): Promise<void>
   configureRoom(room: string, pin: string | null, allowDiscovery: boolean): Promise<boolean>
   setNickname(nickname: string, pin?: string | null): Promise<string | null>
+  setPasteBody(b: string): void
   showToast(msg: string): void
   applyNotify(n: SvcNotify): void
 }
@@ -77,11 +79,18 @@ export const useMainStore = create<MainStore>((set, get) => ({
   kindFilter: 'all',
   seenIds: [],
   dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null },
+  pasteBody: '',
   toast: null,
 
   async init() {
     const { client } = get()
     client.subscribe((n) => get().applyNotify(n))
+    void import('@tauri-apps/api/event').then(async ({ listen }) => {
+      await listen<string>('gui://paste-text', (e) => {
+        get().setPasteBody(e.payload)
+        get().openDialog('pasteText')
+      })
+    })
     // 角色来自 gui.json（Rust get_icon_state；M1 由 --role= 写入，产品期由服务/安装器决定）
     try {
       const st = await client.status().catch(() => null)
@@ -206,6 +215,9 @@ export const useMainStore = create<MainStore>((set, get) => ({
     }
   },
 
+  setPasteBody(pasteBody) {
+    set({ pasteBody })
+  },
   showToast(toast) {
     set({ toast })
     window.setTimeout(() => {
