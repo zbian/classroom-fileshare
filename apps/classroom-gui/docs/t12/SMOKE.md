@@ -28,11 +28,21 @@
 
 ## 待办（下回合）
 
-- 拖放入口（文件）：`windows.rs` 的 DragDrop::Drop 已接 SendFiles 真链路 + 目录跳过提示，待提交联测
-- HKCU 右键扩展（脚本已写：`scripts/register-context-menu.ps1`，含 `-Remove`；实测注册/清理/重注册 roundtrip 0.17s，
+- ~~拖放入口（文件）~~ 已提交（windows.rs Drop→SendFiles + 目录提示）
+- ~~HKCU 右键扩展~~ 已提交（scripts/register-context-menu.ps1，实测 roundtrip 0.17s；
   **关键坑**：键路径含 `*` 通配符，读写必须 `-LiteralPath` 否则遍历 Classes 树长时间无响应）
-- argv 多选转发单实例（`share_files_from_argv` 已实现，待右键盘点后联测）
-- 卸载清理与 T-13 `uninstall.ps1` 的右键键名对齐
+- ~~argv 多选转发~~ 已提交并**实测**（见下）
+- 卸载清理与 T-13 `uninstall.ps1` 的右键键名对齐（转 T-13 负责）
+
+## argv 多选转发实测（T-12 收尾）
+
+方法：单实例已运行 → 第二次以 `classroom-gui.exe <文件1> <文件2>` 启动（模拟资源管理器
+右键多选调起，HKCU 注册项 command 为 `"...exe" "%*"`）。
+
+| 项 | 结果 |
+| --- | --- |
+| 第二次启动进程立即退出（EX-12 单实例语义） | ✅ `second exited=True`，仅保留原 pid |
+| argv 文件经 single-instance 回调转发 → `SendFiles` 真链路落库 | ✅ sqlite 实证 `右键冒烟一.txt|v2`、`右键冒烟二.txt|v2`（同名覆盖 version+1 亦顺带验证） |
 
 ## 已批准的降级项（Deferral → #13 备注）
 
