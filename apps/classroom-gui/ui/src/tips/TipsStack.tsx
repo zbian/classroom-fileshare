@@ -101,7 +101,7 @@ export default function TipsStack() {
       (overflowCount > 0 ? GAP + MORE_H : 0) +
       toasts.length * (GAP + 36)
     void invoke('update_tips_height', { h }).catch(() => {})
-  }, [cards.length, overflowCount])
+  }, [cards.length, overflowCount, toasts.length])
 
   // 队列清空 → 隐藏窗口（tips 不落盘，退出即清空）
   useEffect(() => {

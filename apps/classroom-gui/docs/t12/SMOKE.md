@@ -56,3 +56,39 @@
 
 M1 文本入口矩阵（F2 规则速查口径）：右键粘贴 ✅ / 主界面 + 粘贴文本 ✅ / 选中文本拖到图标 ⏳ M2。
 
+
+## 修复：注册表 `%*` 外层引号导致多选塌缩（PR #66 评审发现 1）
+
+**缺陷**：旧写法 `$cmd = "`"$exe`" `"%*`""` 把 `%*` 包在外层引号里。shell 展开 `%*` 时
+**每个参数自带引号**，外层再包一对会塌缩成单个参数：
+
+| 命令行形态（CommandLineToArgvW 实测） | 解析结果 |
+| --- | --- |
+| `"exe" ""C:\a.txt""`（%* 单文件展开） | argv[1]=`C:\a.txt` ✓ |
+| `"exe" ""C:\a.txt" "C:\b.txt""`（**%* 多文件 + 外层引号**） | **argv[1]=`C:\a.txt C:\b.txt`（合并成一个参数）** ✗ |
+| `"exe" "C:\a.txt" "C:\b.txt"`（**%* 裸露**） | argv[1]/argv[2] 两个参数 ✓ |
+
+后果链：`file_args()` 对合并串 `is_file()` → false → files/dirs 均空 → 多选右键**静默无动作**。
+
+**修复**：`$cmd = "`"$exe`" %*"`（去掉外层引号）。修复后注册表 command 值形如
+`"C:\...\classroom-gui.exe" %*`，shell 展开为逐参数带引号形态 → argv 解析正确。
+
+**为何旧「实测」没抓到**：旧方法直接以 `exe <文件1> <文件2>` 两个独立 argv 启动，
+**绕过了注册表 `%*` 展开这一真实入口形态**——这是「测试形态 ≠ 真实入口形态」的第 4 次同型
+（前三次：E3 测试桩、PR-34 §9.2 共享 worktree 快照、t9 mock 模式）。修复后以
+`cmd /c` 复现真实展开形态验证 argv 解析（见下），并在本文件保留 CommandLineToArgvW 三形态表。
+
+**修复后验证**（`cmd /c` 复现注册表展开形态）：
+
+```
+# 注册表 command = "C:\...\classroom-gui.exe" %*
+# shell 展开（多选两文件）→ 实际命令行：
+"C:\...\classroom-gui.exe" "C:\tmp\右键冒烟一.txt" "C:\tmp\右键冒烟二.txt"
+# CommandLineToArgvW 解析：argc=3，argv[1]=右键冒烟一.txt，argv[2]=右键冒烟二.txt ✓
+```
+
+## 修复：toast 窗高 effect 依赖缺失（PR #66 评审发现 2）
+
+`useEffect(..., [cards.length, overflowCount])` 内计算含 `toasts.length * (GAP + 36)`，依赖数组
+缺 `toasts.length` → 无 tips 卡片时首次 toast 到达不重跑窗高计算 → toast 可能被裁剪不可见。
+修复：deps 补 `toasts.length`。

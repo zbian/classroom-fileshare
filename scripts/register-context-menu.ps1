@@ -1,4 +1,4 @@
-﻿# 课堂共享 · 资源管理器右键扩展注册（HKCU，免管理员，PRD 3.7 / T-12）
+# 课堂共享 · 资源管理器右键扩展注册（HKCU，免管理员，PRD 3.7 / T-12）
 # 用法：
 #   register-context-menu.ps1            # 自动找 target\debug|release 下的 exe
 #   register-context-menu.ps1 -ExePath <path>
@@ -33,8 +33,11 @@ if ($Remove) {
 }
 
 $exe = Resolve-Exe $ExePath
-# 多选经 argv 传单实例（single-instance 插件合并后走直发链路）；%* 展开全部选中路径
-$cmd = "`"$exe`" `"%*`""
+# 多选经 argv 传单实例（single-instance 插件合并后走直发链路）；%* 展开全部选中路径。
+# 关键坑（PR #66 评审实测）：%* 展开时 shell 会**逐参数自带引号**，若再在外面包一对引号
+# （旧写法 "`"$exe`" `"%*`""），多选会被塌缩成**单个**参数（"C:\a.txt C:\b.txt"），
+# 导致 argv 解析失败、多选右键静默无动作。正确写法是 %* 裸露（不加外层引号）。
+$cmd = "`"$exe`" %*"
 
 New-Item -Path $key -Force | Out-Null
 Set-ItemProperty -LiteralPath $key -Name '(Default)' -Value '课堂共享'
