@@ -1,0 +1,22 @@
+=== 延迟补删 → delete-ack 新锚点验证（#112）===
+REPLY ok
+落盘 8/8
+agent 进程数: 8
+离线后在线数: 6
+REPLY ok
+=== svc.log 中 delete 系列锚点 ===
+2026-11-17T16:17:33.775999Z  INFO delete-request item_id=d14e2096-c797-408b-bc26-990e50770da0
+2026-11-17T16:17:33.782812Z  INFO delete item_id=d14e2096-c797-408b-bc26-990e50770da0 owner_role=Teacher
+2026-11-17T16:18:31.314462Z  INFO delete-request item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec
+2026-11-17T16:18:31.320708Z  INFO delete item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec owner_role=Teacher
+2026-11-17T16:18:33.408126Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=840f95a4
+2026-11-17T16:18:33.411144Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=840f95a4
+2026-11-17T16:18:33.413795Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=3dc2b39f
+2026-11-17T16:18:33.413965Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=3dc2b39f
+=== 用锚点计算补删时延 ===
+delete 行=2  delete-ack 行=4（预期 ≥2，dev07/dev08 各一）
+ack: 距 delete 2088 ms | 2026-11-17T16:18:33.408126Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=840f95a4
+ack: 距 delete 2091 ms | 2026-11-17T16:18:33.411144Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=840f95a4
+ack: 距 delete 2093 ms | 2026-11-17T16:18:33.413795Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=3dc2b39f
+ack: 距 delete 2093 ms | 2026-11-17T16:18:33.413965Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=3dc2b39f
+离线端文件是否清除: dev07=False dev08=False

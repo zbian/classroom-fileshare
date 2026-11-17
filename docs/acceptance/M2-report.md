@@ -5,10 +5,10 @@
 | 报告 | M2 验收报告（TC-04 / 05 / 08 / 09）——**执行中骨架**，执行完填充 |
 | 执行人 | qa-acceptance |
 | 日期 | 2026-11-17 起 |
-| 基线 | `main @ 40eb1b1`（PR #100/#102/#85 合并后）；**执行时 main 实测测试数 = 157 passed**（后续以最新 main 实测为准） |
+| 基线 | `main @ 926b582`（#111 删除同步 GUI / #112 O-A+O-B / #113）；**执行时实测 166 passed**；GUI UI 取证口径见 §2.1 |
 | 依据 | [PRD](../../../final_draft.md) 第 11 章 / 3.3 / 3.6 / 7.4 / 7.5；[M2 验收方案](M2-acceptance-plan.md) |
 | 跟踪 issue | #21（M2 验收）；关联 #16/#17/#18/#19/#20/#91 |
-| 状态 | TC-04/05 **后端通过 / UI 待 #16**；TC-08 **后端通过 / UI 待 #106**；TC-09 待 #18；扩展项待 |
+| 状态 | TC-04/05 **后端通过（含真实 svc 发送链路）/ UI 待 dev-gui E2E + qa 复核**；TC-08 **后端通过（含 #112 锚点与 O-A 修复复验）/ UI 同上**；TC-07 待 #103；TC-09 待 #18 |
 
 > 判定原则沿用 M1：结论须可追溯到 PRD 用例编号/FR 与实际证据；需求真机的判据标注延后，不以代理结果替代。
 
@@ -31,6 +31,13 @@
 | **规模确认** | **8 个 agent 进程并发实测可行**：`online=8`、svc.log `学员加入` ×8、逐 agent 日志「已加入」8/8；内存 svc 9.8 MB + agents 合计 58.8 MB；系统余内存 ~30 GB（证据 `evidence/M2/cap8.txt`） |
 | TC-08 规模 | 按已批准口径：**8 台，2 台离线**（约 1/4），验证「部分离线不阻塞」+ 延迟补删；28/30 台与 p95 留 M3 |
 | 证据规范 | UTF-8 无 BOM、路径脱敏 `<repo>`/`<iso>`；`evidence/M2/` |
+
+## 2.1 UI 取证口径（协作约定）
+
+- **数据面 / 后端判据**：由 qa 独立取证（svc / IPC / agent / 日志 / 磁盘）。
+- **GUI UI 判据**：由 **dev-gui 的 E2E（CDP）** 出证据，**qa 复核**：① 命令可复现 ② 截图内容与判据一致 ③ DOM 断言真实（非静态桩）。
+- 报告中凡 UI 结论须标注「来源 = dev-gui E2E + qa 复核」。
+- 本机 release 构建 CDP 不可用 + 桌面安全遮罩 → qa 不单独启动 GUI（详见 §3.3 O-D）。
 
 ## 3 分用例（当前进度）
 
@@ -78,9 +85,18 @@
 - Ack 未 `record_event` → 重复 Ack 会重复触发 `DeleteAcked`（svc 侧仅日志，无功能性影响）——Lead 已确认；
 - `purge_tombstones` 在 `delete_item` 锁内执行（潜在锁持有时间，M2 评估）。
 
-**本轮新增观察项（需 #17/Lead 确认是否预期）**
-- **O-A 教师端实体保留 + 状态不收敛**：删除后教师端 `repo/teacher/` 仍保留文件实体（3 个测试文件均在），且 `sync_state` 在所有学员端已删/补删完成后**仍停留 `DeleteDeferred`**，未回到完成态。PRD 7.4 字面为「已删除：删除实体、写墓碑、广播 delete」→ 与「教师端保留实体」存在口径差异，请确认是**设计保留（审计/备份）**还是缺陷；若保留，建议状态机区分「本地已删/待各端确认完成」。
-- **O-B 删除缺少日志锚点**：教师 svc.log 无 delete/ack 事件行（仅 broadcast 行），导致删除时延只能用「客户端计时 + 文件轮询」测量（本轮即如此），建议补 `delete`/`ack` info 锚点（同 M1 O-2 类可观测性缺口），便于 TC-08 后续回归与 M3 压测。
+**#112 复验（O-A/O-B 修复确认，main 926b582）**
+
+| 项 | 实测 | 判定 |
+| --- | --- | --- |
+| O-A 删除即时清实体 | 教师端 `repo/teacher/锚点测试.bin` 与 `.bak` **均不存在**，repo 文件数 0 | ✅ 已修复 |
+| O-B 日志锚点 | `delete-request item_id=…`、`delete item_id=… owner_role=Teacher`、`delete-ack item_id=… from_session=…` 三类齐全；2 台离线重启补删后产生 **4 条 delete-ack**（2 台 × 2 条目），距 delete 约 **2088–2093 ms**（≤10 s） | ✅ 已修复 |
+| O-A2 状态不收敛 | 全部端补删完成/ack 后 `sync_state` 仍为 `DeleteDeferred` | ⚠️ **已知限制（S5 ack 聚合，Lead 裁定）** |
+
+**本轮新增观察项**
+
+- **O-C 在线删除无 Ack**：Ack 仅在 agent 重连 `Manifest` 补删路径发送（`crates/agent/src/lib.rs` 的 Manifest 分支），**在线收到 delete 事件后不回 Ack**；实测 8 台在线删除 → `delete-ack` = 0。影响：PRD 5.8 的「同步进度（24/28 台已删除）」若依赖 ack 则无法统计在线完成数（只能按连接状态 + 离线待删推算）。建议 #106/#17 后续明确进度来源。
+- **O-D GUI 自动化环境阻塞**：桌面被「Windows 安全中心」`Shell_SystemDim` 模态遮罩覆盖（`PickerHost`），鼠标点击被吞掉；release 构建 WebView2 CDP 不可用。证据 `evidence/M2/gui-blocker.txt` + `gui-blocker-desktop.png`。**协作约定（Lead 2026-11-18）**：GUI 进程仅由 dev-gui 启动做 E2E，QA 只启 svc/agent/IPC 探针。
 
 ### 3.4 TC-09 离线补发 —— 待执行
 
