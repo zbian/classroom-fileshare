@@ -1,0 +1,16 @@
+E13 复验：release/v0.1.1 @ 980dab4（构建：scripts/build-gui.ps1 生产构建）
+
+隔离：LOCALAPPDATA + APPDATA + PROGRAMDATA 三者独立；教师 svc --console 真实启动（日志含『教师端启动 room=XK-204』）
+GUI 以无参启动一次（模拟 HKCU Run 自启），GUI 日志均显示『服务管道已连接』（确保发送链路可达）
+
+正向（修复版 release/v0.1.1）：
+  classroom-gui.exe 出现 = 0
+  高风险 告警 = 0
+  broadcast = 0（启动未发起任何共享）
+  → PASS
+
+反向对照（修复前二进制：rc.4 518d9b1 构建，无 is_self_exe）：
+  svc 日志复现：WARN 教师文件广播失败 path=…\classroom-gui.exe error=高风险文件类型: classroom-gui.exe
+  → 复现成功，证明修复前后行为差异明确
+
+结论：E13 已修复闭环（PR #99 / v0.1.1）

@@ -1,0 +1,11 @@
+=== E13 双向对照（release/v0.1.1 @ 980dab4）===
+
+Case   GUIBin                                                                         Connected ExeHits RiskyHits Broad
+                                                                                                                   cast
+----   ------                                                                         --------- ------- --------- -----
+fix    <repo>\.wt\release-v011\target\release      True       0         0     0
+prefix <repo>\.wt\acc-m1\target\release            True       0         1     0
+
+
+
+判定: 需复核
