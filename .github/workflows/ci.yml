@@ -95,3 +95,29 @@ jobs:
         if: steps.ui.outputs.exists == 'true'
         working-directory: apps/classroom-gui/ui
         run: pnpm build
+
+  # GUI release profile clippy 守卫（M1 收尾）：上面的 rust 作业只跑 debug，
+  # `#[cfg(not(debug_assertions))]` 分支永远不被检查——实际漏掉过
+  # tips.rs unused import / windows.rs unused variable（#77 终审发现）。
+  # 独立作业 + 最小占位 frontendDist（tauri generate_context! 要求目录存在；
+  # 本作业只做 lint，不产出 GUI 产物，故占位即可）。
+  gui-release-clippy:
+    name: GUI release clippy (custom-protocol)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 占位 frontendDist（generate_context! 需要目录）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path apps/classroom-gui/ui/dist | Out-Null
+          Set-Content -Path apps/classroom-gui/ui/dist/index.html -Value '<!doctype html><title>placeholder</title>'
+
+      - name: cargo clippy --release (custom-protocol)
+        run: cargo clippy --release -p classroom-gui --features custom-protocol -- -D warnings

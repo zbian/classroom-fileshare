@@ -40,7 +40,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 
 if (-not $SkipFrontend) {
-    Write-Host '[1/2] pnpm build (frontend -> ui/dist)'
+    Write-Host '[1/3] pnpm build (frontend -> ui/dist)'
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
         throw 'pnpm not found. Install Node 24 + pnpm 11 (see README).'
     }
@@ -52,7 +52,7 @@ if (-not $SkipFrontend) {
     finally { Pop-Location }
 }
 else {
-    Write-Host '[1/2] skipped frontend build (-SkipFrontend)'
+    Write-Host '[1/3] skipped frontend build (-SkipFrontend)'
 }
 
 $dist = Join-Path $uiDir 'dist'
@@ -60,7 +60,18 @@ if (-not (Test-Path -LiteralPath $dist)) {
     throw "frontend dist not found: $dist -- run without -SkipFrontend"
 }
 
-Write-Host '[2/2] cargo build --release --features custom-protocol'
+# release clippy 守卫（M1 收尾）：debug clippy 看不到
+# #[cfg(not(debug_assertions))] 分支；在此对生产 profile 做 -D warnings
+# 检查（dist 已就绪，tauri generate_context! 可正常展开）。
+Write-Host '[2/3] cargo clippy --release --features custom-protocol -- -D warnings'
+Push-Location -LiteralPath $repoRoot
+try {
+    cargo clippy --release -p classroom-gui --features custom-protocol -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "cargo clippy (release) failed (exit $LASTEXITCODE)" }
+}
+finally { Pop-Location }
+
+Write-Host '[3/3] cargo build --release --features custom-protocol'
 Push-Location -LiteralPath $repoRoot
 try {
     cargo build --release -p classroom-gui --features custom-protocol
