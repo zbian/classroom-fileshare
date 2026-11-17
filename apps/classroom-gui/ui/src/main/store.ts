@@ -47,6 +47,10 @@ interface MainStore {
   kindFilter: KindFilter
   /// 按 Tab 独立保存的筛选状态（切换 Tab 保留各自筛选，issue #90）
   tabFilters: Record<TabKey, TabFilter>
+  /** #127：服务端 keyword 搜索是否生效（命中标题或文本正文；文件正文不参与） */
+  serverFiltered: boolean
+  /** #127：未过滤总数（「筛选后 N / M」的 M） */
+  totalCount: number
   /** 已查看条目（D1「新」标记消除，客户端态） */
   seenIds: string[]
   /** #16：教师端「学生提交」分组（左树：昵称/条数/最新时间；latest_at 倒序） */
@@ -101,6 +105,10 @@ const SUBMISSION_SEEN_KEY = 'classshare.submissions.seen'
 // （教师 owner='teacher' / 学员 mine 拉全量后按 owner_role=Student 过滤），
 // 保留此注释说明口径，避免再次引入「无 owner 拉全量」。
 
+/** #127 内容搜索防抖（ms）：服务端 keyword 每次击键都发 IPC 会抖 → 200ms 合并 */
+const SEARCH_DEBOUNCE_MS = 200
+let searchTimer: number | null = null
+
 export const useMainStore = create<MainStore>((set, get) => ({
   client: getClient(),
   role: 'unset',
@@ -120,6 +128,8 @@ export const useMainStore = create<MainStore>((set, get) => ({
     submissions: { ...EMPTY_FILTER },
     records: { ...EMPTY_FILTER },
   },
+  serverFiltered: false,
+  totalCount: 0,
   seenIds: [],
   groups: [],
   selectedOwner: null,
@@ -172,26 +182,47 @@ export const useMainStore = create<MainStore>((set, get) => ({
       await get().loadSubmissions()
       return
     }
-    // 一次拉全量，搜索/类型筛选在客户端完成（即时、无 IPC 抖动；issue #90）
-    // E14（#119）：数据范围必须按角色固定，禁止无 owner 拉全量造成串数据：
-    // - 教师「我共享的」→ 服务端 owner='teacher'（只含教师本人条目，学生提交不可见/不可改）
-    // - 学员「教师共享」→ 服务端 owner='teacher'
-    // - 学员「我共享的」→ 拉全量后**客户端按 owner_role=Student 过滤**（本地库中
-    //   Student 条目只可能是本人提交：#94 保证学员看不到他人提交，故无需昵称）
+    // #127（PRD 5.4「按名称与内容搜索」）：关键字交给**服务端** `List{keyword}`——
+    // 命中标题或**文本正文**（文件正文不参与，#126 契约）；关键字为空时拉全量。
+    // 类型筛选仍由客户端完成（保留 #90 即时性与虚拟滚动）。
     const filter: ListFilter =
       role === 'student'
         ? { owner: activeTab === 'teacher' ? 'teacher' : null, include_deleted: false }
         : { owner: 'teacher', include_deleted: false } // wire 契约：bool 无 serde default，必须显式携带
+    const keyword = (get().tabFilters[activeTab]?.keyword ?? '').trim()
+    const scoped = (rows: UiShareItem[]): UiShareItem[] =>
+      role === 'student' && activeTab === 'mine'
+        ? rows.filter((i) => i.owner_role === 'Student')
+        : rows
     try {
-      const [rawItems, status] = await Promise.all([client.list(filter), client.status()])
-      const items =
-        role === 'student' && activeTab === 'mine'
-          ? rawItems.filter((i) => i.owner_role === 'Student')
-          : rawItems
-      set({ items, status, serviceDown: !status.running })
+      if (keyword) {
+        // 并行取「命中结果」与「未过滤全量」：后者只为「筛选后 N / M」的 M
+        const [hits, all, status] = await Promise.all([
+          client.list({ ...filter, keyword }),
+          client.list(filter),
+          client.status(),
+        ])
+        set({
+          items: scoped(hits),
+          totalCount: scoped(all).length,
+          serverFiltered: true,
+          status,
+          serviceDown: !status.running,
+        })
+      } else {
+        const [rawItems, status] = await Promise.all([client.list(filter), client.status()])
+        const items = scoped(rawItems)
+        set({
+          items,
+          totalCount: items.length,
+          serverFiltered: false,
+          status,
+          serviceDown: !status.running,
+        })
+      }
     } catch {
       // 教师 EX-10 / 学员 EX-08：服务未运行/未连接 —— 列表置空并提示重试
-      set({ serviceDown: true, items: [] })
+      set({ serviceDown: true, items: [], totalCount: 0, serverFiltered: false })
     }
   },
 
@@ -274,7 +305,20 @@ export const useMainStore = create<MainStore>((set, get) => ({
       keyword,
       tabFilters: { ...get().tabFilters, [activeTab]: { ...get().tabFilters[activeTab], keyword } },
     })
-    // 客户端过滤：不重新拉取（避免逐字符 IPC；issue #90）
+    // #127 服务端内容搜索（标题或文本正文）：200ms 防抖，避免逐字符 IPC 抖动；
+    // 清空关键字立即重拉全量（交互上「清空恢复」要即时）。
+    if (searchTimer !== null) {
+      window.clearTimeout(searchTimer)
+      searchTimer = null
+    }
+    if (keyword.trim() === '') {
+      void get().refresh()
+    } else {
+      searchTimer = window.setTimeout(() => {
+        searchTimer = null
+        void get().refresh()
+      }, SEARCH_DEBOUNCE_MS)
+    }
   },
   setKindFilter(kindFilter) {
     const activeTab = get().activeTab
