@@ -1,0 +1,12 @@
+{
+    "student_local_items_after_send":  "  File \"\u003cstring\u003e\", line 1    import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);print(c.execute(\" select title,owner_role from share_items where deleted=0\\).fetchall()) C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\e16fix-015759\\stu\\ClassShare\\data\\index.db                                                                      ^SyntaxError: unterminated string literal (detected at line 1)",
+    "has_student_local_store":  false,
+    "pending_while_down":  "2",
+    "teacher_received_after_restore":  true,
+    "pending_zero_ms":  877,
+    "pending_zero_within_5s":  true,
+    "pending_status_final":  "REPLY status role=Student room=tcp://127.0.0.1:47821 online=0 nickname=alice pending=0 state=Running",
+    "student_local_items_final":  "  File \"\u003cstring\u003e\", line 1    import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);print(c.execute(\" select title,owner_role from share_items where deleted=0\\).fetchall()) C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\e16fix-015759\\stu\\ClassShare\\data\\index.db                                                                      ^SyntaxError: unterminated string literal (detected at line 1)",
+    "has_offline_items_locally":  false,
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\e16fix-015759"
+}
