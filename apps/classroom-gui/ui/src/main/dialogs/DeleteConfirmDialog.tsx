@@ -33,9 +33,9 @@ export default function DeleteConfirmDialog() {
       }
     >
       <div className="info err" style={{ marginBottom: 12 }}>
-        删除「{item?.title ?? pendingId}」后，将从所有学员端同步移除本地副本，此操作不可撤销。
+        删除「{item?.title ?? pendingId}」后将从所有学员端同步移除本地副本，此操作不可撤销。
       </div>
-      <div className="info">在线学员端将立即删除；离线端上线后自动补删（M2 提供逐台进度）。</div>
+      <div className="info">在线学员端将立即删除；离线学员端将在其上线后自动删除，删除完成后列表同步刷新。</div>
     </Modal>
   )
 }
