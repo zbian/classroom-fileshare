@@ -2,8 +2,9 @@
 //!
 //! 独立小窗（主窗未开也能提醒）：启动预创建隐藏，首条到达才 show；
 //! 定位依 icon 窗贴边翻转并跟随其移动；窗高随堆叠数 set_size（命中区=可见区）。
-//! 数据源：M1 用 dev 演示事件（`--demo-tips=N` 或 tips.html#demo=N）；
-//! T7 合并后由 SvcNotify::ShareReceived 走同一条 `push_tip` 入口。
+//! 数据源：`ipc_client::forward_loop` 收到 `SvcNotify::ShareReceived`
+//! （及覆盖态的 `ItemUpdated`）后映射为 [`TipDto`] 并调用 [`push_tip`]；
+//! dev 演示（`--demo-tips=N`）走同一入口。本模块只负责展示与窗口行为。
 
 use crate::state::AppState;
 use crate::windows::{self, ICON_LABEL};
@@ -21,12 +22,9 @@ pub const TIPS_W: f64 = 300.0;
 /// 前后端共享布局常量（tips.css 同值），用于 Rust 侧高度钳制
 pub const TIPS_MIN_H: f64 = 96.0;
 
-/// 单条 tips 载荷。M1 为演示形态；T7 接入后由 ShareItem 映射出展示字段。
-///
-/// release 构建下仅 `demo_tips`（cfg debug）构造它，故 release clippy 报
-/// dead_code；真实接线（SvcNotify::ShareReceived → push_tip）是 M2 项
-/// （记 #16），接线后移除本条 allow。
-#[allow(dead_code)]
+/// 单条 tips 载荷（展示字段）。生产由 `ipc_client::tip_from_share_item` 从
+/// `ShareItem` 映射而来（P0 #79 接线完成）；dev 演示构造同等形态，二者共用
+/// [`push_tip`]。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TipDto {
@@ -60,29 +58,67 @@ pub fn ensure_tips_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 推送一条 tips（服务通知与演示共用入口）。
-/// 数据永远下发；「暂停接收提醒」只抑制窗口显示，不影响接收（PRD 4.3）。
-///
-/// release clippy dead_code：当前唯一调用方 `demo_tips` 为 cfg(debug)；
-/// SvcNotify::ShareReceived → push_tip 的真实接线是 M2 项（记 #16），
-/// 接线后移除本条 allow。
-#[allow(dead_code)]
-pub fn push_tip(app: &AppHandle, tip: TipDto) {
-    if let Some(w) = app.get_webview_window(TIPS_LABEL) {
-        #[cfg(debug_assertions)]
-        eprintln!("[t11] push_tip: {}", tip.name);
-        let _ = app.emit_to(TIPS_LABEL, "svc://share-received", tip);
-        let paused = app
-            .state::<AppState>()
-            .config
-            .lock()
-            .map(|c| c.icon.paused_tips)
-            .unwrap_or(false);
-        if !paused {
-            let _ = w.show(); // 不 set_focus：被动通知不抢焦点
-            position_tips(app);
-        }
+/// 是否显示 tips 窗口（暂停只抑制显示，不影响数据下发，PRD 4.3）。
+/// 抽成纯函数便于单测断言「暂停语义没被改坏」。
+fn tip_should_show(paused: bool) -> bool {
+    !paused
+}
+
+/// 读取「暂停接收提醒」开关（gui.json）。
+fn tips_paused(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .config
+        .lock()
+        .map(|c| c.icon.paused_tips)
+        .unwrap_or(false)
+}
+
+/// tips 投递边界：生产实现走 Tauri 窗口；单测用记录器断言「暂停只抑制显示、
+/// 数据照常下发」（PRD 4.3 的硬约束，reviewer 清单第 3 项）。
+pub(crate) trait TipSink {
+    /// 数据下发（永远执行）
+    fn emit(&self, tip: &TipDto);
+    /// 窗口显示（受暂停开关控制）
+    fn show(&self);
+}
+
+/// 生产实现：真实 Tauri 窗口。
+struct WindowSink<'a> {
+    app: &'a AppHandle,
+    window: tauri::WebviewWindow,
+}
+
+impl TipSink for WindowSink<'_> {
+    fn emit(&self, tip: &TipDto) {
+        let _ = self
+            .app
+            .emit_to(TIPS_LABEL, "svc://share-received", tip.clone());
     }
+
+    fn show(&self) {
+        let _ = self.window.show(); // 不 set_focus：被动通知不抢焦点
+        position_tips(self.app);
+    }
+}
+
+/// 投递一条 tips：**先 emit 数据，再按暂停开关决定是否 show**。
+/// 顺序是本函数的核心契约（暂停期间数据仍进前端队列），勿改成提前 return。
+pub(crate) fn deliver_tip(sink: &dyn TipSink, paused: bool, tip: TipDto) {
+    sink.emit(&tip);
+    if tip_should_show(paused) {
+        sink.show();
+    }
+}
+
+/// 推送一条 tips（服务通知与演示共用入口）。
+pub fn push_tip(app: &AppHandle, tip: TipDto) {
+    let Some(window) = app.get_webview_window(TIPS_LABEL) else {
+        return;
+    };
+    #[cfg(debug_assertions)]
+    eprintln!("[t11] push_tip: {}", tip.name);
+    let sink = WindowSink { app, window };
+    deliver_tip(&sink, tips_paused(app), tip);
 }
 
 /// tips 定位：icon 旁弹出（优先左侧，空间不足翻右侧），纵向与 icon 顶对齐并钳制在工作区内。
@@ -176,4 +212,71 @@ pub fn demo_tips(app: &AppHandle, n: u32) {
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    /// 记录型 sink：断言投递顺序与暂停语义（真实 push_tip 走同一 deliver_tip）。
+    #[derive(Default)]
+    struct RecordingSink {
+        emitted: RefCell<Vec<TipDto>>,
+        shown: Cell<u32>,
+    }
+
+    impl TipSink for RecordingSink {
+        fn emit(&self, tip: &TipDto) {
+            self.emitted.borrow_mut().push(tip.clone());
+        }
+        fn show(&self) {
+            self.shown.set(self.shown.get() + 1);
+        }
+    }
+
+    fn sample_tip() -> TipDto {
+        TipDto {
+            id: "id-1".into(),
+            kind: "text".into(),
+            name: "第三题的疑问".into(),
+            from: "小林".into(),
+            size_text: "86 字".into(),
+        }
+    }
+
+    /// PRD 4.3 硬约束：暂停时**数据照常下发**、仅不显示。
+    #[test]
+    fn paused_still_emits_but_does_not_show() {
+        let sink = RecordingSink::default();
+        deliver_tip(&sink, true, sample_tip());
+        assert_eq!(sink.emitted.borrow().len(), 1, "暂停时数据仍必须下发");
+        assert_eq!(sink.emitted.borrow()[0].name, "第三题的疑问");
+        assert_eq!(sink.shown.get(), 0, "暂停时不显示窗口");
+    }
+
+    /// 未暂停：数据下发 + 显示各一次。
+    #[test]
+    fn unpaused_emits_and_shows_once() {
+        let sink = RecordingSink::default();
+        deliver_tip(&sink, false, sample_tip());
+        assert_eq!(sink.emitted.borrow().len(), 1);
+        assert_eq!(sink.shown.get(), 1);
+    }
+
+    #[test]
+    fn pause_only_suppresses_display() {
+        assert!(tip_should_show(false), "未暂停：显示");
+        assert!(!tip_should_show(true), "暂停：不显示");
+    }
+
+    /// 前端按 camelCase 消费 TipDto（sizeText/name/from），避免字段名漂移。
+    #[test]
+    fn tip_dto_serializes_camel_case_for_frontend() {
+        let json = serde_json::to_string(&sample_tip()).expect("serialize");
+        assert!(
+            json.contains("\"sizeText\":\"86 字\""),
+            "前端按 sizeText 消费：{json}"
+        );
+    }
 }

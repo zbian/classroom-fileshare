@@ -48,13 +48,13 @@ T-8 置顶图标(#29) · T-11 tips(#33) · T-9 教师界面+RealGuiClient(#53) �
 | fmt | `cargo fmt --all --check` | exit 0 |
 | clippy（debug） | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0（含 GUI src-tauri，无交叉破坏） |
 | clippy（release） | `cargo clippy --release -p classroom-gui --features custom-protocol -- -D warnings` | exit 0（debug 看不到 `cfg(not(debug_assertions))` 分支；CI 独立作业 `gui-release-clippy` 守卫） |
-| test | `cargo test --workspace` | exit 0：25 binaries / **114 passed / 0 failed / 0 panicked** |
+| test | `cargo test --workspace` | exit 0：25 binaries / **127 passed / 0 failed / 0 panicked** |
 | GUI 生产构建 | `scripts/build-gui.ps1`（pnpm build → **release clippy** → `cargo build --release --features custom-protocol`） | exit 0（O-1 构建口径防呆；生产构建入口自带 release clippy 守卫） |
 | PS BOM（全仓 5 个 ps1） | 手动核验 + CI 守卫（全仓受版本控制 `.ps1`，`git ls-files`） | 5/5 BOM=True、PS 5.1 语法 0 错误 |
 
-114 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）**+2（E10 大小上限）**+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）**+2（E10 端到端拒绝）**· agent 9（接收/重连/墓碑/E3 探测回路/E9 自动发现）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 11（配置/清理/运行时/服务/room_filter 四态）· gui(src-tauri) 14（窗口/ipc client/O-1 构建模式判定 2 项）
+114 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）**+2（E10 大小上限）**+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）**+2（E10 端到端拒绝）**· agent 9（接收/重连/墓碑/E3 探测回路/E9 自动发现）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 11（配置/清理/运行时/服务/room_filter 四态）· gui(src-tauri) 27（窗口/ipc client/O-1 构建模式判定 2 项/**tips 真实数据通路 13 项**）
 
-> 数字口径：冻结基线 108 → 本终版 114 = **+4（E10）** + **+2（O-1 GUI 构建模式单测，#77）**。
+> 数字口径：冻结基线 108 → 114（+4 E10 +2 O-1）→ **127 = +13（P0 #79 tips 真实数据通路接线）**。
 
 CI 作业：rust（fmt/clippy/test + PS BOM 守卫）+ web（pnpm build）+ **gui-release-clippy**（release profile 盲区守卫）
 
@@ -72,6 +72,7 @@ CI 作业：rust（fmt/clippy/test + PS BOM 守卫）+ web（pnpm build）+ **gu
 | PS 脚本 BOM 回归 | reviewer-2（PR #66 终审） | 补 BOM + **CI 守卫根治** |
 | **beacon 自动连接缺失（学员须手填 IP）** | **reviewer-2（全仓巡检）** | **E9 补齐：discovery 泵 + room_filter 房间隔离 + 锁定首个目标；学员不传 -Room 也能入班** |
 | **100MB 单文件上限从未实现（超限文件全量读内存扩散）** | **reviewer（验收报告评审，E10/#76）** | **store `fs::copy` 前 O(1) 拒绝 + host 发送前快速失败 + 端到端用例（含边界 100MB 通过 / 拒绝后链路正常）；流式推送记 M2** |
+| **tips 气泡在 release 从不触发**（`push_tip` 仅被 debug 的 `demo_tips` 调用，`svc://notify` 与 `svc://share-received` 未接） | reviewer（PR #79 / P0） | `ipc_client::forward_loop` 接线：`ShareReceived` + 覆盖态 `ItemUpdated` → `notify_to_tip` → (id,version) 去重 → `tips::push_tip`；映射在数据源侧，暂停语义保持（emit 先于 show 判定）+ 13 例单测 |
 
 ## 4 已知 Deferral（17 项，均已有归属）
 
@@ -87,7 +88,7 @@ CI 作业：rust（fmt/clippy/test + PS BOM 守卫）+ web（pnpm build）+ **gu
 | 8 | 心跳 Pong 读超时（会话活性治理） | #16 |
 | 9 | LocalSystem ACE 冗余累积（无害，评估收敛） | #16 |
 | 10 | grant_for_session 无自动化单测（WTS 路径） | #16 / #21 |
-| 11 | ensure_client 惰性重连竞态（单飞防 tips 双弹） | #16 |
+| 11 | ensure_client 惰性重连竞态（单飞，进一步收敛 tips 双弹；现已有 (id,version) 去重兜底，P0 #79） | #16 |
 | 12 | 「开机自启 已开启」硬编码改注入真实状态 | #20 |
 | 13 | ServerHandle sessions 累积 / 退避不重置 | #22（备查级） |
 | 14 | bak→final 崩溃回滚自愈（自愈路径已确认） | #18 / #22 |
