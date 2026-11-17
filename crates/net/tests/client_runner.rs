@@ -433,3 +433,43 @@ async fn handler_error_is_fatal() {
 fn _unused(arc: Arc<u8>) -> u8 {
     *arc
 }
+
+/// #104：业务上行通道——经 `outbound` 投递的帧由 server 收到
+/// （与心跳/Pong 共用同一写任务，不存在第二条发送路径）。
+#[tokio::test]
+async fn outbound_channel_forwards_business_frames() {
+    let addr = mock_server(|stream| async move {
+        let (mut reader, mut writer) = stream.into_split();
+        let _ = read_frame(&mut reader).await.unwrap(); // Hello
+        writer
+            .write_all(&encode_frame(&Frame::HelloReply(HelloReply::Ok {
+                session_id: "sid-up".into(),
+            })))
+            .await
+            .unwrap();
+        let _ = read_frame(&mut reader).await; // ManifestReq
+        let f = tokio::time::timeout(STEP_TIMEOUT, read_frame(&mut reader))
+            .await
+            .expect("上行帧超时")
+            .expect("读帧失败");
+        assert!(
+            matches!(f, Frame::Event(_)),
+            "server 应收到业务上行帧，实际 {f:?}"
+        );
+        // server 主动关闭 → 客户端 SessionEnd::Closed（结束本用例）
+    })
+    .await;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (out_tx, out_rx) = mpsc::channel::<Frame>(8);
+    let cfg = ClientSessionConfig::new(addr, join_hello("uplink")).with_outbound(out_rx);
+    let task = tokio::spawn(run_client_session(cfg, CollectHandler::new(tx)));
+    out_tx
+        .send(Frame::Event(sample_event("上行")))
+        .await
+        .expect("投递上行帧");
+    // server 收到上行帧后保持连接；本侧等会话结束（server drop 连接）
+    let _ = tokio::time::timeout(STEP_TIMEOUT, task)
+        .await
+        .expect("会话应结束");
+}
