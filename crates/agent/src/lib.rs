@@ -684,6 +684,13 @@ async fn recv_retry_pump(
                             })
                             .await;
                     } else {
+                        // E18（#136）：退避后通知 GUI 刷新列表——条目的
+                        // `retry_count` 由 store 从 `recv_retry.json` 叠加，
+                        // 学员端 UI 可显示「被占用重试（第 n/5 次）」。
+                        let updated = store.lock().unwrap().get(&entry.item_id).ok().flatten();
+                        if let Some(item) = updated {
+                            let _ = notify.send(AgentEvent::Received(item)).await;
+                        }
                         tracing::info!(
                             item_id = %entry.item_id,
                             attempts,
