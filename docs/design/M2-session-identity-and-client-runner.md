@@ -95,7 +95,21 @@ pub trait SessionHandler: Send + Sync {
 
 delete/rename 事件同校验；`new_name` 的净化沿用 store/sanitize 路径。
 
-### 3.4 教师连接与 role 绑定（预留）
+### 3.4 `TEACHER_OWNER` 保留昵称（PR #73 评审发现 1，必须一并落地）
+
+**绕过链**：`TEACHER_OWNER = "teacher"` 是教师作用域保留值，但 M1 的 join 未禁止学员使用该昵称。学员设昵称为 `teacher` 后：
+
+1. join 成功，`Conn.nickname = "teacher"`；
+2. 伪造 `owner_id = "teacher"` 的事件 → 恰好通过三重校验第 2 条（`owner_id == conn.nickname`）；
+3. 该事件被当作教师作用域内容入库/广播 → **仍可顶替教师**。
+
+M1 的 A2 过滤（owner != teacher 丢弃）只拦「非 teacher」，此变体恰好穿透。因此**身份校验必须与昵称命名空间隔离**：
+
+- **源头拒绝（采纳 reviewer 建议①）**：S3 在 `on_hello` 中拒绝 `nickname == TEACHER_OWNER`，复用现成 `HelloErr::InvalidNickname`（PRD 8.3 文案「该昵称不可用，请换一个」，M1 已用于 Windows 保留设备名）；
+- **用例**：学员以昵称 `"teacher"` 请求加入 → 收到 `HelloErr::InvalidNickname`，且不产生连接/不广播（并入 S3 的 4 个新增用例族）；
+- 附带：`TEACHER_OWNER` 常量注释标注「保留昵称，join 层强制拒绝」。
+
+### 3.5 教师连接与 role 绑定（预留）
 
 M1/M2 教师操作走 ipc → host core（不经 socket），故 host 无教师 socket 会话。
 
@@ -103,7 +117,7 @@ M1/M2 教师操作走 ipc → host core（不经 socket），故 host 无教师 
 - Student：owner==nickname 且 audience==Teacher
 - Teacher：owner==TEACHER_OWNER，audience 不限（可广播）
 
-### 3.5 ack 路由（Deferral #1 落点）
+### 3.6 ack 路由（Deferral #1 落点）
 
 - 事件级 ack：`Frame::Event(ev)` 中 `kind=Ack`，由客户端在成功 apply 后回发；host 按 `session_id` 定向确认（取代广播式 ack 收集）。
 - 文件级 ack：`Frame::FileAck { item_id, sha256_ok }` 已在分块流路径，绑定 session_id 后可精确记账（哪个学员确认了哪个文件）。
@@ -111,12 +125,12 @@ M1/M2 教师操作走 ipc → host core（不经 socket），故 host 无教师 
 
 ## 4 客户端会话运行器抽取（S1/S2）
 
-### 4.1 不变量
+### 4.1 不变量（PR #73 评审发现 2：精确表述）
 
-1. 帧编解码/心跳/重连分类**单点维护**（net crate）
-2. 客户端与服务端共享同一帧语义（含 Ping→Pong 探测应答）
-3. host 侧零改动（S1/S2 不触碰服务端行为）
-4. agent 对外行为等价（S2 后现有 9 用例**断言零改动**全绿）
+1. **控制帧语义单点维护**（net crate）：Hello/HelloReply、心跳定时、`Ping → Pong` 自动应答、断线分类（`Closed` vs `Rejected`）、可选 `ManifestReq`；
+2. **业务帧仍由两侧各自分派**：服务端 `SessionHandler`（host 逻辑）与客户端 `ClientHandler`（agent 接收状态机）分别处理 `Event`/`FileHeader`/`FileChunk`/`FileEnd`/`Manifest`——抽取**只消除控制面漂移**（E3 类型缺陷），业务面漂移风险由两侧测试与设计评审保障，不是「零风险」；
+3. host 侧零改动（S1/S2 不触碰服务端行为）；
+4. agent 对外行为等价（S2 后现有 9 用例**断言零改动**全绿）。
 
 ### 4.2 类型设计
 
@@ -184,7 +198,7 @@ struct AgentSession<'a> { incoming: &'a mut Incoming, notify: &'a Sender<AgentEv
 | --- | --- | --- | --- |
 | S1 | net：`ClientHandler` + `run_client_session` + 单测（host/agent 不动） | 无（纯新增） | PR-1 |
 | S2 | agent：`agent_session` 改薄封装 → 9 用例断言零改动全绿 | 无（重构，行为等价） | PR-1（或紧随 PR-2） |
-| S3 | net+host：三回调加 `session_id` + 未 join 守卫 + host 三重校验 + 3 新用例 | **有**（收紧：未 join 事件/冒名/越权被拒） | PR-2 |
+| S3 | net+host：三回调加 `session_id` + 未 join 守卫 + host 三重校验 + 4 新用例 | **有**（收紧：未 join 事件/冒名/越权/保留昵称被拒） | PR-2 |
 | S4 | M2 回传链路（#17/#18）在身份绑定后落 `on_event` / 分块流 | 有 | M2 后续 |
 | S5 | host ack 收集与按 session 定向（Deferral #1 闭项） | 有 | M2 后续 |
 
@@ -211,13 +225,13 @@ struct AgentSession<'a> { incoming: &'a mut Incoming, notify: &'a Sender<AgentEv
 | protocol | 25（merge） | 无 | 无 | 0 改动 |
 | store | 15 + 1（concurrent/WAL） | 无 | 无 | 0 改动 |
 | net | 1（beacon）+ 6（frame）+ 7（session） | **新增** ~5 client runner 用例；`SessionHandler` mock 在 S3 需加参数 | session 测试里 `MockHandler` 的 3 个回调 impl 加 `session_id: &str` 参数（7 用例中 3 个 impl 相关） | S1 新增；S3 改 mock 签名，断言不变 |
-| host | 9（hub） | 无 | hub 三回调 impl 加参数；**新增 3 用例**（冒名/越权/未 join）；现有 9 用例断言不变 | S3 改 impl + 新增 |
+| host | 9（hub） | 无 | hub 三回调 impl 加参数；**新增 4 用例**（冒名/越权/未 join/保留昵称 teacher）；现有 9 用例断言不变 | S3 改 impl + 新增 |
 | agent | 9 | **S2 后断言零改动全绿**（重构验收条件） | 无（client 侧不受 SessionHandler 影响） | 0 断言改动 |
 | ipc | 9 + 3 | 无 | 无 | 0 改动 |
 | svc | 10 + 1 | 无 | 无 | 0 改动 |
 | gui(src-tauri) | 12 | 无 | 无 | 0 改动 |
 
-汇总：S1 预计 **+5 用例**（net）；S2 **0 断言改动**（9 回归）；S3 **+3 用例**（host）、`MockHandler` 签名适配（net 7 用例内部 impl，断言不变）。M2 结束后全量约 **116 用例**。
+汇总：S1 预计 **+5 用例**（net）；S2 **0 断言改动**（9 回归）；S3 **+4 用例**（host）、`MockHandler` 签名适配（net 7 用例内部 impl，断言不变）。M2 结束后全量约 **117 用例**。
 
 ## 8 测试策略
 
@@ -244,15 +258,18 @@ struct AgentSession<'a> { incoming: &'a mut Incoming, notify: &'a Sender<AgentEv
 
 - [ ] S1：net 新增客户端运行器，单测覆盖 §8.1 五类；`cargo test -p classroom-net` 全绿
 - [ ] S2：agent 9 用例断言零改动全绿；`agent_session` 行数显著下降（薄封装）
-- [ ] S3：host 3 新用例全绿（冒名/越权/未 join 均被拒）；net `MockHandler` 适配后 7 用例断言不变全绿
+- [ ] S3：host **4** 新用例全绿——① 冒名（owner≠conn.nickname 被拒）② 越权（学员伪造 audience=All 被拒）③ 未 join 直发 Event 被拒 ④ **昵称 `"teacher"` 加入被拒（`InvalidNickname`，PR #73 评审发现 1）**；net `MockHandler` 适配后 7 用例断言不变全绿
 - [ ] 全量：`cargo test --workspace` 全绿 + fmt/clippy -D warnings
-- [ ] PR 描述：S3 附 host hub 三回调适配 diff 摘要 + 未 join 守卫行为说明（lead 要求）
+- [ ] **PR 描述（S3，评审硬性核对清单，逐项勾选）**：
+  1. **host 三回调 impl 无遗漏**：`on_event` / `on_manifest_req` / `on_file_chunk_stream` 的适配 diff 摘要**全部列出**（含未实现的默认方法是否受影响）
+  2. **未 join 守卫覆盖五类帧**：`Event` / `FileHeader` / `FileChunk` / `FileEnd` / `ManifestReq` **逐类**标注守卫位置与行为（warn 丢弃、不回帧、不断连接）
+  3. **3 个新增身份用例断言三件事**：违规事件被拒 **+ 无落库（store 无新增/变更）** **+ 无通知（GUI 无 `ItemUpdated`/`StatusChanged` 推送）**——三者缺一不可，避免「只断言了返回值」的形式化测试
 
 ## 附录 A Deferral 映射
 
 | M1 Deferral（冻结报告 §4） | 本文落点 |
 | --- | --- |
-| ack 跟踪 | §3.5 + S5 |
+| ack 跟踪 | §3.6 + S5 |
 | 会话身份绑定 / run_client_session | §3 + §4 + S1/S2/S3 |
 | Pong 读超时（会话活性） | S3 后（§6 矩阵） |
 | 静默死亡真机复验 | TC-01 双机（S2 后自动化前置已就位） |
