@@ -1015,3 +1015,84 @@ async fn student_upload_not_visible_to_other_students() {
         assert!(all.is_empty(), "教师未广播任何内容时学员库应为空");
     }
 }
+
+/// #94 加固用例（评审发现 1）：上传**超限在流式过程中**即被拒——100MB
+/// 上限检查在分块循环内逐块进行（不信任客户端，防止先写满磁盘再拒）。
+/// 构造 101 个 1MB 块（累计 101MB > 100MB），断言：
+/// 1) 第 101 块触发上限 → 回 `FileAck { sha256_ok: false }`；
+/// 2) 条目未入库、教师侧无 `ReceivedUpsert` 通知。
+#[tokio::test]
+async fn student_upload_over_limit_rejected_streaming() {
+    use classroom_protocol::{Audience, EventKind, ShareItem, SyncState};
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let mut alice = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    let total = MAX_FILE_SIZE + 1024 * 1024; // 101MB（超过上限 1MB）
+    let item_id = "up-too-big";
+    let ev = classroom_protocol::Event {
+        event_id: format!("upload-{item_id}"),
+        kind: EventKind::Upsert,
+        item: ShareItem {
+            id: item_id.into(),
+            kind: ItemKind::File,
+            owner_id: "alice".into(),
+            owner_role: Role::Student,
+            audience: Audience::Teacher,
+            title: "big.bin".into(),
+            size: total,
+            sha256: Some("0".repeat(64)),
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::PendingSync,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: 9,
+    };
+    alice.send(&Frame::Event(ev)).await;
+    alice
+        .send(&Frame::FileHeader(FileHeader {
+            item_id: item_id.into(),
+            file_name: "big.bin".into(),
+            size: total,
+            sha256: "0".repeat(64),
+        }))
+        .await;
+
+    let chunk = vec![0u8; 1024 * 1024];
+    let blocks = total / (1024 * 1024); // 101
+    for seq in 0..blocks {
+        alice
+            .send(&Frame::FileChunk(classroom_net::FileChunk {
+                item_id: item_id.into(),
+                seq,
+                bytes: chunk.clone(),
+            }))
+            .await;
+    }
+    // 客户端正常结束流（真实协议行为）；host 在超限块处已中止写盘并回失败 ack
+    alice
+        .send(&Frame::FileEnd(classroom_net::FileEnd {
+            item_id: item_id.into(),
+        }))
+        .await;
+    let got = loop {
+        match alice.next().await {
+            Frame::FileAck(a) => break a,
+            _ => continue,
+        }
+    };
+    assert!(!got.sha256_ok, "超限上传必须回失败 ack");
+    assert_eq!(got.item_id, item_id);
+
+    assert_no_received_upsert(&mut host).await;
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(
+        store.list(ListFilter::default()).unwrap().is_empty(),
+        "超限上传不得入库"
+    );
+}

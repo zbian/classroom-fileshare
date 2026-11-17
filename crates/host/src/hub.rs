@@ -480,7 +480,7 @@ impl SessionHandler for Hub {
             conns.get(session_id).map(|c| c.nickname.clone())
         };
         let Some(nickname) = nickname else {
-            while chunks.recv().await.is_some() {}
+            drain_chunks_bounded(&mut chunks).await;
             tracing::warn!(%session_id, item_id = %header.item_id, "未注册会话的文件流，拒绝");
             return FileAck {
                 item_id: header.item_id,
@@ -490,7 +490,7 @@ impl SessionHandler for Hub {
         // 取出该会话登记的元数据事件（必须与内容帧 item_id 对应）
         let pending = self.uploads.lock().unwrap().remove(session_id);
         let Some(ev) = pending.filter(|e| e.item.id == header.item_id) else {
-            while chunks.recv().await.is_some() {}
+            drain_chunks_bounded(&mut chunks).await;
             tracing::warn!(
                 %session_id,
                 item_id = %header.item_id,
@@ -512,7 +512,7 @@ impl SessionHandler for Hub {
             let mut out = match std::fs::File::create(&tmp) {
                 Ok(f) => f,
                 Err(e) => {
-                    while chunks.recv().await.is_some() {}
+                    drain_chunks_bounded(&mut chunks).await;
                     tracing::warn!(error = %e, "上传临时文件创建失败");
                     return FileAck {
                         item_id: header.item_id,
@@ -521,33 +521,46 @@ impl SessionHandler for Hub {
                 }
             };
             use std::io::Write as _;
+            // 上限检查在**循环内**逐块进行（评审加固：不信任客户端——
+            // 原实现等循环结束才判，恶意客户端可先写满 %TEMP% 再被拒）。
+            // 每块先算累计再判，超限块本身不写盘，随即删临时文件 + 排空
+            // 剩余分块（避免发送端阻塞）并回失败 ack。
             while let Some(chunk) = chunks.recv().await {
-                if let Err(e) = out.write_all(&chunk.bytes) {
+                let next = written + chunk.bytes.len() as u64;
+                if next > classroom_protocol::MAX_FILE_SIZE {
+                    drop(out);
                     let _ = std::fs::remove_file(&tmp);
-                    tracing::warn!(error = %e, "上传写入失败");
-                    // 排空余下分块，避免发送端阻塞
-                    while chunks.recv().await.is_some() {}
+                    tracing::warn!(
+                        %session_id,
+                        bytes = next,
+                        "上传超过 100MB 上限（循环内检查，已中止写盘）"
+                    );
+                    drain_chunks_bounded(&mut chunks).await;
                     return FileAck {
                         item_id: header.item_id,
                         sha256_ok: false,
                     };
                 }
-                written += chunk.bytes.len() as u64;
+                if let Err(e) = out.write_all(&chunk.bytes) {
+                    let _ = std::fs::remove_file(&tmp);
+                    tracing::warn!(error = %e, "上传写入失败");
+                    // 排空余下分块，避免发送端阻塞
+                    drain_chunks_bounded(&mut chunks).await;
+                    return FileAck {
+                        item_id: header.item_id,
+                        sha256_ok: false,
+                    };
+                }
+                written = next;
             }
         }
 
-        // 大小上限（E10 同源）+ 哈希校验（EX-07）
-        let mut ok = written <= classroom_protocol::MAX_FILE_SIZE;
+        // 哈希校验（EX-07）；大小上限已在循环内保证（written ≤ MAX_FILE_SIZE）
+        let ok = classroom_store::sha256_file(&tmp)
+            .map(|h| h.eq_ignore_ascii_case(&header.sha256))
+            .unwrap_or(false);
         if !ok {
-            tracing::warn!(%session_id, bytes = written, "上传超过 100MB 上限，拒绝");
-        }
-        if ok {
-            ok = classroom_store::sha256_file(&tmp)
-                .map(|h| h.eq_ignore_ascii_case(&header.sha256))
-                .unwrap_or(false);
-            if !ok {
-                tracing::warn!(%session_id, item_id = %header.item_id, "上传整体哈希校验失败（EX-07）");
-            }
+            tracing::warn!(%session_id, item_id = %header.item_id, "上传整体哈希校验失败（EX-07）");
         }
         if !ok {
             let _ = std::fs::remove_file(&tmp);
@@ -670,4 +683,13 @@ impl SessionHandler for Hub {
             self.push_file_to(&item, tx).await;
         }
     }
+}
+
+/// 有界排空分块流（M2 #94 加固）：失败路径必须继续读走已到达的分块，
+/// 但**不能无限等待**——恶意/异常客户端可能不发 `FileEnd`，广播式
+/// `while let Some(_) = recv().await` 会让会话任务永久挂起（资源泄漏）。
+/// 上限 3s 后放弃排空（此后连接照常由 net 层处理）。
+async fn drain_chunks_bounded(chunks: &mut mpsc::Receiver<FileChunk>) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while let Ok(Some(_)) = tokio::time::timeout_at(deadline, chunks.recv()).await {}
 }
