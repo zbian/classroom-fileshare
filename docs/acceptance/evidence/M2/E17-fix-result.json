@@ -1,0 +1,14 @@
+{
+    "conflict":  "REPLY svc-err 名称「占用名.bin」已存在，请换一个",
+    "empty_name":  "REPLY svc-err 名称不能为空",
+    "not_found":  "REPLY svc-err 条目不存在或已删除",
+    "sanitized_conflict":  "REPLY ok",
+    "valid":  "REPLY ok",
+    "list_after":  [
+                       "ITEM id=e24b0719-ec8c-4781-9859-d0495d82aed9 kind=File owner=teacher role=Teacher audience=All title=新名成功.bin size=4096 version=3 deleted=false sync=Synced rel=0",
+                       "ITEM id=7b5e7711-7e36-4d8f-b6d1-ad8f549af9aa kind=File owner=teacher role=Teacher audience=All title=占用名.bin size=4096 version=1 deleted=false sync=Synced rel=0"
+                   ],
+    "is_ok_not_accepted":  true,
+    "is_err_returned":  true,
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\e17fix-022730"
+}

@@ -1,0 +1,42 @@
+{
+    "ipc_list_before":  [
+                            "ITEM id=f07be87a-06e1-454c-9051-abadc6d07de6 kind=File owner=teacher role=Teacher audience=All title=占用名.bin size=8192 version=1 deleted=false sync=Synced rel=0",
+                            "ITEM id=5d119a7c-f455-46e5-9cc4-56654461fe86 kind=File owner=teacher role=Teacher audience=All title=待改名.bin size=8192 version=1 deleted=false sync=Synced rel=0",
+                            "ITEM id=fe9d4039-0d87-498b-92d7-9a896eb8fb50 kind=Text owner=teacher role=Teacher audience=All title=标题无关键词 size=13 version=1 deleted=false sync=Synced rel=0"
+                        ],
+    "toolbar_buttons":  null,
+    "rows_before":  [
+                        "文件\n占用名.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                        "文件\n待改名.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                        "文本\n标题无关键词\n13 字\n02:35\n已同步\n复制重命名"
+                    ],
+    "target_row_index":  1,
+    "rename_click":  "clicked",
+    "dialog_text":  "重命名\n×\n新名称（文件会同步重命名并广播给学员端）\n取消\n确认",
+    "dialog_prefilled":  "待改名.bin",
+    "submit_click":  "clicked",
+    "toast_after_rename":  "已重命名，正在同步到学员端",
+    "rows_after_rename":  [
+                              "文件\n改名成功.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                              "文件\n占用名.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                              "文本\n标题无关键词\n13 字\n02:35\n已同步\n复制重命名"
+                          ],
+    "ipc_after_rename":  "ITEM id=5d119a7c-f455-46e5-9cc4-56654461fe86 kind=File owner=teacher role=Teacher audience=All title=改名成功.bin size=8192 version=2 deleted=false sync=Synced rel=0",
+    "conflict_dialog":  "重命名\n×\n新名称（文件会同步重命名并广播给学员端）\n取消\n确认",
+    "toast_conflict":  "课堂共享 | 教师端 | 已连接 1 名学员",
+    "dialog_after_conflict":  "重命名\n×\n新名称（文件会同步重命名并广播给学员端）\n该名称已存在，请换一个\n取消\n确认",
+    "rows_after_conflict":  [
+                                "文件\n改名成功.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                                "文件\n占用名.bin\n8 KB\n02:35\n已同步\n打开重命名",
+                                "文本\n标题无关键词\n13 字\n02:35\n已同步\n复制重命名"
+                            ],
+    "e17_silent_success":  true,
+    "searchbox_exists":  true,
+    "search_rows_text":  "文本\n标题无关键词\n13 字\n02:35\n已同步\n复制重命名",
+    "search_text_hit":  true,
+    "search_rows_title":  "文件\n占用名.bin\n8 KB\n02:35\n已同步\n打开重命名",
+    "type_filter_value":  "Text",
+    "type_filter":  "set",
+    "rows_type_text":  "文本\n标题无关键词\n13 字\n02:35\n已同步\n复制重命名",
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\tc127-022809"
+}
