@@ -692,6 +692,9 @@ impl SessionHandler for Hub {
                         .unwrap()
                         .set_sync_state(&ack_item_id, classroom_protocol::SyncState::Deleted);
                     tracing::info!(item_id = %ack_item_id, done, total, "删除进度收敛（全部 ack）");
+                    // 评审建议：收敛后从内存移除（防 HashMap 单调增长；
+                    // 墓碑 TTL 语义不变，后续离线端补删 ack 仅记日志）
+                    self.deletes.lock().unwrap().remove(&ack_item_id);
                 }
             } else {
                 let _ = self
