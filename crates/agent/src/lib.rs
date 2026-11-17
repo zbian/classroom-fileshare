@@ -762,8 +762,11 @@ impl ClientHandler for AgentSessionHandler {
     async fn on_joined(&self, _session_id: &str) {
         // E15（#123）：会话就绪——新会话递增 epoch（旧会话的「已发送待确认」
         // 标记随之失效，由补发泵重发，避免跨会话误确认出队）。
-        self.joined.store(true, Ordering::SeqCst);
+        // 顺序（评审修正）：**先递增 epoch，再置就绪**——泵读到 joined=true
+        // 时 epoch 必已是新值，避免「就绪但 epoch 仍旧」窗口内 confirm_sent
+        // 把旧会话标记误判为「epoch 未变」而错误出队（数据丢失风险）。
         self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.joined.store(true, Ordering::SeqCst);
         tracing::info!(
             epoch = self.epoch.load(Ordering::SeqCst),
             "会话已就绪（Joined）"
