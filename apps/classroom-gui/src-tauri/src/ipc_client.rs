@@ -6,15 +6,19 @@
 //!   形态，与 ui/src/shared/ipc/client.ts 约定一致；错误文案原样透传前端）
 //! - 通知：`SvcNotify` mpsc → 重打标签为 `{ "t": <变体名>, "payload": … }`
 //!   后 `emit("svc://notify")` 广播（前端 store 按 `t` 分发）
+//! - tips 接线（P0 #79）：`ShareReceived` 在此映射为 [`TipDto`] 并调用
+//!   [`crate::tips::push_tip`]（映射放数据源侧，tips 模块只管展示）
 //! - OpenItem：服务返回 [`GuiReply::FilePath`]，GUI（用户会话）用系统默认程序
 //!   打开（接口修订 #7①，Session 0 服务无法替用户拉起进程）
 
 use crate::state::{config_dir, AppState};
+use crate::tips::{self, TipDto};
 use classroom_ipc::{
     connect_ipc, load_or_create_token, GuiReply, GuiRequest, IpcClient, SvcNotify,
 };
-use classroom_protocol::Role;
+use classroom_protocol::{ItemKind, Role, ShareItem};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -22,12 +26,17 @@ use tauri::{AppHandle, Emitter, Manager};
 /// [`IpcClient`] 为 Clone（共享写端），克隆成本可忽略。
 pub struct IpcBridge {
     client: Mutex<Option<IpcClient>>,
+    /// tips 去重表：item id → 最近一次已推送的 version。
+    /// 服务端对同一 upsert 会同时下发 `ShareReceived` 与 `ItemUpdated(overwritten)`，
+    /// 两者都触发提示时按此表去重，保证「一条共享只弹一个气泡」。
+    last_tip_version: Mutex<HashMap<String, u64>>,
 }
 
 impl IpcBridge {
     pub fn new() -> Self {
         Self {
             client: Mutex::new(None),
+            last_tip_version: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -107,7 +116,21 @@ pub fn start_bridge(app: AppHandle) {
 }
 
 async fn forward_loop(app: &AppHandle, mut rx: tokio::sync::mpsc::Receiver<SvcNotify>) {
+    // 本机角色用于「不给自己弹提醒」判定（见 notify_to_tip）。
+    let self_role = role_from_config(app);
     while let Some(n) = rx.recv().await {
+        // P0 #79：tips 接线。服务端每次 upsert 会同时下发 ShareReceived 与
+        // ItemUpdated（runtime::map_notify 的 upsert 闭包），由 tips_to_push
+        // 按 (item id, version) 去重，保证同一条共享只弹一个气泡；覆盖由
+        // ItemUpdated(overwritten=true) 兜底。
+        let pending = {
+            let bridge = app.state::<IpcBridge>();
+            let mut last = bridge.last_tip_version.lock().expect("tips dedupe lock");
+            tips_to_push(&n, &self_role, &mut last)
+        };
+        if let Some(tip) = pending {
+            tips::push_tip(app, tip);
+        }
         if let Err(e) = app.emit("svc://notify", retag(&n)) {
             eprintln!("[ipc] 通知转发失败：{e}");
         }
@@ -119,6 +142,112 @@ async fn forward_loop(app: &AppHandle, mut rx: tokio::sync::mpsc::Receiver<SvcNo
         retag(&SvcNotify::StatusChanged(String::new())),
     );
     *app.state::<IpcBridge>().client.lock().expect("ipc lock") = None;
+}
+
+/// 通知 → tips 载荷（纯函数，便于单测）。返回 `(TipDto, version)`，version 供
+/// 调用方去重。
+///
+/// 取舍（reviewer 清单第 1 项）：
+/// - `ShareReceived`：新共享到达（含同名覆盖后的新版本）→ 推
+/// - `ItemUpdated{overwritten: true}`：覆盖是用户可见事件（PRD 4.2 / 8.3 覆盖提示）→ 推；
+///   与 ShareReceived 同源时由 `mark_tip_once` 按 (id, version) 去重
+/// - `ItemUpdated{overwritten: false}`：与 ShareReceived 完全同源，单独推会双气泡 → 不推
+/// - `ItemRemoved`：删除不是「新共享」，不推（删除提示走主窗/E4 语义）→ 不推
+/// - 本人产生的条目：服务端在本地发送时也会回 `HostEvent::ReceivedUpsert`
+///   （crates/host/src/hub.rs 广播路径），按 owner_role 排除，避免「自己发、自己弹」
+fn notify_to_tip(n: &SvcNotify, self_role: &Role) -> Option<(TipDto, u64)> {
+    let item = match n {
+        SvcNotify::ShareReceived(item) => item,
+        SvcNotify::ItemUpdated(payload) if payload.overwritten => &payload.item,
+        _ => return None,
+    };
+    if item.owner_role == *self_role {
+        return None;
+    }
+    Some((tip_from_share_item(item), item.version))
+}
+
+/// tips 去重判定（纯函数）：同一条目只在 version 增长时推送。
+fn should_push_tip(previous_version: u64, version: u64) -> bool {
+    version > previous_version
+}
+
+/// 通知 → 待推送 tips（纯函数，含 (id, version) 去重）。
+///
+/// 把「映射 + 去重」收在一个纯函数里，便于单测精确覆盖服务端的双通知行为
+/// （reviewer 清单第 2/4 项：一个事件不弹两次，且用测试锁死该行为）。
+fn tips_to_push(
+    n: &SvcNotify,
+    self_role: &Role,
+    last_tip_version: &mut HashMap<String, u64>,
+) -> Option<TipDto> {
+    let (tip, version) = notify_to_tip(n, self_role)?;
+    let previous = last_tip_version.get(&tip.id).copied().unwrap_or(0);
+    if !should_push_tip(previous, version) {
+        return None;
+    }
+    // 仅需短窗口去重；超过上限整体清空，避免长时间运行无界增长
+    if last_tip_version.len() > 512 {
+        last_tip_version.clear();
+    }
+    last_tip_version.insert(tip.id.clone(), version);
+    Some(tip)
+}
+
+/// `ShareItem` → tips 展示字段（reviewer 建议：映射放数据源侧，tips 模块只展示）。
+fn tip_from_share_item(item: &ShareItem) -> TipDto {
+    let from = match item.owner_role {
+        Role::Teacher => "教师".to_string(),
+        Role::Student if !item.owner_id.is_empty() => item.owner_id.clone(),
+        Role::Student => "学员".to_string(),
+    };
+    let (kind, name, size_text) = match item.kind {
+        ItemKind::File => {
+            // 文件 title 可为空（PRD 3.5），回退到 rel_path 文件名，再回退占位
+            let fallback = item
+                .rel_path
+                .as_deref()
+                .and_then(|p| p.rsplit(['/', '\\']).next())
+                .filter(|s| !s.is_empty());
+            let name = if item.title.trim().is_empty() {
+                fallback.unwrap_or("（未命名文件）").to_string()
+            } else {
+                item.title.clone()
+            };
+            ("file", name, human_size(item.size))
+        }
+        // 文本的 size 为字符数（PRD 3.5）
+        ItemKind::Text => (
+            "text",
+            if item.title.trim().is_empty() {
+                "（无标题文本）".to_string()
+            } else {
+                item.title.clone()
+            },
+            format!("{} 字", item.size),
+        ),
+    };
+    TipDto {
+        id: item.id.clone(),
+        kind: kind.to_string(),
+        name,
+        from,
+        size_text,
+    }
+}
+
+/// 字节数 → 人类可读（tips 副标题用，与界面一致：B / KB / MB）。
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < MB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / MB)
+    }
 }
 
 /// 惰性重连：请求前无客户端时尝试一次；仍失败返回 EX-10 文案。
@@ -235,5 +364,171 @@ mod tests {
         assert_eq!(st["snapshot"]["room"], "XK-204");
         assert_eq!(st["snapshot"]["service_state"], "running");
         assert_eq!(st["snapshot"]["online_count"], 3);
+    }
+
+    fn item(kind: ItemKind, owner_role: Role, owner_id: &str, title: &str, size: u64) -> ShareItem {
+        ShareItem {
+            id: "id-1".into(),
+            kind,
+            owner_id: owner_id.into(),
+            owner_role,
+            audience: classroom_protocol::Audience::All,
+            title: title.into(),
+            size,
+            sha256: None,
+            rel_path: None,
+            created_at: 0,
+            updated_at: 0,
+            version: 1,
+            deleted: false,
+            sync_state: classroom_protocol::SyncState::Synced,
+        }
+    }
+
+    /// P0 #79 核心：学生提交到达教师机 → 产出 tips（字段映射正确）。
+    #[test]
+    fn share_received_from_student_maps_to_tip_for_teacher() {
+        let it = item(ItemKind::Text, Role::Student, "小林", "第三题的疑问", 86);
+        let (tip, version) = notify_to_tip(&SvcNotify::ShareReceived(it), &Role::Teacher)
+            .expect("教师机收到学生提交应弹 tips");
+        assert_eq!(version, 1, "version 供去重使用");
+        assert_eq!(tip.id, "id-1");
+        assert_eq!(tip.kind, "text");
+        assert_eq!(tip.name, "第三题的疑问");
+        assert_eq!(tip.from, "小林");
+        assert_eq!(tip.size_text, "86 字");
+    }
+
+    /// 教师广播到达学员机 → 产出 tips（来源显示「教师」、文件大小可读）。
+    #[test]
+    fn share_received_from_teacher_maps_to_tip_for_student() {
+        let it = item(
+            ItemKind::File,
+            Role::Teacher,
+            "teacher",
+            "第 3 章课件.pdf",
+            2_516_582,
+        );
+        let (tip, _version) = notify_to_tip(&SvcNotify::ShareReceived(it), &Role::Student)
+            .expect("学员机收到教师广播应弹 tips");
+        assert_eq!(tip.kind, "file");
+        assert_eq!(tip.name, "第 3 章课件.pdf");
+        assert_eq!(tip.from, "教师");
+        assert_eq!(tip.size_text, "2.4 MB");
+    }
+
+    /// 自己产生的条目不弹（服务端在本地发送时也回 ReceivedUpsert）。
+    #[test]
+    fn own_items_do_not_trigger_tips() {
+        let teacher_own = item(ItemKind::Text, Role::Teacher, "teacher", "通知", 10);
+        assert!(notify_to_tip(&SvcNotify::ShareReceived(teacher_own), &Role::Teacher).is_none());
+        let student_own = item(ItemKind::File, Role::Student, "小林", "作业.docx", 1024);
+        assert!(notify_to_tip(&SvcNotify::ShareReceived(student_own), &Role::Student).is_none());
+    }
+
+    /// ItemUpdated 的取舍：覆盖（overwritten=true）是用户可见事件 → 推；
+    /// 非覆盖与 ShareReceived 同源 → 不推（避免双气泡）。
+    #[test]
+    fn item_updated_only_pushes_for_overwrite() {
+        let it = item(ItemKind::Text, Role::Student, "小林", "疑问", 5);
+        let plain = SvcNotify::ItemUpdated(classroom_ipc::ItemUpdatedPayload {
+            item: it.clone(),
+            overwritten: false,
+            old_version: None,
+        });
+        assert!(
+            notify_to_tip(&plain, &Role::Teacher).is_none(),
+            "非覆盖的 ItemUpdated 与 ShareReceived 同源，不应二次弹"
+        );
+
+        let mut overwritten_item = it;
+        overwritten_item.version = 2;
+        let overwrite = SvcNotify::ItemUpdated(classroom_ipc::ItemUpdatedPayload {
+            item: overwritten_item,
+            overwritten: true,
+            old_version: Some(1),
+        });
+        let (tip, version) =
+            notify_to_tip(&overwrite, &Role::Teacher).expect("覆盖是用户可见事件，应弹 tips");
+        assert_eq!(tip.id, "id-1");
+        assert_eq!(version, 2, "覆盖后的 version 用于去重");
+    }
+
+    /// 删除/状态类通知不弹（删除不是新共享）。
+    #[test]
+    fn non_share_notifications_do_not_trigger_tips() {
+        assert!(notify_to_tip(&SvcNotify::ItemRemoved("id".into()), &Role::Teacher).is_none());
+        assert!(notify_to_tip(&SvcNotify::StatusChanged(String::new()), &Role::Teacher).is_none());
+    }
+
+    /// 去重判定：同 version 只推一次；version 增长（覆盖）再推。
+    #[test]
+    fn dedupe_only_pushes_when_version_advances() {
+        assert!(should_push_tip(0, 1), "首次到达");
+        assert!(
+            !should_push_tip(1, 1),
+            "同源第二条（ShareReceived + ItemUpdated）不重复推"
+        );
+        assert!(should_push_tip(1, 2), "覆盖后 version 增长应再推");
+        assert!(!should_push_tip(2, 1), "乱序旧版本不推");
+    }
+
+    /// 端到端决策测试（纯函数层）：模拟服务端对同一 upsert 的双通知，断言只弹一次；
+    /// 再模拟「仅收到覆盖态 ItemUpdated」的兜底路径仍能弹。
+    #[test]
+    fn same_upsert_double_notify_yields_single_tip() {
+        let mut last: HashMap<String, u64> = HashMap::new();
+        let it = item(ItemKind::Text, Role::Student, "小林", "第三题的疑问", 86);
+        let share = SvcNotify::ShareReceived(it.clone());
+        // 服务端 map_notify：ShareReceived 与 ItemUpdated(overwritten=false) 同时下发
+        let plain = SvcNotify::ItemUpdated(classroom_ipc::ItemUpdatedPayload {
+            item: it.clone(),
+            overwritten: false,
+            old_version: None,
+        });
+        assert!(
+            tips_to_push(&share, &Role::Teacher, &mut last).is_some(),
+            "首条应弹"
+        );
+        assert!(
+            tips_to_push(&plain, &Role::Teacher, &mut last).is_none(),
+            "同源 ItemUpdated 不得二次弹（单气泡）"
+        );
+        assert!(
+            tips_to_push(&share, &Role::Teacher, &mut last).is_none(),
+            "重复推送同一通知也不得再弹"
+        );
+
+        // 覆盖兜底：若只收到 overwritten 的 ItemUpdated（version 2），仍应弹
+        let mut only_overwrite: HashMap<String, u64> = HashMap::new();
+        let mut v2 = it;
+        v2.version = 2;
+        let overwrite = SvcNotify::ItemUpdated(classroom_ipc::ItemUpdatedPayload {
+            item: v2,
+            overwritten: true,
+            old_version: Some(1),
+        });
+        assert!(
+            tips_to_push(&overwrite, &Role::Teacher, &mut only_overwrite).is_some(),
+            "仅覆盖通知时也要提示（PRD 4.2/8.3）"
+        );
+    }
+
+    /// 文件 title 为空时回退到 rel_path 文件名，再回退占位。
+    #[test]
+    fn file_tip_name_falls_back_to_rel_path_then_placeholder() {
+        let mut it = item(ItemKind::File, Role::Teacher, "teacher", "", 100);
+        it.rel_path = Some("teacher/repo/实验素材.zip".into());
+        assert_eq!(tip_from_share_item(&it).name, "实验素材.zip");
+        it.rel_path = None;
+        assert_eq!(tip_from_share_item(&it).name, "（未命名文件）");
+    }
+
+    /// 大小格式化覆盖 B / KB / MB 三档。
+    #[test]
+    fn human_size_formats_b_kb_mb() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(880_640), "860 KB");
+        assert_eq!(human_size(2_516_582), "2.4 MB");
     }
 }
