@@ -1,8 +1,8 @@
-# M2（P1）验收报告 —— 阶段版（TC-04/05/08/09 + 扩展；待 #125/#127/E16 收尾后定稿）
+# M2（P1）验收报告 —— 阶段版（TC-04/05/08/09 + 扩展；待 #129 与内容搜索 GUI 收尾后定稿）
 
 | 项目 | 内容 |
 | --- | --- |
-| 报告 | M2 验收报告（TC-04 / 05 / 08 / 09 + 扩展项）——阶段版，已验项完成；#125/#127/E16 收尾后定稿 |
+| 报告 | M2 验收报告（TC-04 / 05 / 08 / 09 + 扩展项）——阶段版，已验项完成；待 #129（E17 回执）与「内容搜索 GUI」合入后定稿 |
 | 执行人 | qa-acceptance |
 | 日期 | 2026-11-17 起（2026-11-18 01:5x 更新） |
 | 基线 | `main @ 61e651a`（#131 #121/#128；**实测 198 passed**）|
@@ -158,7 +158,7 @@
 
 复核方法（四要素）：命令可复现（§2.1 文档化 CDP 方法 + 端口 19223）；截图与判据一致（3 张截图为真实链路）；DOM 断言真实（取运行期 `innerText`/`querySelectorAll`，非静态桩）；环境说明完整（release GUI、隔离数据根、`online_count` 来源）。
 
-### 3.4 TC-09 离线补发 —— 通过（E15 已闭环；E16 状态计数遗留）
+### 3.4 TC-09 离线补发 —— 通过（E15 / E16 均已闭环）
 
 基线 `main @ 4c61750`（#120 离线队列 + **#124 E15 修复**；**实测 183 passed**）。方法：隔离 teacher/student svc + 真实 IPC；「停教师 svc」模拟断网、「强杀学员 svc」模拟断电。证据 `evidence/M2/TC09-result.json`、`E15-*`、`E16-pending-count.txt`。
 
@@ -184,11 +184,11 @@
 
 → **E15 已修复闭环**；TC-09 判据 6（断电不丢）由 ❌ 转 **✅**。
 
-**E16（P2，状态计数遗留）：补发完成后 `pending_count` 不归零**
+**E16（P2，已修复闭环 #128/#131）：补发完成后 `pending_count` 不归零**
 
 现象（main 4c61750，隔离环境）：断网提交 2 条 → 教师恢复 → 两条均送达教师端、`pending/queue.json=[]`、`pending/*.bin=0`，但学员端 `StatusSnapshot.pending_count` **持续为 2**（每 1 s 采样 ×5 仍为 2）。GUI 状态条会一直显示「待发送 2 条」，与实际不符（PRD 6.8 状态条）。
 
-根因（代码定位）：`crates/agent/src/lib.rs` 补发泵 `resend_pump` 中，`Ok(())` 后调用 `notify_pending()`（此时条目仍在队列，仅登记 `sent`）；**下一 tick 的 `confirm_sent()` 把条目出队后没有再 `notify_pending()`** → 计数只在入队/发送阶段上报，出队阶段不上报。命令泵（command pump）因在同一轮 `confirm_sent` 之后有 `notify_pending`，故在线路径不暴露。
+根因（代码定位）：`crates/agent/src/lib.rs` 补发泵 `resend_pump` 中，`Ok(())` 后调用 `notify_pending()`（此时条目仍在队列，仅登记 `sent`）；**下一 tick 的 `confirm_sent()` 把条目出队后没有再 `notify_pending()`** → 计数只在入队/发送阶段上报，出队阶段不上报。命令泵（command pump）因在同一轮 `confirm_sent` 之后有 `notify_pending`，故在线路径不暴露。 **修复后复验（main 61e651a）：`pending 2→0` 用时 877 ms（判据 ≤5 s）✅**
 
 建议修复：`resend_pump` 在 `confirm_sent(...)` 之后（队列长度变化时）调用 `notify_pending()`；或每个 tick 固定上报一次。验证：补发完成后 `pending_count` 应归 0。
 
@@ -287,7 +287,7 @@
 | TC-07 接收端占用重试 | **未实现**（agent 落盘直接 rename，失败→断连重连+Manifest 重推，非队列语义） | **#117**；M2 缩范围经 Lead 裁定 |
 | 学员「我共享的」为空 | 预期（#104 学员上行不落本地库） | **#121** |
 | 学员端「待删除 chip」 | 实现存在、DOM 可见窗口 1–2 帧不可稳定取证 | 已知限制；#106 后续 UX 小项（300–500ms） |
-| `pending_count` 不归零 | 补发成功后状态条仍显示「待发送 N 条」 | **E16**（P2，待修） |
+
 | 教师操作静默失败 | `RenameItem` 冲突等失败 IPC 仍回 `ok`（fire-and-forget） | **E17**（P2，待修） |
 | 缓存阈值提示（>100MB） | 未测（可选判据） | TC-09 判据 7 |
 
@@ -321,7 +321,7 @@
 - [x] TC-08：后端（#105）+ 教师端 UI（#106/#111）通过（§3.3/§3.3.1）；学员端 chip 记已知限制
 - [x] TC-09（#18）通过（§3.4；断电不丢 0/5、pending_count 归零）
 - [x] 扩展项：rename/内容搜索 后端通过（§3.6，GUI 待 #127）；占用重试 教师侧通过、接收端 #117
-- [ ] 本报告定稿（等 #125 banner 复核 + #127 rename GUI + E16 复验）
+- [ ] 本报告定稿（等 #129 E17 回执 + 内容搜索 GUI 合入后更新最终 main/测试数并去掉「阶段版」）
 - [ ] 延后项（§5）在 release note 列明
 
 ## 7 证据索引
@@ -336,9 +336,9 @@
 | TC-08 UI（dev-gui 证据 + QA 复核记录） | `TC08-chip-result.json`、`TC08-chip.png` |
 | TC-09 / E15 | `TC09-result.json`、`TC09-result-after-E15fix.json`、`E15-fixed-rate-summary.json`、`E15-trace1-stu2.log.txt`、`E15-trace1-tea3.log.txt`、`E15-trace2-stu1.log.txt`、`E15-trace2-tea2.log.txt`、`E15-trace3-recovered-stu2.log.txt` |
 | TC-07 / EX-06 | `TC07-teacher-retry-result.json`、`TC07-exhaust-result.json`、`Warning-RetryExhausted-notify.txt`、`Warning-RetryExhausted-svc.log.txt`、`Warning-BackupFailed-notify.txt`、`Warning-BackupFailed-svc.log.txt` |
-| #19 重命名 / 搜索 | `Rename-result.json`、`Rename-teacher.log.txt`、`Rename-student.log.txt` |
+| #19 重命名 / 搜索 | `Rename-result.json`、`Rename-teacher.log.txt`、`Rename-student.log.txt`；GUI 复核 `tc127/`（5 截图 + result.json） |
 | E13（M1 遗留缺陷闭环） | `../M1/e13/E13-result.txt`、`../M1/e13/E13-verify.txt` |
-| E14 / E16 | `E14-teacher-scope-result.json`、`E16-stale-pending-stu.log.txt` |
+| E14 / E16 / #121 | `E14-teacher-scope-result.json`、`E16-stale-pending-stu.log.txt`、`E16-fix-result-main.json`、`E16-prefix-result.json`、`TC121-student-mine-result.json`、`E121-student-local-items-main.txt` |
 | 环境 / 取证能力 | `cap8.txt`、`test-count-7c26b37.txt`、`gui-blocker.txt`、`gui-blocker-desktop.png` |
 
 > 说明：`TC08`/`Rename-`/`Warning-` 等前缀在正文中按组引用；上表列出精确文件名以便复核。
