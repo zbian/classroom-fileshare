@@ -393,14 +393,14 @@ export const useMainStore = create<MainStore>((set, get) => ({
         // #16：同上（服务端对 upsert 会同时下发 ShareReceived 与 ItemUpdated）
         if (
           get().role === 'teacher' &&
-          n.item.audience === 'Teacher' &&
-          n.item.owner_role === 'Student'
+          n.payload.audience === 'Teacher' &&
+          n.payload.owner_role === 'Student'
         ) {
           void get().loadSubmissions()
         }
         break
       case 'ItemRemoved':
-        set((s) => ({ items: s.items.filter((i) => i.id !== n.id) }))
+        set((s) => ({ items: s.items.filter((i) => i.id !== n.payload.id) }))
         break
       case 'StatusChanged': {
         // 真实服务的通知文本不携带可解析语义（格式不受契约约束）；
@@ -431,7 +431,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
       }
       case 'Discovered': {
         // B1 自动发现房间列表（TC-01 步骤 4：须显示真实房间码，不得硬编码）
-        const rooms = n.beacons.map((b) => ({
+        const rooms = n.payload.beacons.map((b) => ({
           room: b.room,
           host: b.host_name,
           pinRequired: b.pin_required,

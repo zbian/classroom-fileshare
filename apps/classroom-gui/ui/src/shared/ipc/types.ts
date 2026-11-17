@@ -77,13 +77,17 @@ export type GuiRequest =
 /** #103 告警类型（与 Rust WarningKind 对齐，snake 序列化为 CamelCase 值） */
 export type WarningKind = 'BackupFailed' | 'RetryExhausted' | 'DiskFull'
 
+// 注意：服务端 notify 经 Rust `retag()` 统一产出 `{"t": 变体名, "payload": 载荷}` 外壳
+// （ItemRemoved 载荷为 {"id"}、Discovered 为 {"beacons":[…]}、StatusChanged 为裸字符串）。
+// 前端一律读 `n.payload`；读成 `n.item` / `n.id` / `n.beacons` 会静默失效
+// （M2 #20b 修复的 3 处同类 retag bug：学生提交联动 / 删除即时移除 / B1 房间发现列表）。
 export type SvcNotify =
-  | { t: 'ShareReceived'; item: ShareItem }
+  | { t: 'ShareReceived'; payload: ShareItem }
   | { t: 'ItemUpdated'; payload: ItemUpdatedPayload }
-  | { t: 'ItemRemoved'; id: string }
-  | { t: 'StatusChanged'; text: string }
-  | { t: 'TransferProgress'; item_id: string; pct: number }
-  | { t: 'Discovered'; beacons: Beacon[] }
+  | { t: 'ItemRemoved'; payload: { id: string } }
+  | { t: 'StatusChanged'; payload: string }
+  | { t: 'TransferProgress'; payload: { item_id: string; pct: number } }
+  | { t: 'Discovered'; payload: { beacons: Beacon[] } }
   /** #103：同步异常告警（占用重试耗尽/备份写入失败/磁盘不足）；图形化聚合展示 */
   | {
       t: 'Warning'

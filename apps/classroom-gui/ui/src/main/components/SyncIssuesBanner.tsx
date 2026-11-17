@@ -38,7 +38,8 @@ export default function SyncIssuesBanner() {
   if (retrying.length > 0) {
     const maxRound = Math.max(...retrying.map((i) => i.retry_count ?? 0))
     const suffix = maxRound > 0 ? `（第 ${maxRound}/${MAX_RETRY} 次）` : ''
-    parts.push(`${retrying.length} 条目标文件正被程序占用，已加入重试队列${suffix}`)
+    // 去重：后缀已含「已加入重试队列，稍后自动覆盖」，此处不再重复该关键词
+    parts.push(`${retrying.length} 条目标文件正被程序占用${suffix}`)
   }
   if (failed.length > 0) parts.push(`${failed.length} 条连续重试失败`)
   const needManual = failed.length > 0 || warnings.some((w) => w.kind === 'RetryExhausted')
