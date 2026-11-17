@@ -186,11 +186,20 @@
   flex: 1;
 }
 
+/* issue #90：内容区改为 flex 列，让虚拟列表视口拿到受限高度（此前 overflow:auto
+   会把视口撑成内容高度 → 500 条全渲染，虚拟滚动失效）。 */
 .app-content {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+}
+.app-content > .info,
+.app-content > .list-meta,
+.app-content > .grid-head {
+  flex: none;
 }
 
 /* C1 六列表格 */
@@ -245,4 +254,85 @@
   padding: 10px 16px;
   background: #fff;
   border-top: 1px solid var(--line);
+}
+
+/* ---- issue #90：搜索/筛选/虚拟滚动 ---- */
+.search-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 1;
+  max-width: 260px;
+}
+.search-wrap .input {
+  max-width: none;
+  width: 100%;
+  padding-right: 26px;
+}
+.search-clear {
+  position: absolute;
+  right: 4px;
+  border: none;
+  background: none;
+  color: var(--weak);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 5px;
+}
+.search-clear:hover {
+  color: var(--ink);
+}
+
+.list-meta {
+  font-size: var(--fs-12);
+  color: var(--sub);
+  padding: 6px 2px 4px;
+}
+
+/* 列表表头与数据行：div-grid 以配合虚拟滚动（视觉与 table 版一致） */
+.grid-head {
+  display: grid;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--fs-12);
+  color: var(--weak);
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: var(--r-card) var(--r-card) 0 0;
+  padding: 8px 12px;
+  min-height: 32px;
+}
+.grow {
+  display: grid;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--fs-13);
+  padding: 0 12px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #fff;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.grow:hover {
+  background: #f8fbff;
+}
+.grow.selected {
+  background: var(--primary-l);
+}
+
+/* 虚拟滚动视口：占满剩余高度（命中区=可见区原则） */
+.vlist-viewport {
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--r-card) var(--r-card);
+  background: #fff;
+  flex: 1;
+  min-height: 0;
+}
+.vlist-inner {
+  position: relative;
+  width: 100%;
 }

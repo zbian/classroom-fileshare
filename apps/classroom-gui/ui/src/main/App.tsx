@@ -132,12 +132,31 @@ function Toolbar() {
   const showToast = useMainStore((s) => s.showToast)
 
   const search = (
-    <input
-      className="input"
-      placeholder={role === 'student' && activeTab === 'teacher' ? '搜索教师共享内容' : '搜索名称 / 内容'}
-      value={keyword}
-      onChange={(e) => setKeyword(e.target.value)}
-    />
+    <span className="search-wrap">
+      <input
+        className="input"
+        placeholder={role === 'student' && activeTab === 'teacher' ? '搜索教师共享内容' : '搜索名称 / 内容'}
+        value={keyword}
+        onChange={(e) => setKeyword(e.target.value)}
+      />
+      {keyword ? (
+        <button className="search-clear" title="清空搜索" onClick={() => setKeyword('')}>
+          ×
+        </button>
+      ) : null}
+    </span>
+  )
+  const kindSelect = (
+    <select
+      className="select"
+      title="按类型筛选"
+      value={kindFilter}
+      onChange={(e) => setKindFilter(e.target.value as 'all' | 'Text' | 'File')}
+    >
+      <option value="all">全部类型</option>
+      <option value="File">文件</option>
+      <option value="Text">文本</option>
+    </select>
   )
 
   // 学员 D1：只读工具栏（无任何增删改控件，review 硬性条目）
@@ -145,6 +164,7 @@ function Toolbar() {
     return (
       <div className="app-toolbar">
         {search}
+        {kindSelect}
         <span className="chip">只读</span>
         <span className="spacer" />
         <button
@@ -171,15 +191,7 @@ function Toolbar() {
   return (
     <div className="app-toolbar">
       {search}
-      <select
-        className="select"
-        value={kindFilter}
-        onChange={(e) => setKindFilter(e.target.value as 'all' | 'Text' | 'File')}
-      >
-        <option value="all">全部类型</option>
-        <option value="File">文件</option>
-        <option value="Text">文本</option>
-      </select>
+      {kindSelect}
       <span className="spacer" />
       {role === 'student' ? <span className="chip warn">发送对象：仅教师</span> : null}
       <button

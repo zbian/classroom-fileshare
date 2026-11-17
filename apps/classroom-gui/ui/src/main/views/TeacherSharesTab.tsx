@@ -1,9 +1,13 @@
 /**
- * D1 教师共享 · 只读列表（FR-S-04）：搜索、只读标识、「新」标记、
- * 复制选中文本 / 打开选中文件（经工具栏），**不出现任何增删改控件**（review 硬性条目）。
+ * D1 教师共享 · 只读列表（FR-S-04；issue #90：搜索 + 类型筛选 + 虚拟滚动）。
+ * **不出现任何增删改控件**（review 硬性条目）——工具栏只提供搜索/筛选与只读操作。
  */
 import { useMainStore } from '../store'
+import { filterItems, isFilterActive } from '../listFilter'
+import VirtualList from '../components/VirtualList'
+import { COLS_TEACHER_SHARES as COLS, ROW_HEIGHT } from './columns'
 import type { ShareItem, SyncState } from '../../shared/ipc/types'
+
 
 /** D1 状态映射（PRD 6.4）：新/已下载/下载中（M1：下载中静态样例，进度 T12） */
 function stateChip(s: SyncState, isNew: boolean): { cls: string; label: string } {
@@ -13,17 +17,8 @@ function stateChip(s: SyncState, isNew: boolean): { cls: string; label: string }
       return { cls: 'ok', label: '已下载' }
     case 'PendingSync':
       return { cls: 'warn', label: '下载中' }
-    case 'PendingSend':
-      return { cls: 'warn', label: '待发送' }
-    case 'DeleteDeferred':
-      return { cls: 'warn', label: '延迟删除' }
-    case 'RetryLocked':
-      return { cls: 'err', label: '被占用重试' }
-    case 'Failed':
-      return { cls: 'err', label: '失败' }
     default:
-      // 未知枚举不裸露英文（PRD 4.6 状态表达：文字标签 + 色块）
-      return { cls: 'warn', label: '同步中' }
+      return { cls: 'warn', label: s }
   }
 }
 
@@ -45,25 +40,34 @@ function Row({ item }: { item: ShareItem & { is_new?: boolean } }) {
   const isNew = !!item.is_new && !seen
   const st = stateChip(item.sync_state, isNew)
   return (
-    <tr
-      className={`row${selectedId === item.id ? ' selected' : ''}`}
+    <div
+      className={`grow${selectedId === item.id ? ' selected' : ''}`}
+      style={{ gridTemplateColumns: COLS, height: ROW_HEIGHT }}
       onClick={() => select(selectedId === item.id ? null : item.id)}
     >
-      <td>{item.kind === 'File' ? <span className="badge file">文件</span> : <span className="badge text">文本</span>}</td>
-      <td className="name" title={item.title}>
+      <span>
+        {item.kind === 'File' ? <span className="badge file">文件</span> : <span className="badge text">文本</span>}
+      </span>
+      <span className="name" title={item.title}>
         {item.title}
-      </td>
-      <td>{item.kind === 'File' ? fmtSize(item.size) : `${item.size} 字`}</td>
-      <td>{fmtTime(item.updated_at)}</td>
-      <td>
+      </span>
+      <span>{item.kind === 'File' ? fmtSize(item.size) : `${item.size} 字`}</span>
+      <span>{fmtTime(item.updated_at)}</span>
+      <span>
         <span className={`chip ${st.cls}`}>{st.label}</span>
-      </td>
-    </tr>
+      </span>
+    </div>
   )
 }
 
 export default function TeacherSharesTab() {
   const items = useMainStore((s) => s.items)
+  const keyword = useMainStore((s) => s.keyword)
+  const kindFilter = useMainStore((s) => s.kindFilter)
+
+  const filter = { keyword, kind: kindFilter }
+  const visible = filterItems(items, filter)
+  const filtering = isFilterActive(filter)
 
   if (items.length === 0) {
     return (
@@ -80,22 +84,25 @@ export default function TeacherSharesTab() {
       <div className="info" style={{ marginBottom: 10 }}>
         教师删除某条共享后，本机副本将同步移除；若当前离线，将在下次连上教师机时自动删除。
       </div>
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th style={{ width: 76 }}>类型</th>
-            <th>名称 / 内容</th>
-            <th style={{ width: 90 }}>大小</th>
-            <th style={{ width: 70 }}>时间</th>
-            <th style={{ width: 110 }}>状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((it) => (
-            <Row key={it.id} item={it} />
-          ))}
-        </tbody>
-      </table>
+      <div className="list-meta">
+        {filtering ? `筛选后 ${visible.length} / ${items.length} 条` : `共 ${items.length} 条`}
+      </div>
+      <div className="grid-head" style={{ gridTemplateColumns: COLS }}>
+        <span>类型</span>
+        <span>名称 / 内容</span>
+        <span>大小</span>
+        <span>时间</span>
+        <span>状态</span>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ padding: '36px 0' }}>
+          <div className="info" style={{ textAlign: 'center' }}>
+            无匹配结果：请调整搜索关键字或类型筛选（清空即可恢复全部）。
+          </div>
+        </div>
+      ) : (
+        <VirtualList items={visible} rowHeight={ROW_HEIGHT} renderRow={(item) => <Row key={item.id} item={item} />} />
+      )}
     </>
   )
 }
