@@ -66,6 +66,8 @@ export type GuiRequest =
   | { t: 'SendText'; title: string; body: string }
   | { t: 'SendFiles'; paths: string[] }
   | { t: 'DeleteItem'; id: string }
+  /// M2 #19（#126）：教师侧重命名（服务端为命令下行；失败仅日志，GUI 侧预检 + 生效确认）
+  | { t: 'RenameItem'; id: string; new_name: string }
   | { t: 'OpenItem'; id: string }
   | { t: 'SetNickname'; nickname: string; pin?: string | null }
   | { t: 'ConfigureRoom'; room: string; pin?: string | null; allow_discovery: boolean }

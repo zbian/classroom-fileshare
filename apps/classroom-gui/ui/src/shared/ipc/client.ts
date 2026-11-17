@@ -25,6 +25,8 @@ export interface GuiClient {
   sendText(title: string, body: string): Promise<GuiReply>
   sendFiles(paths: string[]): Promise<GuiReply>
   deleteItem(id: string): Promise<GuiReply>
+  /** M2 #19：教师侧重命名（#126 契约 RenameItem{id,new_name}；GUI 侧预检见 renameRules.ts） */
+  renameItem(id: string, newName: string): Promise<GuiReply>
   openItem(id: string): Promise<GuiReply>
   /** 学员设置昵称（B1）；重名等业务错误以 reject(Error.message) 呈现 8.3 文案 */
   setNickname(nickname: string, pin?: string | null): Promise<void>
@@ -287,6 +289,27 @@ export class MockGuiClient implements GuiClient {
     return Promise.resolve({ t: 'Ok' })
   }
 
+  /** M2 #19：重命名（mock）：教师侧；同名/风险由 renameRules 预检，这里镜像服务端语义 */
+  renameItem(id: string, newName: string): Promise<GuiReply> {
+    if (this.down) return Promise.reject(new Error('后台服务未运行'))
+    if (this.role === 'student') return Promise.reject(new Error('学员重命名在 M2 未提供'))
+    const list = this.items
+    const idx = list.findIndex((i) => i.id === id && !i.deleted)
+    if (idx < 0) return Promise.reject(new Error('条目不存在'))
+    if (list.some((i) => i.id !== id && !i.deleted && i.title === newName)) {
+      return Promise.reject(new Error('该名称已存在，请换一个'))
+    }
+    const updated = {
+      ...list[idx],
+      title: newName,
+      version: list[idx].version + 1,
+      updated_at: Date.now(),
+    }
+    this.items = list.map((v, k) => (k === idx ? updated : v))
+    this.emit({ t: 'ItemUpdated', payload: { item: updated, overwritten: false, old_version: null } })
+    return Promise.resolve({ t: 'Ok' })
+  }
+
   openItem(_id: string): Promise<GuiReply> {
     return Promise.resolve({ t: 'Ok' })
   }
@@ -368,6 +391,10 @@ export class RealGuiClient implements GuiClient {
   }
   deleteItem(id: string): Promise<GuiReply> {
     return this.request({ DeleteItem: { id } })
+  }
+  /** M2 #19：#126 契约 RenameItem{id,new_name}（命令下行；失败不回传，GUI 负责预检 + 生效确认） */
+  renameItem(id: string, newName: string): Promise<GuiReply> {
+    return this.request({ RenameItem: { id, new_name: newName } })
   }
   openItem(id: string): Promise<GuiReply> {
     return this.request({ OpenItem: { id } })

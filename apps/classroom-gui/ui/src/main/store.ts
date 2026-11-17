@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getClient, type GuiClient, type LocalRole, type UiShareItem } from '../shared/ipc/client'
 import type { ListFilter, ServiceStatus, SubmissionGroup, SvcNotify, WarningKind } from '../shared/ipc/types'
 import { EMPTY_FILTER, type KindFilter, type TabFilter } from './listFilter'
+import { checkRename } from './renameRules'
 
 /** #20b：GUI 侧告警展示项（来自 SvcNotify::Warning） */
 export interface SyncWarning {
@@ -25,6 +26,7 @@ export interface DialogState {
   createRoom: boolean
   nickname: boolean
   deleteConfirm: string | null // 待删除条目 id
+  rename: string | null // M2 #19：待重命名条目 id
 }
 
 interface MainStore {
@@ -81,6 +83,8 @@ interface MainStore {
   sendFiles(paths: string[]): Promise<boolean>
   confirmDelete(): Promise<void>
   configureRoom(room: string, pin: string | null, allowDiscovery: boolean): Promise<boolean>
+  /** M2 #19：重命名（教师侧）；返回错误文案或 null（成功后关闭对话框） */
+  renameItem(id: string, rawName: string): Promise<string | null>
   setNickname(nickname: string, pin?: string | null): Promise<string | null>
   setPasteBody(b: string): void
   /** #20b：忽略/清除当前告警展示（不改条目状态） */
@@ -122,7 +126,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
   submissionItems: [],
   warnings: [],
   seenOwners: {},
-  dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null },
+  dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null, rename: null },
   pasteBody: '',
   toast: null,
 
@@ -282,10 +286,12 @@ export const useMainStore = create<MainStore>((set, get) => ({
 
   openDialog(key, id) {
     if (key === 'deleteConfirm') set({ dialog: { ...get().dialog, deleteConfirm: id ?? null } })
+    else if (key === 'rename') set({ dialog: { ...get().dialog, rename: id ?? null } })
     else set({ dialog: { ...get().dialog, [key]: true } })
   },
   closeDialog(key) {
     if (key === 'deleteConfirm') set({ dialog: { ...get().dialog, deleteConfirm: null } })
+    else if (key === 'rename') set({ dialog: { ...get().dialog, rename: null } })
     else set({ dialog: { ...get().dialog, [key]: false } })
   },
 
@@ -316,6 +322,39 @@ export const useMainStore = create<MainStore>((set, get) => ({
     } catch (e) {
       get().showToast(e instanceof Error ? e.message : '删除失败')
     }
+  },
+
+  /** M2 #19：重命名（教师侧）。#126 的 RenameItem 是命令下行（失败仅服务端日志、
+   *  不回传错误）→ GUI 侧做预检（renameRules，镜像服务端规则）+ 提交后轮询确认生效。 */
+  async renameItem(id, rawName) {
+    const item = get().items.find((i) => i.id === id)
+    if (!item) return '条目不存在'
+    if (get().role !== 'teacher') return '学员端重命名将在后续版本提供'
+    const others = get().items.filter((i) => i.id !== id && !i.deleted).map((i) => i.title)
+    const check = checkRename(rawName, item.kind, item.title, others)
+    if (check.error) return check.error
+    if (check.name === item.title) {
+      set({ dialog: { ...get().dialog, rename: null } })
+      return null
+    }
+    try {
+      await get().client.renameItem(id, check.name)
+    } catch (e) {
+      return e instanceof Error ? e.message : '重命名失败'
+    }
+    // 确认生效（广播/列表刷新为异步；服务端失败不会回传）
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 150))
+      await get().refresh()
+      const now = get().items.find((x) => x.id === id)
+      if (now && now.title === check.name) {
+        set({ dialog: { ...get().dialog, rename: null } })
+        get().showToast('已重命名，正在同步到学员端')
+        return null
+      }
+    }
+    // 轮询超时 ≠ 失败（可能已成功但广播/刷新延迟），避免「假失败」误报
+    return '未确认生效，请刷新查看'
   },
 
   async sendFiles(paths) {
