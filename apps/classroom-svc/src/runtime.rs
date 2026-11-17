@@ -266,6 +266,42 @@ pub fn make_ipc_handler(
         // M2 #19：教师侧重命名 → host 改名 + 广播 rename（学员端 2 秒内同步）
         GuiRequest::RenameItem { id, new_name } => {
             tracing::info!(item_id = %id, "rename-request");
+            // E17（#129）：**同步预检**——名称非法/条目不存在/同名冲突立即
+            // 返回明确错误（GUI 显示「该名称已存在，请换一个」），不再
+            //「try_send 后一律 Ok」造成静默失败（PRD 5.4）。
+            // host 侧执行结果（如文件占用改名失败）仍为异步日志——完整
+            // 回执通道随 #114（S5 ack）统一，PR 已记录。
+            if new_name.trim().is_empty() {
+                return Err("名称不能为空".into());
+            }
+            if classroom_protocol::sanitize_file_name(&new_name).is_err() {
+                return Err("名称非法（不能包含路径分隔符或保留字符）".into());
+            }
+            {
+                let guard = store.lock().unwrap();
+                let Some(target) = guard.get(&id).map_err(|e| e.to_string())? else {
+                    return Err("条目不存在或已删除".into());
+                };
+                if target.deleted {
+                    return Err("条目不存在或已删除".into());
+                }
+                // 同名冲突预检（同 owner + audience + title，排除自身）
+                let same_scope = guard
+                    .list(ListFilter {
+                        owner: Some(target.owner_id.clone()),
+                        audience: Some(target.audience),
+                        ..Default::default()
+                    })
+                    .map_err(|e| e.to_string())?;
+                if let Some(existing) = same_scope
+                    .iter()
+                    .find(|i| i.title == new_name && !i.deleted)
+                {
+                    if existing.id != target.id {
+                        return Err(format!("名称「{new_name}」已存在，请换一个"));
+                    }
+                }
+            }
             dispatch_teacher(
                 &host_cmd,
                 HostCommand::Rename { id, new_name },
@@ -817,35 +853,76 @@ mod tests {
             other => panic!("期望 AgentCommand::SendFiles，实际 {other:?}"),
         }
     }
-    /// M2 #19：教师重命名 → `HostCommand::Rename` 路由（学员端拒绝）。
+    /// E17（#129）：重命名冲突/非法名返回明确错误（非 Ok）；成功返回 Ok 并
+    /// 投递 `HostCommand::Rename`；学员端拒绝。
     #[test]
-    fn rename_routes_to_host_for_teacher_only() {
+    fn rename_conflict_returns_explicit_error() {
+        use classroom_store::PutOutcome;
         use std::sync::atomic::AtomicBool;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
+        let a = match store
+            .lock()
+            .unwrap()
+            .put_text("teacher", Role::Teacher, Audience::All, "旧名", "a", 100)
+            .unwrap()
+        {
+            PutOutcome::Created(i) => i,
+            other => panic!("{other:?}"),
+        };
+        let _b = match store
+            .lock()
+            .unwrap()
+            .put_text("teacher", Role::Teacher, Audience::All, "占用名", "b", 100)
+            .unwrap()
+        {
+            PutOutcome::Created(i) => i,
+            other => panic!("{other:?}"),
+        };
         let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
         let handler = make_ipc_handler(
             Some(cmd_tx),
             None,
             Arc::new(AtomicBool::new(false)),
-            store,
+            store.clone(),
             Arc::new(StatusBoard::new(Role::Teacher, "teacher".into())),
         );
+
+        // ① 同名冲突 → 明确错误（E17 核心：不得静默返回 Ok）
         match handler(GuiRequest::RenameItem {
-            id: "item-1".into(),
-            new_name: "新名称".into(),
+            id: a.id.clone(),
+            new_name: "占用名".into(),
+        }) {
+            Err(msg) => assert!(msg.contains("已存在"), "冲突应返回明确错误: {msg}"),
+            Ok(other) => panic!("冲突不得返回 Ok（静默失败）: {other:?}"),
+        }
+        assert!(cmd_rx.try_recv().is_err(), "冲突时不应投递 HostCommand");
+
+        // ② 空名 → 明确错误（`sanitize_file_name` 会把 `../evil` 之类**剥成**
+        // 合法文件名（PRD 9.4 净化语义），故仅空名/纯空白在此拒绝）
+        assert!(handler(GuiRequest::RenameItem {
+            id: a.id.clone(),
+            new_name: "  ".into(),
+        })
+        .is_err());
+
+        // ③ 成功 → Ok 且投递 HostCommand::Rename
+        match handler(GuiRequest::RenameItem {
+            id: a.id.clone(),
+            new_name: "新名".into(),
         }) {
             Ok(GuiReply::Ok) => {}
-            other => panic!("期望 Ok，实际 {other:?}"),
+            other => panic!("成功应返回 Ok，实际 {other:?}"),
         }
         match cmd_rx.try_recv() {
             Ok(HostCommand::Rename { id, new_name }) => {
-                assert_eq!(id, "item-1");
-                assert_eq!(new_name, "新名称");
+                assert_eq!(id, a.id);
+                assert_eq!(new_name, "新名");
             }
             other => panic!("期望 HostCommand::Rename，实际 {other:?}"),
         }
-        // 学员端：重命名未在 M2 提供（明确拒绝）
+
+        // ④ 学员端：重命名未在 M2 提供（明确拒绝）
         let dir2 = tempfile::tempdir().unwrap();
         let store2 = Arc::new(Mutex::new(Store::open(dir2.path()).unwrap()));
         let student = make_ipc_handler(
