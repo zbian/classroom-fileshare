@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use classroom_protocol::{
     merge, sanitize_file_name, validate_text, Audience, Event, ItemKind, MergeDecision, NameReject,
-    Role, ShareItem, SyncState, TextReject,
+    Role, ShareItem, SyncState, TextReject, MAX_FILE_SIZE,
 };
 use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,10 @@ pub enum StoreError {
     /// 高风险扩展名（PRD 5.3）。
     #[error("高风险文件类型: {0}")]
     RiskyExt(String),
+    /// 单文件超过 100 MB 上限（PRD 5.3/9.4、EX-04；E10）。
+    /// 文案为 EX-04 逐字；携带实际字节数供调用方展示/日志。
+    #[error("单文件不能超过 100 MB")]
+    FileTooLarge(u64),
     /// 临时文件 SHA-256 与期望不符（PRD EX-07）。
     #[error("哈希校验失败: 期望 {expected}，实际 {actual}")]
     HashMismatch { expected: String, actual: String },
@@ -437,6 +441,12 @@ impl Store {
         let name = sanitize_file_name(raw_name)?;
         if classroom_protocol::is_risky_ext(&name) {
             return Err(StoreError::RiskyExt(name));
+        }
+        // E10（P0，PRD 5.3/9.4/EX-04）：大小上限检查放在 fs::copy **之前**——
+        // O(1) metadata 判断，不读内容、不产生 .part，超限立即失败
+        let tmp_size = std::fs::metadata(tmp_path)?.len();
+        if tmp_size > MAX_FILE_SIZE {
+            return Err(StoreError::FileTooLarge(tmp_size));
         }
         let old = self.find_scope(owner, &audience, &name)?;
 

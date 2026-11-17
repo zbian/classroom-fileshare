@@ -141,6 +141,11 @@ impl Hub {
     }
 
     async fn push_file_to(&self, item: &ShareItem, tx: &mut mpsc::Sender<Frame>) {
+        // M2 加固项（E10 评审裁定，记 #16）：此处为全量读内存
+        // （std::fs::read）。E10 已在 store 与 send_one_file 前置 100MB
+        // 上限，内存峰值受控 ≤100MB（M1 可接受）；流式推送
+        // （File::open + CHUNK_SIZE 分块读）排入 M2，避免冻结前改动
+        // 数据面引入回归风险。
         let Ok(body_path) = self.store.lock().unwrap().file_body(item) else {
             tracing::warn!(item_id = %item.id, "文件实体缺失，跳过推送");
             return;
@@ -277,6 +282,12 @@ impl Hub {
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("路径无有效文件名"))?;
+        // E10（P0，PRD 5.3/9.4/EX-04）：发送前 metadata 快速失败——
+        // 在 sha256_file（全量读 IO）与 store.copy 之前拦截，避免白耗
+        let size = std::fs::metadata(path)?.len();
+        if size > classroom_protocol::MAX_FILE_SIZE {
+            anyhow::bail!("单文件不能超过 100 MB（{} 字节）", size);
+        }
         // 教师本地发送：先自算哈希，与远端传输走同一条校验路径（EX-07）
         let sha = sha256_file(path)?;
         let out = self.store.lock().unwrap().put_file_from_tmp(
