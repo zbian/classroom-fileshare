@@ -1,4 +1,4 @@
-# M1（P0 最小闭环）验收执行方案 —— TC-01 / 02 / 03 / 06 / 11 / 12
+﻿# M1（P0 最小闭环）验收执行方案 —— TC-01 / 02 / 03 / 06 / 11 / 12
 
 | 项目 | 内容 |
 | --- | --- |
@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.3.5（TC-02 口径已批准 §5.2；§6 五项已确认 #14/e42dbd5；E1–E7 跟踪见 §3.8；E3/E4/E5/E6 已闭环；**E7 在 windows-rs API 路径下复验通过**（§3.9.3，含最恶劣 ACL 形态自愈），CI 失败归因为 runner Temp 卷环境特性；M2 `/remove:g` 备案建议撤销；取证脚本已脱离 Temp 依赖；PR #55 评审中） |
+| 状态 | v1.3.8（E3/E4/E5/E6/E10/E11 已闭环；**E12 阻塞 v0.1.0 修复中**（§3.8）；tips 判据已由 rc.3 补测 ①–⑤ 验证（报告 §3.12）） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -132,6 +132,8 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（9c1797d）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因；追加**存量令牌幂等重限权**、`user_sid` 双授予（svc.json / install.ps1 自动探测+`-UserSid` / SessionChange 登录自愈）、`--console` 打印 `{e}`。**残余加固 `/remove:g`（清理非预期显式 ACE）经 Lead 裁定列为 M2 备案**（低危：显式 ACE 非旧版产生形态；令牌限权 + 双授予已闭合 M1 暴露面）——**注：windows-rs API 路径（7083a5f）因全量重建 DACL 已连显式 ACE 一并清除，该备案项已被覆盖，建议撤销（待 Lead 确认，见 §3.9.3）**——待并入 #14 的 M2 残余风险清单 | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **QA 复验 5/5 通过**（实测记录见 §3.9.2）；**待 #50 合并后关闭**（关闭证据已满足）；残余 `/remove:g` 加固 → M2 备案（Lead 裁定 2026-11-16） |
 | **E9** | **学员端无 beacon 自动发现/自动连接**（agent 原仅支持 `manual_addr` 直连）：违反 PRD 2.4「学生 1 步（设昵称）」与 3.1「学员端自动发现并展示可加入的教师机」，属 P0 缺口（reviewer 全检发现） | **已修复并合入 main（e134b76 / PR #69）**，采用**方案 b**：`svc.json.room_code=""` → `room_filter=None` → **自动连接首个发现的教师机**；学员安装**不再需要 `-Room`**（多教室场景才传且须与教师一致，install 摘要行提示）；`manual_addr` 降为 RK-04 备用 | ① 未传 `-Room` 安装的学员机能自动发现并加入（单教室 1 步入班）；② 多教室/多教师场景传 `-Room` 后只连房间码匹配者；③ 无教师可发现时不崩溃、可重连 | **已修复 + 已合入（e134b76）**；QA 单机以 agent 自动发现链路复核（§3.9.4），**双机真实广播链路仍延后** |
 | **E10** | **P0 缺口：单文件 100 MB 上限未生效**——修复前超限文件未被拒绝（PRD 5.3/9.4、EX-04「单文件不能超过 100 MB」形同虚设；QA 在 rc.1 前的验收中未覆盖该负例，属验收侧漏项，后由 reviewer 补检发现） | **已修复并合入 main（7eea251 / PR #78）**：store 与 host 双层落地上限 + 端到端拒绝；同批 PR #77 完成 O-1 构建防呆与 O-3/O-4 | ① 120 MB → 拒绝且文案为 EX-04 逐字「单文件不能超过 100 MB」；② 恰好 100 MB → **接受**（边界不误杀）；③ `.exe`/`.bat`/`.lnk` → 拒绝（EX-05 语义）；④ 拒绝后立即发小文件**成功**（不污染后续发送） | **已闭环（QA rc.2 补测通过，见报告 §3.11）** |
+| **E11** | **P0 缺口：tips 生产路径未接线**——`push_tip` 在 release **无调用者**（唯一调用方 `demo_tips` 为 `cfg(debug)`），`ipc_client` emit `svc://notify` 而 `TipsStack` 监听 `svc://share-received` → **release 产物中 FR-G-02 永不触发「收到但从不提醒」** | **已修复并合入 main（1fea3d1 / #82）**：`SvcNotify::ShareReceived → tips::push_tip`，含同源双通知去重（`should_push_tip`）与本人条目不自弹（`owner_role == self_role` 排除） | ① 教师广播 → 学员 GUI tips 可见且**到达→可见 ≤1 s**；② UIA 三要素（名称/来源/类型）；③ 15 s 自动消失；④ 连发 5 条 → 最多 3 条 + 「还有 N 条」；⑤ 暂停提醒抑制显示但数据入库；⑥ 本人条目不自弹、同源重复通知不重复弹 | **已闭环（QA rc.3 补测 ①–⑤ 全通过，到达→可见 27 ms、消失 14.96 s，见报告 §3.12）** |
+| **E12** | **P0 阻塞：按 install.ps1 安装的学员机 GUI 连不上本机服务**——① `install.ps1` 注册 GUI 自启**不传 `--role` 且从不写 `gui.json`**，GUI `role` 默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败**不重试**（`ensure_client` 惰性重连仅在有 UI 请求时触发）→ 常驻图标时通知流永不建立；③ `--role=` 写盘在 `start_bridge` 之后（时序竞争） | **issue #83（Lead 裁定阻塞 v0.1.0，dev-gui 修复中）**：install.ps1 写 GUI 角色（或 HKCU Run 加 `--role`）+ `start_bridge` 退避重连 + `--role` 时序前置 | ① 真实 `install.ps1 -Mode student` 安装 → GUI 自启后**自动连 `classshare-svc-student`**（日志 `服务管道已连接（role=Student）`）；② 状态/列表正常（无 EX-10「服务未运行」）；③ 教师广播 → tips 正常；④ 服务晚于 GUI 启动时，GUI 能自动重连（无需用户操作）；⑤ teacher 模式对称正确 | **修复中（阻塞 v0.1.0）**；rc.4 后由 QA 用真实安装路径复验 |
 
 ### 3.8.1 QA 静态复核记录
 | 检查点 | 结论 |

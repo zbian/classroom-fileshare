@@ -1,0 +1,5 @@
+HOST started room=XK-204 port=47822
+HOST student joined: tipsTester
+HOST sending seq=0 at epoch_ms=1794922359789 kind=file
+HOST sent file seq=0 C:\Users\Bian\Documents\开发\classroom-fileshare\.wt\acc-m1\evidence\M1\payloads\payload10mb.zip
+HOST exit

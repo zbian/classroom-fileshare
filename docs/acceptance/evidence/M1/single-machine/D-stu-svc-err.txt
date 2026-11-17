@@ -1,0 +1,21 @@
+2026-11-17T13:02:12.997737Z  INFO 前台降级模式启动（--console） mode=Student data_root=C:\Users\Bian\AppData\Local\ClassShare\data
+2026-11-17T13:02:13.018250Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=C:\Users\Bian\AppData\Local\ClassShare\data\ipc.token user_sid=None
+2026-11-17T13:02:13.021133Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T13:02:13.061021Z  INFO 服务核心就绪 mode=Student data_root=C:\Users\Bian\AppData\Local\ClassShare\data
+2026-11-17T13:02:13.061132Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T13:02:13.067938Z  INFO 已加入 addr=127.0.0.1:47822
+2026-11-17T13:02:25.085952Z  INFO received item_id=717ecee1-eacf-4778-8509-8b15ecc09deb file=提示测试通知 size=9 from=teacher
+2026-11-17T13:02:25.091385Z  INFO applied item_id=717ecee1-eacf-4778-8509-8b15ecc09deb version=1
+2026-11-17T13:02:50.098491Z  INFO 与教师机断开，稍后自动重连 retry_in=1s addr=127.0.0.1:47822
+2026-11-17T13:02:53.157293Z  INFO 与教师机断开，稍后自动重连 retry_in=2s addr=127.0.0.1:47822
+2026-11-17T13:02:57.232305Z  INFO 与教师机断开，稍后自动重连 retry_in=4s addr=127.0.0.1:47822
+2026-11-17T13:03:03.301532Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:10.378487Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:17.438336Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:24.497225Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:31.557471Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:38.618291Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:45.681720Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:52.740999Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:03:59.803513Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822
+2026-11-17T13:04:06.867984Z  INFO 与教师机断开，稍后自动重连 retry_in=5s addr=127.0.0.1:47822

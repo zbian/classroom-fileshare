@@ -1,0 +1,13 @@
+HOST started room=XK-204 port=47823
+HOST student joined: tipsTester
+HOST sending seq=0 at epoch_ms=1794922421557 kind=text
+HOST sent text seq=0 title=连发测试#1
+HOST sending seq=1 at epoch_ms=1794922421775 kind=text
+HOST sent text seq=1 title=连发测试#2
+HOST sending seq=2 at epoch_ms=1794922421993 kind=text
+HOST sent text seq=2 title=连发测试#3
+HOST sending seq=3 at epoch_ms=1794922422210 kind=text
+HOST sent text seq=3 title=连发测试#4
+HOST sending seq=4 at epoch_ms=1794922422429 kind=text
+HOST sent text seq=4 title=连发测试#5
+HOST exit
