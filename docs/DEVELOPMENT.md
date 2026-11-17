@@ -78,6 +78,10 @@ GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，git 历史可追�
 常用参数：`-Quick`（BOM+fmt，秒级）、`-SkipWeb`（后端全量）、`-SkipTest`（只 lint）、
 `-SkipReleaseClippy`。门禁依赖真实 `ui/dist`；缺失时脚本创建临时占位并在结束时清理。
 
+> 例外机制（M2 评估，记 #16）：门禁 1 对 `.json` 采用「一律不得带 BOM」的硬规则；
+> 若将来确有需带 BOM 的 JSON 数据（如外部工具产出），再加路径白名单并在脚本注释与
+> 本节同步说明——当前仓库 3 个受版本控制 JSON 均无 BOM。
+
 ### Review 必查清单（code-reviewer）
 
 - [ ] 与 PRD 对应 FR 的交互/异常/验收标准逐条符合
