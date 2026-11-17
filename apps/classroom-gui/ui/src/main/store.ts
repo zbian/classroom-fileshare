@@ -79,10 +79,9 @@ interface MainStore {
 const SUBMISSION_SEEN_KEY = 'classshare.submissions.seen'
 
 /** 学员当前 Tab 对应的列表过滤 */
-function studentFilter(tab: TabKey): ListFilter {
-  // 学员数据范围由 Tab 决定（教师共享 / 我共享的）；搜索与类型筛选在客户端完成
-  return { owner: tab === 'teacher' ? 'teacher' : null }
-}
+// E14（#119）：原 `studentFilter` 已被 refresh 内联的角色固定过滤取代
+// （教师 owner='teacher' / 学员 mine 拉全量后按 owner_role=Student 过滤），
+// 保留此注释说明口径，避免再次引入「无 owner 拉全量」。
 
 export const useMainStore = create<MainStore>((set, get) => ({
   client: getClient(),
@@ -155,12 +154,21 @@ export const useMainStore = create<MainStore>((set, get) => ({
       return
     }
     // 一次拉全量，搜索/类型筛选在客户端完成（即时、无 IPC 抖动；issue #90）
+    // E14（#119）：数据范围必须按角色固定，禁止无 owner 拉全量造成串数据：
+    // - 教师「我共享的」→ 服务端 owner='teacher'（只含教师本人条目，学生提交不可见/不可改）
+    // - 学员「教师共享」→ 服务端 owner='teacher'
+    // - 学员「我共享的」→ 拉全量后**客户端按 owner_role=Student 过滤**（本地库中
+    //   Student 条目只可能是本人提交：#94 保证学员看不到他人提交，故无需昵称）
     const filter: ListFilter =
       role === 'student'
-        ? { ...studentFilter(activeTab), include_deleted: false }
-        : { include_deleted: false } // wire 契约：bool 无 serde default，必须显式携带
+        ? { owner: activeTab === 'teacher' ? 'teacher' : null, include_deleted: false }
+        : { owner: 'teacher', include_deleted: false } // wire 契约：bool 无 serde default，必须显式携带
     try {
-      const [items, status] = await Promise.all([client.list(filter), client.status()])
+      const [rawItems, status] = await Promise.all([client.list(filter), client.status()])
+      const items =
+        role === 'student' && activeTab === 'mine'
+          ? rawItems.filter((i) => i.owner_role === 'Student')
+          : rawItems
       set({ items, status, serviceDown: !status.running })
     } catch {
       // 教师 EX-10 / 学员 EX-08：服务未运行/未连接 —— 列表置空并提示重试

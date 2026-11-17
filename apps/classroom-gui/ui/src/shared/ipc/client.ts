@@ -192,15 +192,20 @@ export class MockGuiClient implements GuiClient {
   list(filter: ListFilter): Promise<UiShareItem[]> {
     if (this.down) return Promise.reject(new Error('后台服务未运行'))
     let rows: UiShareItem[]
-    if (filter.owner && filter.owner !== 'teacher') {
-      // 教师端「学生提交」右表：ListFilter{audience: Teacher, owner: 昵称}
-      rows = this.submissionRows.filter((i) => !i.deleted && i.owner_id === filter.owner)
-    } else if (filter.owner === 'teacher') {
-      rows = this.teacherShares.filter((i) => !i.deleted)
-    } else if (this.role === 'student') {
-      rows = this.studentMine.filter((i) => !i.deleted)
+    // E14（#119）：mock 必须镜像服务端过滤语义——教师 owner='teacher' 只返回本人条目；
+    // 学员 owner='teacher' 返回教师共享，否则返回本机学员数据集（store 再按 owner_role 过滤）。
+    if (this.role === 'teacher') {
+      if (filter.owner && filter.owner !== 'teacher' && filter.audience === 'Teacher') {
+        // 教师端「学生提交」右表：ListFilter{audience: Teacher, owner: 昵称}
+        rows = this.submissionRows.filter((i) => !i.deleted && i.owner_id === filter.owner)
+      } else {
+        rows = this.items.filter((i) => !i.deleted)
+      }
     } else {
-      rows = this.items.filter((i) => !i.deleted)
+      rows =
+        filter.owner === 'teacher'
+          ? this.teacherShares.filter((i) => !i.deleted)
+          : this.studentMine.filter((i) => !i.deleted)
     }
     if (filter.kind) rows = rows.filter((i) => i.kind === filter.kind)
     if (filter.keyword) {
