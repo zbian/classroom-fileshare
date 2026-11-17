@@ -5,7 +5,7 @@
 | 用途 | #16（学员端发送 UI / 教师端分组树 UI）未落地前，先验证**回传后端链路 + 教师端分组数据面**；#16 完成后并入 `M2-report.md` 并补 UI 判据 |
 | 执行人 | qa-acceptance |
 | 日期 | 2026-11-17 |
-| 基线 | `main @ 89bf9c3`（含 #94「学员回传后端链路与教师分组数据面」） |
+| 基线 | `main @ 89bf9c3`（含 #94「学员回传后端链路与教师分组数据面」）；**执行时 main 后续实测测试数 = 157 passed** |
 | 方法 | 教师 `classroom-svc --console`（teacher，隔离 LOCALAPPDATA/APPDATA/PROGRAMDATA）+ 2 个**真实 agent 进程**（stu01/stu02，代表「其他学员端」）+ **QA 上行探针**（真实 TCP 帧协议：Hello → Event(upsert) → FileHeader/Chunk/End，按 #94 契约模拟学员提交） |
 | 结论 | **后端链路与数据面：通过**（TC-04 可见性/隔离、TC-05 分组与过滤、#94 三重身份校验负例全过）；**UI 部分待 #16 补验** |
 
