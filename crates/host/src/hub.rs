@@ -232,6 +232,7 @@ impl Hub {
             HostCommand::SendText { title, body } => self.send_text(title, body).await,
             HostCommand::SendFiles { paths } => self.send_files(paths).await,
             HostCommand::Delete { id } => self.delete_item(id).await,
+            HostCommand::Rename { id, new_name } => self.rename_item(id, new_name).await,
             HostCommand::Shutdown => {}
         }
     }
@@ -445,6 +446,34 @@ impl Hub {
                         })
                         .await;
                 }
+            }
+        }
+    }
+
+    /// 重命名条目并广播 rename 事件（M2 #19，PRD 5.4）。
+    ///
+    /// - 同名冲突：store 返回 `NameTaken`（不静默覆盖，M2 语义，PR 说明）
+    /// - 学员端收到 rename 事件后按新名称/新 `rel_path` 应用（2 秒内同步）
+    async fn rename_item(&self, id: &str, new_name: &str) {
+        let now = unix_now();
+        let renamed = self.store.lock().unwrap().rename_item(id, new_name, now);
+        match renamed {
+            Ok(item) => {
+                let mut ev = Self::make_event(EventKind::Rename, item.clone(), now);
+                // PRD 3.6 / 5.4：rename 事件必须携带 new_name（接收端据此应用新名）
+                ev.new_name = Some(item.title.clone());
+                let _ = self.store.lock().unwrap().record_event(&ev);
+                self.broadcast_event(&ev).await;
+                // E4/回归锚点：rename item_id / version（PRD 5.4 2 秒内同步）
+                tracing::info!(
+                    item_id = %item.id,
+                    version = item.version,
+                    "rename"
+                );
+                let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
+            }
+            Err(e) => {
+                tracing::warn!(item_id = %id, error = %e, "重命名失败");
             }
         }
     }

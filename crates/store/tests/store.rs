@@ -962,3 +962,202 @@ fn backup_failure_reports_warning_without_rollback() {
     );
     assert!(store.take_warnings().is_empty(), "告警取走后清空");
 }
+// ---------- M2 #19：重命名 + 内容搜索 ----------
+
+/// 重命名文本：title/rel_path 更新、version+1、正文文件按新 scope hash 改名。
+#[test]
+fn rename_text_updates_title_rel_path_and_moves_body() {
+    let (_guard, root) = root("rename-text");
+    let store = Store::open(&root).unwrap();
+    let item = match store
+        .put_text(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "旧标题",
+            "正文内容",
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    let old_path = store.file_body(&item).unwrap();
+    assert!(old_path.exists());
+
+    let renamed = store.rename_item(&item.id, "新标题", 200).unwrap();
+    assert_eq!(renamed.title, "新标题");
+    assert_eq!(renamed.version, item.version + 1);
+    assert_ne!(
+        renamed.rel_path, item.rel_path,
+        "rel_path 随 scope hash 更新"
+    );
+    assert_eq!(renamed.id, item.id);
+    assert!(!old_path.exists(), "旧正文文件已移走");
+    let new_path = store.file_body(&renamed).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&new_path).unwrap(),
+        "正文内容",
+        "正文保留"
+    );
+    assert_eq!(store.get(&item.id).unwrap().unwrap().title, "新标题");
+}
+
+/// 重命名文件：实体与 `.bak` 一并改名（`.bak` 恰 1 份）。
+#[test]
+fn rename_file_moves_body_and_bak() {
+    let (_guard, root) = root("rename-file");
+    let store = Store::open(&root).unwrap();
+    let tmp = write_tmp(root.parent().unwrap(), "a.pdf", b"v1");
+    let h = sha256_file(&tmp).unwrap();
+    let item = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.pdf",
+            &tmp,
+            &h,
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    // 覆盖一次制造 `.bak`
+    let tmp2 = write_tmp(root.parent().unwrap(), "a2.pdf", b"v2");
+    let h2 = sha256_file(&tmp2).unwrap();
+    let _ = store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.pdf",
+            &tmp2,
+            &h2,
+            150,
+        )
+        .unwrap();
+    let cur = store.get(&item.id).unwrap().unwrap();
+    let old_path = store.file_body(&cur).unwrap();
+    let mut old_bak = old_path.as_os_str().to_os_string();
+    old_bak.push(".bak");
+    let old_bak = std::path::PathBuf::from(old_bak);
+    assert!(old_path.exists());
+    assert!(old_bak.exists());
+
+    let renamed = store.rename_item(&item.id, "b.pdf", 200).unwrap();
+    assert_eq!(renamed.title, "b.pdf");
+    assert_eq!(renamed.version, cur.version + 1);
+    let new_path = store.file_body(&renamed).unwrap();
+    assert!(new_path.exists(), "新实体存在");
+    assert_eq!(new_path.file_name().unwrap(), "b.pdf");
+    assert!(!old_path.exists(), "旧实体已改名");
+    let mut new_bak = new_path.as_os_str().to_os_string();
+    new_bak.push(".bak");
+    let new_bak = std::path::PathBuf::from(new_bak);
+    assert!(new_bak.exists(), ".bak 一并改名");
+    assert!(!old_bak.exists(), "旧 .bak 已改名");
+}
+
+/// 同名冲突 → `NameTaken`（M2 拒绝而非静默覆盖，PRD 5.4 的覆盖语义留 M3）。
+#[test]
+fn rename_rejects_taken_name() {
+    let (_guard, root) = root("rename-conflict");
+    let store = Store::open(&root).unwrap();
+    let a = match store
+        .put_text("teacher", Role::Teacher, Audience::All, "A", "a", 100)
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    let _b = match store
+        .put_text("teacher", Role::Teacher, Audience::All, "B", "b", 100)
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    let err = store.rename_item(&a.id, "B", 200).unwrap_err();
+    assert!(
+        matches!(err, StoreError::NameTaken(ref n) if n == "B"),
+        "应返回 NameTaken: {err:?}"
+    );
+    assert_eq!(store.get(&a.id).unwrap().unwrap().title, "A", "失败不改名");
+}
+
+/// 列表搜索（PRD 5.4「按名称与内容搜索」）：标题或**文本正文**命中；
+/// 文件不参与正文搜索。
+#[test]
+fn list_keyword_matches_title_or_text_body() {
+    let (_guard, root) = root("search");
+    let store = Store::open(&root).unwrap();
+    let _t = match store
+        .put_text(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "课堂笔记",
+            "今天讲二次函数",
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    let tmp = write_tmp(root.parent().unwrap(), "讲义.pdf", b"%PDF");
+    let h = sha256_file(&tmp).unwrap();
+    let _f = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "讲义.pdf",
+            &tmp,
+            &h,
+            110,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+
+    // 标题命中
+    let hit_title = store
+        .list(ListFilter {
+            keyword: Some("笔记".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(hit_title.len(), 1, "标题命中: {hit_title:?}");
+    // 正文命中（标题不含关键词）
+    let hit_body = store
+        .list(ListFilter {
+            keyword: Some("二次函数".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(hit_body.len(), 1, "正文命中: {hit_body:?}");
+    assert_eq!(hit_body[0].title, "课堂笔记");
+    // 文件不参与正文搜索（M2 仅文本）
+    assert!(store
+        .list(ListFilter {
+            keyword: Some("%PDF".into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .is_empty());
+    // 未命中
+    assert!(store
+        .list(ListFilter {
+            keyword: Some("不存在的内容".into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .is_empty());
+}

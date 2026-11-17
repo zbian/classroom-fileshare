@@ -786,8 +786,14 @@ impl ClientHandler for AgentSessionHandler {
                     let store = self.store.lock().unwrap();
                     incoming.on_event(&store, ev)?
                 };
-                if let EvOutcome::Removed(id) = outcome {
-                    let _ = self.notify.send(AgentEvent::Removed(id)).await;
+                match outcome {
+                    EvOutcome::Removed(id) => {
+                        let _ = self.notify.send(AgentEvent::Removed(id)).await;
+                    }
+                    EvOutcome::Renamed(item) => {
+                        let _ = self.notify.send(AgentEvent::Received(item)).await;
+                    }
+                    EvOutcome::Ignored => {}
                 }
             }
             Frame::FileHeader(h) => {
@@ -894,6 +900,8 @@ fn align_manifest(
 /// 事件处理结果。
 enum EvOutcome {
     Removed(String),
+    /// 重命名已应用（M2 #19）：GUI 刷新列表且条目按新名称展示。
+    Renamed(ShareItem),
     Ignored,
 }
 
@@ -948,8 +956,63 @@ impl Incoming {
                 }
                 Ok(EvOutcome::Removed(gone.id))
             }
-            EventKind::Rename | EventKind::Ack => {
-                tracing::debug!(kind = ?ev.kind, "M1 忽略该事件类型");
+            // M2 #19：重命名——本地实体/`.bak` 改名后应用新条目（version+1）。
+            EventKind::Rename => {
+                let Some(new_name) = ev.new_name.clone() else {
+                    tracing::warn!(item_id = %ev.item.id, "rename 事件缺少 new_name，忽略");
+                    return Ok(EvOutcome::Ignored);
+                };
+                // 旧条目（可能不存在：首见即 rename 的边缘场景 → 直接应用）
+                let old_body = store
+                    .get(&ev.item.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|old| store.file_body(&old).ok());
+                let item = match store.apply_remote(&ev) {
+                    Ok(MergeDecision::Overwrite(item)) => *item,
+                    Ok(_) => {
+                        tracing::debug!(item_id = %ev.item.id, "rename 版本落后/重复，忽略");
+                        return Ok(EvOutcome::Ignored);
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                // 实体改名（旧路径存在且与新路径不同；索引已更新，改名失败仅告警）
+                if let Some(old_body) = old_body {
+                    if let Ok(new_body) = store.file_body(&item) {
+                        if old_body != new_body && old_body.exists() {
+                            if let Err(e) = std::fs::rename(&old_body, &new_body) {
+                                tracing::warn!(
+                                    error = %e,
+                                    old = %old_body.display(),
+                                    new = %new_body.display(),
+                                    "rename 本地实体改名失败（索引已更新）"
+                                );
+                            } else {
+                                let mut old_bak = old_body.as_os_str().to_os_string();
+                                old_bak.push(".bak");
+                                let old_bak = std::path::PathBuf::from(old_bak);
+                                if old_bak.exists() {
+                                    let mut new_bak = new_body.as_os_str().to_os_string();
+                                    new_bak.push(".bak");
+                                    let _ = std::fs::rename(
+                                        &old_bak,
+                                        std::path::PathBuf::from(new_bak),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                tracing::info!(
+                    item_id = %item.id,
+                    new_name = %new_name,
+                    version = item.version,
+                    "rename"
+                );
+                Ok(EvOutcome::Renamed(item))
+            }
+            EventKind::Ack => {
+                tracing::debug!("M2 忽略 Ack（上行确认）");
                 Ok(EvOutcome::Ignored)
             }
         }

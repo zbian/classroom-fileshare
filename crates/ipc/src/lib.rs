@@ -75,6 +75,14 @@ pub enum GuiRequest {
         /// 条目 id。
         id: String,
     },
+    /// 重命名条目（M2 #19，PRD 5.4：教师端「我共享的」文本/文件重命名；
+    /// 教师侧改名后广播 rename 事件，学员端 2 秒内同步）。
+    RenameItem {
+        /// 条目 id。
+        id: String,
+        /// 新名称（store 侧 `sanitize_file_name` 净化；同名冲突返回错误）。
+        new_name: String,
+    },
     /// 用系统默认程序打开条目文件。
     OpenItem {
         /// 条目 id。

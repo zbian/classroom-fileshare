@@ -263,6 +263,15 @@ pub fn make_ipc_handler(
             tracing::info!(item_id = %id, "delete-request");
             dispatch_teacher(&host_cmd, HostCommand::Delete { id }, "学员删除在 M2 提供")
         }
+        // M2 #19：教师侧重命名 → host 改名 + 广播 rename（学员端 2 秒内同步）
+        GuiRequest::RenameItem { id, new_name } => {
+            tracing::info!(item_id = %id, "rename-request");
+            dispatch_teacher(
+                &host_cmd,
+                HostCommand::Rename { id, new_name },
+                "学员重命名在 M2 未提供",
+            )
+        }
         GuiRequest::SetNickname { .. } => {
             Err("M1 昵称由安装脚本配置（svc.json），运行期修改在 M2 提供".into())
         }
@@ -807,5 +816,49 @@ mod tests {
             Ok(AgentCommand::SendFiles { paths }) => assert_eq!(paths, vec![f]),
             other => panic!("期望 AgentCommand::SendFiles，实际 {other:?}"),
         }
+    }
+    /// M2 #19：教师重命名 → `HostCommand::Rename` 路由（学员端拒绝）。
+    #[test]
+    fn rename_routes_to_host_for_teacher_only() {
+        use std::sync::atomic::AtomicBool;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+        let handler = make_ipc_handler(
+            Some(cmd_tx),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            store,
+            Arc::new(StatusBoard::new(Role::Teacher, "teacher".into())),
+        );
+        match handler(GuiRequest::RenameItem {
+            id: "item-1".into(),
+            new_name: "新名称".into(),
+        }) {
+            Ok(GuiReply::Ok) => {}
+            other => panic!("期望 Ok，实际 {other:?}"),
+        }
+        match cmd_rx.try_recv() {
+            Ok(HostCommand::Rename { id, new_name }) => {
+                assert_eq!(id, "item-1");
+                assert_eq!(new_name, "新名称");
+            }
+            other => panic!("期望 HostCommand::Rename，实际 {other:?}"),
+        }
+        // 学员端：重命名未在 M2 提供（明确拒绝）
+        let dir2 = tempfile::tempdir().unwrap();
+        let store2 = Arc::new(Mutex::new(Store::open(dir2.path()).unwrap()));
+        let student = make_ipc_handler(
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            store2,
+            Arc::new(StatusBoard::new(Role::Student, "alice".into())),
+        );
+        assert!(student(GuiRequest::RenameItem {
+            id: "x".into(),
+            new_name: "y".into(),
+        })
+        .is_err());
     }
 }
