@@ -10,6 +10,26 @@
 - 后台 Windows 服务 + GUI 双进程（Session 0 限制拆分）
 - UDP 广播发现 + TCP 长连接，SQLite 索引，SHA-256 校验
 
+## 构建与运行
+
+> **O-1 构建口径（M1 验收发现，必读）**：`tauri` 的 dev 模式判定只看是否启用
+> `custom-protocol` feature（`tauri-build::is_dev()` 读 `DEP_TAURI_DEV`），**与 cargo
+> profile 无关**。因此裸 `cargo build --release` 仍按 dev 模式编译：不内嵌前端资源，
+> 产物启动后去连 `tauri.conf.json > build.devUrl`（`http://localhost:1517`），
+> 无 dev server 即白窗。本仓库已加构建期告警 + 启动时弹窗明确提示，但
+> **验收与分发请使用下表的「生产构建」产物，不要用裸 `cargo build --release`**。
+
+| 场景 | 命令 | 说明 |
+| --- | --- | --- |
+| 前端依赖 | `pnpm --dir apps/classroom-gui/ui install` | Node 24 + pnpm 11 |
+| 开发（前端热更新） | 终端 A：`pnpm --dir apps/classroom-gui/ui dev`<br>终端 B：`cargo build -p classroom-gui`，运行 `target\debug\classroom-gui.exe` | debug 产物连 devUrl 1517 |
+| **生产构建（推荐）** | `scripts\build-gui.ps1` | = `pnpm build` + `cargo build --release -p classroom-gui --features custom-protocol` |
+| 生产构建（等价手动） | `pnpm --dir apps/classroom-gui/ui build`<br>`cargo build --release -p classroom-gui --features custom-protocol` | 产物约 12 MB，内嵌前端，无需 dev server |
+| 安装（服务 + 登录自启） | `scripts\install.ps1 -Mode teacher -Room XK-204` | 非管理员自动降级；详见脚本头注释 |
+| 卸载 | `scripts\uninstall.ps1` | 数据默认保留；`-CleanData` 显式删除 |
+
+依赖：Rust stable（cargo 在 `%USERPROFILE%\.cargo\bin`）、Node 24 + pnpm 11、WebView2 Runtime。
+
 ## 文档索引
 
 | 文件 | 说明 |

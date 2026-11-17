@@ -66,7 +66,44 @@ fn file_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// 构建口径判定（M1 验收 O-1 防呆）：release 产物但编译期处于 dev 模式
+/// （即未启用 `custom-protocol` feature → 前端资源未内嵌）。纯函数便于单测。
+///
+/// `is_dev` 对应 tauri 自己的语义（`tauri_build::is_dev()` / `cfg!(dev)`），
+/// 与 cargo profile 无关，故不能省略该维度只看 `debug_assertions`。
+fn needs_build_warning(is_dev: bool, debug_assertions: bool) -> bool {
+    is_dev && !debug_assertions
+}
+
+/// release 未内嵌前端资源时弹窗明确指引，避免「白窗」被误判为产品缺陷。
+/// release 构建带 `windows_subsystem = "windows"` 无控制台，故用 MessageBox。
+fn warn_if_unpackaged_release() {
+    if !needs_build_warning(cfg!(dev), cfg!(debug_assertions)) {
+        return;
+    }
+    #[cfg(windows)]
+    unsafe {
+        // 注意 `::windows::`：crate 内有同名 `mod windows`（窗口几何模块），
+        // 裸 `windows::` 会解析到本地模块而非 windows crate。
+        use ::windows::core::w;
+        use ::windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+        MessageBoxW(
+            None,
+            w!(
+                "此构建未内嵌前端资源（编译时未启用 custom-protocol feature），\n\
+                 启动后将尝试连接开发服务器 http://localhost:1517；\n\
+                 若开发服务器未运行，界面将显示为空白。\n\n\
+                 生成可分发版本请使用：scripts\\build-gui.ps1\n\
+                 或：cargo build --release -p classroom-gui --features custom-protocol"
+            ),
+            w!("课堂共享 · 构建口径提示"),
+            MB_OK | MB_ICONWARNING,
+        );
+    }
+}
+
 fn main() {
+    warn_if_unpackaged_release();
     let config = GuiConfig::load();
     let startup_files = file_args(&std::env::args().collect::<Vec<_>>());
     tauri::Builder::default()
@@ -291,5 +328,28 @@ fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
     #[cfg(not(debug_assertions))]
     {
         let _ = (&app, n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O-1 防呆判定：仅「release + dev 模式（未启用 custom-protocol）」需要提示。
+    #[test]
+    fn build_warning_only_for_dev_mode_release() {
+        // release + dev 模式 → 提示（裸 cargo build --release 的情形）
+        assert!(needs_build_warning(true, false));
+        // release + 已内嵌（--features custom-protocol）→ 不提示
+        assert!(!needs_build_warning(false, false));
+        // debug：开发流（连 dev server）属正常，不提示
+        assert!(!needs_build_warning(true, true));
+        assert!(!needs_build_warning(false, true));
+    }
+
+    /// 当前测试构建为 debug，判定必须为 false（保证不影响开发流）。
+    #[test]
+    fn current_build_does_not_warn_here() {
+        assert!(!needs_build_warning(cfg!(dev), cfg!(debug_assertions)));
     }
 }
