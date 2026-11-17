@@ -585,3 +585,150 @@ async fn executable_rejected_end_to_end() {
     };
     assert_eq!(item.title, "课件.pdf");
 }
+
+// ---------- M2 S3（issue #89）：会话身份绑定与未 join 守卫 ----------
+
+/// 裸 TCP 连接（不发 Hello）——用于验证未 join 守卫。
+async fn raw_connect(port: u16) -> tokio::net::TcpStream {
+    tokio::time::timeout(TIMEOUT, tokio::net::TcpStream::connect(("127.0.0.1", port)))
+        .await
+        .expect("connect timeout")
+        .expect("connect")
+}
+
+/// 构造一个可指定 owner / audience 的事件（用于冒名与越权注入）。
+fn crafted_event(owner: &str, audience: classroom_protocol::Audience) -> classroom_protocol::Event {
+    classroom_protocol::Event {
+        event_id: format!("crafted-{owner}"),
+        kind: classroom_protocol::EventKind::Upsert,
+        item: classroom_protocol::ShareItem {
+            id: format!("crafted-item-{owner}"),
+            kind: ItemKind::Text,
+            owner_id: owner.into(),
+            owner_role: Role::Student,
+            audience,
+            title: "注入条目".into(),
+            size: 1,
+            sha256: None,
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: classroom_protocol::SyncState::Synced,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: 9,
+    }
+}
+
+/// 断言短时间内没有「学员事件入店通知」（跳过 Status/StudentJoined 等噪音）。
+async fn assert_no_received_upsert(host: &mut Host) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(remaining, host.events.recv()).await {
+            Ok(Some(HostEvent::ReceivedUpsert(item))) => {
+                panic!("不应收到学员事件入店通知: {item:?}")
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => panic!("host 事件通道关闭"),
+            Err(_) => return,
+        }
+    }
+}
+
+/// 教师 store 中没有任何非教师条目（学员事件不得落库）。
+fn assert_no_student_items(host: &Host) {
+    let store = Store::open(&host.data_root).unwrap();
+    let all = store.list(ListFilter::default()).unwrap();
+    assert!(
+        all.iter().all(|i| i.owner_id == "teacher"),
+        "学员事件不得落库: {all:?}"
+    );
+}
+
+/// S3 用例 1：**未 join 连接**直接发 Event → net 未 join 守卫拦截，
+/// 不进 handler、不落库、不广播。
+#[tokio::test]
+async fn unjoined_event_is_dropped() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let mut sock = raw_connect(port).await;
+    sock.write_all(&encode_frame(&Frame::Event(crafted_event(
+        "alice",
+        classroom_protocol::Audience::Teacher,
+    ))))
+    .await
+    .unwrap();
+
+    assert_no_received_upsert(&mut host).await;
+    assert_no_student_items(&host);
+    // 服务端不应因此断开连接：Ping 仍有 Pong（守卫是丢弃而非断连）
+    sock.write_all(&encode_frame(&Frame::Ping)).await.unwrap();
+    let reply = tokio::time::timeout(TIMEOUT, read_frame(&mut sock))
+        .await
+        .expect("等待 Pong 超时")
+        .expect("读 Pong 失败");
+    assert_eq!(reply, Frame::Pong);
+}
+
+/// S3 用例 2：**冒名**——已 join 的 alice 发送 owner_id=bob 的事件 → 丢弃。
+#[tokio::test]
+async fn spoofed_owner_event_rejected() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    a.send(&Frame::Event(crafted_event(
+        "bob",
+        classroom_protocol::Audience::Teacher,
+    )))
+    .await;
+
+    assert_no_received_upsert(&mut host).await;
+    assert_no_student_items(&host);
+}
+
+/// S3 用例 3：**越权广播**——alice 以自己为 owner 但 audience=All 提交 →
+/// 丢弃（否则内容会扩散给其他学员，PRD 3.3）。
+#[tokio::test]
+async fn student_broadcast_event_rejected() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    a.send(&Frame::Event(crafted_event(
+        "alice",
+        classroom_protocol::Audience::All,
+    )))
+    .await;
+
+    assert_no_received_upsert(&mut host).await;
+    assert_no_student_items(&host);
+}
+
+/// S3 用例 4：**保留昵称**——学员以 `teacher` 加入 → InvalidNickname，
+/// 且不产生连接（连接数/状态不变）。
+#[tokio::test]
+async fn teacher_reserved_nickname_rejected() {
+    let host = start_host(None).await;
+    let port = host.port;
+    let err = MiniAgent::join(port, "teacher", None).await.err();
+    assert_eq!(
+        err,
+        Some(HelloErr::InvalidNickname),
+        "教师作用域保留昵称必须在 join 层拒绝"
+    );
+    // 未被占用：同名再次 join 仍是 InvalidNickname（而非 DupNickname）
+    let err2 = MiniAgent::join(port, "teacher", None).await.err();
+    assert_eq!(err2, Some(HelloErr::InvalidNickname));
+    // 普通昵称不受影响
+    let _ok = MiniAgent::join(port, "alice", None)
+        .await
+        .expect("普通昵称可加入");
+}

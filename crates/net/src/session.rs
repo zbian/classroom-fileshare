@@ -2,8 +2,13 @@
 //!
 //! 协议层内置行为：收到 `Ping` 自动回 `Pong`；`FileHeader` 起始一条分块流，
 //! 逐块转发给 handler，`FileEnd` 关闭流并由 handler 校验整体哈希后回 `FileAck`。
+//!
+//! **M2 S3 未 join 守卫（接口修订 #9①，设计文档 §3.2）**：`Event` /
+//! `FileHeader` / `FileChunk` / `FileEnd` / `ManifestReq` 五类帧**仅在 join
+//! 成功（持有 session_id）后**分发给 handler，否则 `warn` 丢弃（不回帧、不
+//! 断连——避免被探测）。回调携带 `session_id`，供角色层做会话级身份校验。
 //! 服务端不处理的帧（HelloReply/FileAck/Pong/Manifest 系）记 debug 日志忽略，
-//! Manifest 的业务语义由角色层（host/agent）在后续任务中经扩展回调处理。
+//! Manifest 的业务语义由角色层（host/agent）经扩展回调处理。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,19 +27,32 @@ use tokio::sync::mpsc;
 /// 接口修订 #4（lead 报备）：`on_hello` 增加连接发送通道参数（host 需在
 /// join 成功时注册广播目标）；新增 `on_disconnect` / `on_manifest_req`
 /// 默认方法（断线通知与重连对齐，均为空默认实现，不影响既有实现方）。
+///
+/// 接口修订 #9①（M2 S3，issue #89）：`on_event` / `on_file_chunk_stream` /
+/// `on_manifest_req` 增加 `session_id` 参数——服务端事件处理必须具备会话级
+/// 身份（否则学员可伪造 owner / 越权广播，见设计文档 §3.3）。`on_disconnect`
+/// 与 `on_pong` 自 M1 起即携带 session_id，不变。
 #[async_trait]
 pub trait SessionHandler: Send + Sync {
     /// 处理加入请求，返回应答（PIN 校验 / 昵称查重 / 版本检查在实现方）；
     /// `tx` 为该连接的发送通道，实现方可保存用于后续推送。
     async fn on_hello(&self, hello: Hello, tx: &mut mpsc::Sender<Frame>) -> HelloReply;
 
-    /// 处理同步事件；`tx` 可用于向对端回帧。
-    async fn on_event(&self, ev: classroom_protocol::Event, tx: &mut mpsc::Sender<Frame>);
+    /// 处理同步事件（**仅已 join 会话**）；`session_id` 为已认证会话，
+    /// `tx` 可用于向对端回帧。
+    async fn on_event(
+        &self,
+        session_id: &str,
+        ev: classroom_protocol::Event,
+        tx: &mut mpsc::Sender<Frame>,
+    );
 
-    /// 处理文件分块流：`chunks` 在 FileEnd 后关闭（recv 返回 None），
-    /// 实现方累计字节并按 `expected_sha256` 校验，返回 [`FileAck`]。
+    /// 处理文件分块流（**仅已 join 会话**）：`chunks` 在 FileEnd 后关闭
+    /// （recv 返回 None），实现方累计字节并按 `expected_sha256` 校验，
+    /// 返回 [`FileAck`]。
     async fn on_file_chunk_stream(
         &self,
+        session_id: &str,
         header: FileHeader,
         chunks: mpsc::Receiver<FileChunk>,
         expected_sha256: String,
@@ -43,9 +61,9 @@ pub trait SessionHandler: Send + Sync {
     /// 连接断开（仅对 join 成功获得 session_id 的会话调用）。默认空实现。
     async fn on_disconnect(&self, _session_id: &str) {}
 
-    /// 收到版本清单请求（重连对齐，PRD 7.5）；实现方应经 `tx` 回
-    /// [`Frame::Manifest`]。默认空实现。
-    async fn on_manifest_req(&self, _tx: &mut mpsc::Sender<Frame>) {}
+    /// 收到版本清单请求（**仅已 join 会话**；重连对齐，PRD 7.5）；
+    /// 实现方应经 `tx` 回 [`Frame::Manifest`]。默认空实现。
+    async fn on_manifest_req(&self, _session_id: &str, _tx: &mut mpsc::Sender<Frame>) {}
 
     /// 收到客户端 Pong（join 成功的会话；PR #34 B 项存活探测依赖）。
     /// 默认空实现。
@@ -163,6 +181,11 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
         };
         match frame {
             Frame::Hello(hello) => {
+                // M2 S3：重复 Hello 拒绝（收紧）——已认证会话不得再次变更身份
+                if joined_session.is_some() {
+                    tracing::warn!("重复 Hello 帧，忽略（会话已认证）");
+                    continue;
+                }
                 let mut reply_tx = tx.clone();
                 let reply = handler.on_hello(hello, &mut reply_tx).await;
                 if let HelloReply::Ok { session_id } = &reply {
@@ -173,10 +196,19 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
                 }
             }
             Frame::Event(ev) => {
+                // M2 S3 未 join 守卫（设计 §3.2）：未认证连接不得触发业务回调
+                let Some(session_id) = joined_session.clone() else {
+                    tracing::warn!(event_id = %ev.event_id, "未 join 连接的事件，丢弃");
+                    continue;
+                };
                 let mut reply_tx = tx.clone();
-                handler.on_event(ev, &mut reply_tx).await;
+                handler.on_event(&session_id, ev, &mut reply_tx).await;
             }
             Frame::FileHeader(header) => {
+                let Some(session_id) = joined_session.clone() else {
+                    tracing::warn!(item_id = %header.item_id, "未 join 连接的文件流，丢弃");
+                    continue;
+                };
                 if file_tx.is_some() {
                     tracing::warn!("上一文件流未收到 FileEnd 即开始新文件，旧流被放弃");
                 }
@@ -188,12 +220,16 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
                 let ack_tx = tx.clone();
                 tokio::spawn(async move {
                     let ack = h
-                        .on_file_chunk_stream(stream_header, chunk_rx, expected)
+                        .on_file_chunk_stream(&session_id, stream_header, chunk_rx, expected)
                         .await;
                     let _ = ack_tx.send(Frame::FileAck(ack)).await;
                 });
             }
             Frame::FileChunk(chunk) => {
+                if joined_session.is_none() {
+                    tracing::warn!(item_id = %chunk.item_id, "未 join 连接的文件分块，丢弃");
+                    continue;
+                }
                 let item_id = chunk.item_id.clone();
                 match &file_tx {
                     Some(ch) => {
@@ -205,6 +241,10 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
                 }
             }
             Frame::FileEnd(_) => {
+                if joined_session.is_none() {
+                    tracing::warn!("未 join 连接的 FileEnd，丢弃");
+                    continue;
+                }
                 // drop 发送端 → handler 的 recv 返回 None → 校验哈希并回 FileAck
                 file_tx = None;
             }
@@ -214,8 +254,12 @@ pub async fn run_session(stream: TcpStream, handler: Arc<dyn SessionHandler>) ->
                 }
             }
             Frame::ManifestReq => {
+                let Some(session_id) = joined_session.clone() else {
+                    tracing::warn!("未 join 连接的清单请求，丢弃");
+                    continue;
+                };
                 let mut reply_tx = tx.clone();
-                handler.on_manifest_req(&mut reply_tx).await;
+                handler.on_manifest_req(&session_id, &mut reply_tx).await;
             }
             Frame::Pong => {
                 if let Some(session_id) = &joined_session {
