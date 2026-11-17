@@ -1,0 +1,1 @@
+[ipc] 服务管道已连接（role=Student）

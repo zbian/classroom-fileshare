@@ -8,7 +8,7 @@
 | 基线 | **`main @ 46470fe`（v0.1.0-rc.2）**，含 E9 自动发现、**E10 100 MB 上限**、O-1 构建防呆、O-3/O-4 |
 | 环境 | 单机（用户确认仅 1 台可用）；Windows 11 专业版 26100；**非管理员**；PowerShell 5.1；WebView2 157.0.4341.60 |
 | 依据 | [PRD](../../../final_draft.md) 第 11 章 / 2.4 指标；[验收方案 v1.3.7](../M1-acceptance-plan.md)；[冻结报告](../../reports/M1-freeze.md) |
-| 结论 | **未见阻断缺陷，但发现 P0 缺口（E10：100 MB 上限未生效）——已修复并验证闭环**；6 项通过 / 1 项部分通过 / 若干项延后 |
+| 结论 | **未见阻断缺陷，但发现两个 P0 缺口（E10 100 MB 上限未生效、E11 tips 生产路径未接线）——均已修复并验证闭环**；另在 tips 补测中发现 **E12（学员机安装路径 GUI 连错管道，阻塞 v0.1.0，修复中）**；6 项通过 / 1 项部分通过 / 若干项延后 |
 | 证据 | `docs/acceptance/evidence/M1/single-machine/`（命令输出、日志、截图）；rc.2 补测证据前缀 `C-*` |
 
 > 本报告只声明**单机可验范围**内的结论。凡需 2 台以上真机或管理员权限的判据，一律标注「延后」，不以单机结果替代。
@@ -230,10 +230,66 @@ C:\Users\Bian\AppData\Local\ClassShare\data\ipc.token NT AUTHORITY\SYSTEM:(R,W)
 
 `SendFiles` 返回 `ok` 后**紧随**的一次 `List` 可能暂不包含该条目（连续 8 轮 `send→list` 实测出现 2 次计数滞后，随后自动一致；见 `C-list-race.txt`）。属**最终一致**表现，不影响 TC-06 判据（验收按合理等待取证）。建议：GUI 发送后以服务端通知（SvcNotify）驱动刷新，而非立即重列表。
 
-## 4 缺陷与观察项
-| 编号 | 级别 | 内容 | 处置 |
+### 3.12 rc.3 补测：TC-02 tips 判据（E11 修复验证）
+
+基线 `1fea3d1`（v0.1.0-rc.3，E11 生产接线 `ipc_client.rs: tips::push_tip` 已合入）。证据前缀 `E-*/F-*/G-*/H-*`。
+
+**测试形态**：真实三进程链路——QA 教师探针（真实 `classroom_host::run_host`，端口 47822/47823/47825）+ **真实学员 svc**（`--console`，`mode=student`，manual_addr 指向探针）+ **真实学员 GUI**（`role=student`，由 `scripts/build-gui.ps1` 构建）。
+> ⚠️ 前置说明（重要）：本轮 tips 判据通过的前提是 `gui.json` 中 `role=student` 已就位。这一前提在**真实安装路径下并不成立**——由此发现 **E12**（见 §3.12.6），已裁定阻塞 v0.1.0，另行修复复验。
+
+#### 3.12.1 修复前 vs 修复后对比（同一链路、同一判据）
+
+| 观测 | 修复前（89e786c） | 修复后（1fea3d1） |
+| --- | --- | --- |
+| 学员 svc 是否收到 | ✅ `received` + `applied`（数据链路正常） | ✅ 同左 |
+| tips 窗口是否可见 | ❌ 窗口存在但 **`vis=False`**，14 s 轮询从未可见（`D-TIPS-before.txt`） | ✅ **`vis=True`**（`E-TIPS-final.txt`） |
+| 用户可感知结果 | **收到但从不提醒**（FR-G-02 失效） | 正常弹出并自动消失 |
+
+#### 3.12.2 ① tips 可见且 ≤1 s —— 通过
+
+同一台机同一时钟（epoch ms）实测：
+
+| 区间 | 实测 |
+| --- | --- |
+| 发送 → 到达（`received`） | 96 ms |
+| 到达 → 落盘（`applied`） | 6 ms |
+| **落盘 → tips 可见** | **21 ms** |
+| **到达 → tips 可见** | **27 ms** |
+
+判据 FR-G-02「发送后 1 秒内出现气泡」/「到达后 ≤1 s」→ **27 ms ≪ 1000 ms，PASS**。
+（按 Lead 提醒，**未复用 `applied−broadcast`** 这一 O-2 下界口径，而是从窗口可见轮询的墙钟独立测量并与 svc 锚点同钟对齐。）
+
+#### 3.12.3 ② 三要素（名称/来源/类型） —— 通过
+
+UIA 读取 tips 窗口文本（`G-TIPS-stack.txt`）：
+`收到文本：连发测试#1` / `来自 教师` / `· 4 字` / `15 s` 倒计时 —— **内容名称、来源、类型（文本/字数）齐备**，符 FR-G-02 与 7.2。
+
+#### 3.12.4 ③ 15 秒自动消失 —— 通过
+
+`tips 首次可见 epoch=1794922359912 → 消失 epoch=1794922374871` ⇒ **14.96 s**（判据 15 s，容差内 PASS）。
+
+#### 3.12.5 ④ 连发 5 条 → 最多 3 条 + 合并提示 —— 通过
+
+教师连发 5 条（`连发测试#1..#5`，间隔 200 ms）→ UIA 实测 tips 窗口内**恰好 3 张卡片**（#1/#2/#3）+ **「还有 2 条新共享 · 点击打开列表」**；截图 `G-TIPS-stack.png` 另拍到 #4/#5 轮换显示（前序到期后补位），与「最多 3 条堆叠 + 合并」一致。
+
+#### 3.12.6 ⑤ 暂停提醒：抑制显示但数据入库 —— 通过
+
+| 步骤 | 实测 |
+| --- | --- |
+| 菜单点「暂停接收提醒」 | `gui.json` `pausedTips=true`；菜单项变为「**恢复接收提醒**」 |
+| 暂停期间教师广播 | 18 s 轮询内 tips **从未可见**（抑制生效） |
+| 同时数据是否入库 | svc `received item_id=47234b8b…` + `applied … version=1`（**数据入队/入库不受影响**，符 FR-G-03「只抑制 tips，不影响接收与落盘」） |
+| 点「恢复接收提醒」 | `pausedTips=false`，恢复成功 |
+
+#### 3.12.7 附：本轮暴露的 E12（阻塞 v0.1.0）
+
+补测时先用 `--role=student` 手工启动 GUI，实测 GUI 仍连 `\\.\pipe\classshare-svc-teacher` 并失败、45 s 内 tips 全无；改为**预先写 `gui.json{"role":"student"}`** 后才正常。根因三处（`install.ps1` 不写 GUI 角色/`start_bridge` 首连失败不重试/`--role` 与 `start_bridge` 时序竞争）详见 §4 的 E12 与 issue #83。**该缺陷意味着按 install.ps1 正常安装的学员机 GUI 连不上本机服务**，故 tips 的上述通过结论须在 E12 修复后由**真实安装路径**复验（rc.4）。
+
+## 4 缺陷与观察项| 编号 | 级别 | 内容 | 处置 |
 | --- | --- | --- | --- |
 | **E10** | **P0 缺口（已修复闭环）** | 单文件 100 MB 上限修复前未生效（PRD 5.3/9.4/EX-04）；QA 初版验收未覆盖该负例 | 已由 `7eea251` 修复，本报告 §3.11.1 验证闭环 |
+| **E11** | **P0 缺口（已修复闭环）** | tips 生产路径未接线：`push_tip` 在 release 无调用者（唯一调用方 `demo_tips` 为 debug-only），`ipc_client` emit `svc://notify` 而 `TipsStack` 监听 `svc://share-received` → **release 产物中 FR-G-02 永不触发**（「收到但从不提醒」）。QA 初版报告写「无自动化 → 未验证」**低估了问题**（实为生产路径未接线） | 已由 `1fea3d1` 修复（`ShareReceived → push_tip` + 同源双通知去重 + 本人条目不自弹）；本报告 §3.12 补测 ①–⑤ 全部通过。措辞已在 §5 更正 |
+| **E12** | **P0 阻塞（修复中，issue #83）** | **按 install.ps1 正常安装的学员机 GUI 连不上本机服务**：① `install.ps1` 注册 GUI 自启不传 `--role`、且从不写 `gui.json`，GUI 角色默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败仅记录、**不重试**（`ensure_client` 惰性重连只在有 UI 请求时触发）→ 常驻图标场景通知流永不建立；③ `--role=` 写盘在 `start_bridge` 之后（时序竞争）。实测：`--role=student` 手工启动仍连 teacher 管道失败、45 s 无 tips；预写 `gui.json role=student` 后一切正常 | 已裁定**阻塞 v0.1.0**，dev-gui 修复（写 GUI 角色 + `start_bridge` 退避重连 + `--role` 时序）；rc.4 后由 QA 用**真实 install.ps1 -Mode student** 复验 |
 | O-1 | **口径要求（已升格为强制）** | GUI 生产构建必须用 `scripts/build-gui.ps1`（或显式 `--features custom-protocol`），**禁止裸 `cargo build --release`**——否则前端不内嵌、图标永不显示，极易被误判为产品缺陷 | 已入库：`build-gui.ps1` + `build.rs` 警告 + `main.rs` MessageBox 防呆；方案 §3.4 已写入强制口径，详见 [`docs/notes/m1-o1-gui-build.md`](../../notes/m1-o1-gui-build.md) |
 | O-2 | 观察（可观测性） | `broadcast` 锚点在**推送完成后**记录，`Δ=applied−broadcast` 为下界（可负），无法直接测 PRD 2.4 分发时延；本报告改用「请求发起→applied」保守上界 | M2/M3 补 `send_received` 锚点 |
 | O-3 | 轻微（已修） | `uninstall.ps1` 在右键项不存在时向 stderr 打印 reg.exe 原生错误 | `46470fe` 已修（PowerShell 原生 cmdlet + 静默） |
@@ -252,10 +308,10 @@ C:\Users\Bian\AppData\Local\ClassShare\data\ipc.token NT AUTHORITY\SYSTEM:(R,W)
 | TC-01 真实双机发现 | 单机 | 跨机 UDP 广播链路（交换机/防火墙）未验证 |
 | TC-01「重启 GUI 不再弹昵称」 | 学员客户端需教师端配合入班（双机） | 已**代码级确认**条件为 `role==='student' && !nickname_done`，`nickname_done` 持久化于 `gui.json`（`set_nickname_done`）；运行期复验待双机 |
 | TC-02 30 台 p95 | 单机 | 已批准口径：留 M3 |
-| TC-03/TC-02 的 tips UI 时延 | 无学员端 GUI 自动化 | FR-G-02「tips ≤1 s」未验证 |
+| TC-03/TC-02 的 tips UI 时延 | ~~无学员端 GUI 自动化~~ → **已修正措辞**：根因是**生产路径未接线（E11）**，不是「无法自动化验证」；E11 已修复（1fea3d1）并由本报告 §3.12 **补测通过**（到达→tips 27 ms、15 s 消失、连发堆叠/合并、暂停语义） | 已闭环 |
 | TC-12 在服务模式下的服务存活 | 降级模式验证 | 服务模式 SCM 托管下的存活未验证 |
 
-**放行建议**：按已批准 §5.2 口径，可出 **`v0.1.0-rc.2`（预发布）**；正式 `v0.1.0` 待双机 + 管理员真机验收（TC-11、TC-13 管理员路径、E7 服务模式、TC-01 真实双机发现、TC-02 30 台压测、tips UI 时延）。release note 须列明上述延后项与 **E10 修复说明**。
+**放行建议**：`v0.1.0-rc.2/rc.3` 已验证 E10/E11 闭环；正式 `v0.1.0` **须待 E12 修复并由真实安装路径复验通过**（rc.4），此外仍有双机 + 管理员延后项（TC-11、TC-13 管理员路径、E7 服务模式、TC-01 真实双机发现、TC-02 30 台压测）。release note 须列明：E10（100 MB 上限）、E11（tips 生产接线）**已修复**；E12（学员机安装路径 GUI 管道）**修复后放行**；其余为延后项。
 
 ## 6 复现方式
 
