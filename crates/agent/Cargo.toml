@@ -9,6 +9,7 @@ classroom-store = { path = "../store" }
 classroom-net = { path = "../net" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 
