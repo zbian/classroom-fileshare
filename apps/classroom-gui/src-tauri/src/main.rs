@@ -57,11 +57,41 @@ fn share_files_from_argv(app: &tauri::AppHandle, argv: &[String]) {
     });
 }
 
-/// single-instance / 启动 argv 中的共享文件提取：形如 exe 文件路径的参数。
+/// 判断参数是否指向**当前进程自身的可执行文件**（E13：argv[0] 不能被当成共享文件）。
+///
+/// 两条入口的 argv 语义（本机实测，见 PR 描述）：
+/// - 进程启动：`std::env::args()` 首项 = 本进程 exe 路径（`is_file()=true`，
+///   此前会被误当共享文件发送，仅靠服务端「高风险类型」拦下——防御太靠下游）；
+/// - 单实例回调：`tauri-plugin-single-instance` 在 Windows 上经 `second-instance`
+///   事件传入第二实例**完整命令行**（含其 argv[0]，即同一 exe 路径）。
+///
+/// 因此这里**不用 `skip(1)`**（若插件将来只传附加参数，skip(1) 会吞掉第一个真实
+/// 文件），而是统一排除「等于本进程 exe 的参数」——对两种 argv 语义都安全。
+fn is_self_exe(arg: &str) -> bool {
+    match std::env::current_exe() {
+        Ok(current) => same_path(arg, &current),
+        Err(_) => false,
+    }
+}
+
+/// 路径等价判定（Windows 大小写不敏感）：优先 canonicalize 归一相对路径/`..`，
+/// 失败时退回规范化字符串比较。
+fn same_path(candidate: &str, target: &std::path::Path) -> bool {
+    let cand = std::path::Path::new(candidate);
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(cand), std::fs::canonicalize(target)) {
+        return a == b;
+    }
+    let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+    norm(candidate) == norm(&target.to_string_lossy())
+}
+
+/// single-instance / 启动 argv 中的共享文件提取：过滤自身 exe 后，仅保留文件与目录。
 fn file_args(args: &[String]) -> Vec<String> {
     args.iter()
+        .filter(|a| !is_self_exe(a))
         .filter(|a| {
-            std::path::Path::new(a.as_str()).is_file() || std::path::Path::new(a.as_str()).is_dir()
+            let p = std::path::Path::new(a.as_str());
+            p.is_file() || p.is_dir()
         })
         .cloned()
         .collect()
@@ -111,6 +141,9 @@ fn main() {
     tauri::Builder::default()
         // 单实例：重复启动聚焦既有实例（EX-12）；argv 携带共享文件时经真实链路直发（T12）
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // E13：记录单实例路径的 argv 语义（首项是否为 exe），便于回归核对
+            #[cfg(debug_assertions)]
+            eprintln!("[single-instance] argc={} argv={argv:?}", argv.len());
             let files = file_args(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>());
             if files.is_empty() {
                 windows::focus_icon_or_main(app);
@@ -360,5 +393,75 @@ mod tests {
     #[test]
     fn current_build_does_not_warn_here() {
         assert!(!needs_build_warning(cfg!(dev), cfg!(debug_assertions)));
+    }
+
+    /// E13：argv[0]（本进程 exe）不得被当成共享文件。
+    #[test]
+    fn file_args_excludes_self_exe() {
+        let exe = std::env::current_exe()
+            .expect("current_exe")
+            .to_string_lossy()
+            .to_string();
+        assert!(is_self_exe(&exe), "current_exe 应判定为自身");
+        assert!(
+            file_args(&[exe]).is_empty(),
+            "只有 argv[0] 时不应产生待共享文件"
+        );
+    }
+
+    /// E13：exe + 真实文件时只保留真实文件；多文件与目录不回归。
+    #[test]
+    fn file_args_keeps_files_and_dirs_after_self_exe() {
+        let dir = std::env::temp_dir().join(format!("e13-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f1 = dir.join("作业.txt");
+        let f2 = dir.join("图.png");
+        std::fs::write(&f1, b"a").unwrap();
+        std::fs::write(&f2, b"b").unwrap();
+        let sub = dir.join("素材");
+        std::fs::create_dir_all(&sub).unwrap();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let args = vec![
+            exe,
+            f1.to_string_lossy().to_string(),
+            f2.to_string_lossy().to_string(),
+            sub.to_string_lossy().to_string(),
+        ];
+        let got = file_args(&args);
+        assert_eq!(got.len(), 3, "exe 排除、2 文件 + 1 目录保留：{got:?}");
+        assert!(got.contains(&f1.to_string_lossy().to_string()));
+        assert!(got.contains(&sub.to_string_lossy().to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E13：大小写不同 / 带 `.` 段等等价路径形式同样识别为自身 exe。
+    #[test]
+    fn self_exe_detected_case_insensitive_and_dot_segments() {
+        let exe = std::env::current_exe().unwrap();
+        let plain = exe.to_string_lossy().to_string();
+        assert!(is_self_exe(&plain));
+        assert!(is_self_exe(&plain.to_uppercase()), "大写形式应识别为自身");
+        let dotted = exe
+            .parent()
+            .unwrap()
+            .join(".")
+            .join(exe.file_name().unwrap())
+            .to_string_lossy()
+            .to_string();
+        assert!(is_self_exe(&dotted), "带 . 段的等价形式应识别为自身");
+    }
+
+    /// E13：空 argv / 不存在的路径不产生条目（不 panic）。
+    #[test]
+    fn file_args_handles_empty_and_missing_paths() {
+        assert!(file_args(&[]).is_empty());
+        let missing = std::env::temp_dir()
+            .join("e13-missing-not-exist.txt")
+            .to_string_lossy()
+            .to_string();
+        assert!(file_args(&[missing]).is_empty());
     }
 }
