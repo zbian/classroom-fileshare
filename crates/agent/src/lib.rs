@@ -194,6 +194,7 @@ async fn agent_session(
         store: store.clone(),
         notify: notify.clone(),
         addr,
+        nickname: cfg.nickname.clone(),
     };
     // 默认：心跳 5s、建连超时 5s、加入后自动请求版本清单（与原实现一致）
     let session_cfg = ClientSessionConfig::new(addr, hello);
@@ -222,6 +223,8 @@ struct AgentSessionHandler {
     store: Arc<Mutex<Store>>,
     notify: mpsc::Sender<AgentEvent>,
     addr: SocketAddr,
+    /// 本机昵称（上行 Ack 的 `acked_by`，PRD 3.6）
+    nickname: String,
 }
 
 #[async_trait]
@@ -233,7 +236,7 @@ impl ClientHandler for AgentSessionHandler {
             .await;
     }
 
-    async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
+    async fn on_frame(&self, frame: Frame, tx: &mut mpsc::Sender<Frame>) -> anyhow::Result<()> {
         match frame {
             Frame::Event(ev) => {
                 // 锁只在同步临界区持有，不跨 await（MutexGuard 非 Send）
@@ -263,12 +266,28 @@ impl ClientHandler for AgentSessionHandler {
                 }
             }
             Frame::Manifest(entries) => {
-                let removed = {
+                let (removed, acked) = {
                     let store = self.store.lock().unwrap();
                     align_manifest(&store, entries)?
                 };
                 for id in removed {
                     let _ = self.notify.send(AgentEvent::Removed(id)).await;
+                }
+                // M2 #17（PRD 3.6 ack / 7.4）：补删完成 → 上行 Ack 确认，
+                // 教师端据此观测端侧补删进度（墓碑清理用 TTL，不依赖 ack）
+                for item in acked {
+                    let ev = Event {
+                        event_id: format!("ack-{}-{}", item.id, item.version),
+                        kind: EventKind::Ack,
+                        item,
+                        new_name: None,
+                        acked_by: Some(self.nickname.clone()),
+                        ts: unix_now(),
+                    };
+                    if tx.send(Frame::Event(ev)).await.is_err() {
+                        tracing::debug!("Ack 发送失败（写任务已退出）");
+                        break;
+                    }
                 }
                 let _ = self.notify.send(AgentEvent::Synced).await;
             }
@@ -278,28 +297,57 @@ impl ClientHandler for AgentSessionHandler {
     }
 }
 
-/// 清单对齐：远端已删而本地未删的条目，落地墓碑并清实体（PRD 7.4 补删）。
-fn align_manifest(store: &Store, entries: Vec<(String, u64, bool)>) -> anyhow::Result<Vec<String>> {
+/// 清单对齐（PRD 7.4 删除同步状态机）：远端已删的条目在本地执行**两阶段
+/// 补删**并返回 `(removed_ids, acked_items)`：
+///
+/// 1. **待删除**：本地未删 → `soft_delete`（`deleted=1` +
+///    `sync_state=DeleteDeferred`）——该状态下条目已不可打开（GUI 由后续
+///    issue 展示）；若本地已是墓碑（上次清理中断），直接进入第 3 步。
+/// 2. **清实体**：删除正文/文件实体；失败仅告警（墓碑保留，下次重连重试）。
+/// 3. **补删完成**：`hard_delete` 清索引行（条目彻底消失）→ 收集用于上行 Ack。
+///
+/// 幂等与有界性：墓碑已被 `hard_delete` 后 `store.get` 返回 None → 后续
+/// manifest 比对直接跳过，**不会重复补删、不会无限重试**；每条目每次连接
+/// 至多处理一次。
+fn align_manifest(
+    store: &Store,
+    entries: Vec<(String, u64, bool)>,
+) -> anyhow::Result<(Vec<String>, Vec<ShareItem>)> {
     let mut removed = Vec::new();
-    for (id, _version, deleted) in entries {
+    let mut acked = Vec::new();
+    for (id, version, deleted) in entries {
         if !deleted {
             continue;
         }
         let Some(local) = store.get(&id)? else {
-            continue;
+            continue; // 已补删完成（或从未有过）：幂等跳过
         };
-        if local.deleted {
-            continue;
-        }
-        let gone = store.soft_delete(&id, unix_now())?;
-        if let Ok(body) = store.file_body(&gone) {
-            if body.exists() {
-                let _ = std::fs::remove_file(&body);
+        let now = unix_now();
+        let tombstone = if local.deleted {
+            // 上次清理中断（标记已落、索引未清）：完成第 3 步
+            local
+        } else {
+            // 阶段 1：标记待删除（DeleteDeferred，不可打开）
+            let marked = store.soft_delete(&id, now)?;
+            // 阶段 2：清实体（失败仅告警，墓碑保留供下次重试）
+            if let Ok(body) = store.file_body(&marked) {
+                if body.exists() {
+                    if let Err(e) = std::fs::remove_file(&body) {
+                        tracing::warn!(item_id = %id, error = %e, "补删实体失败，墓碑保留待重试");
+                    }
+                }
             }
-        }
+            marked
+        };
+        // 阶段 3：清索引行（补删完成）
+        store.hard_delete(&id)?;
+        tracing::info!(item_id = %id, version, "延迟补删完成");
         removed.push(id);
+        let mut item = tombstone;
+        item.version = version.max(item.version);
+        acked.push(item);
     }
-    Ok(removed)
+    Ok((removed, acked))
 }
 
 /// 事件处理结果。

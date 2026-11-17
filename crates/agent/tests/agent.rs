@@ -395,16 +395,21 @@ async fn offline_delete_aligned_as_tombstone_on_reconnect() {
     assert_eq!(removed_id, item.id, "墓碑对齐应产出 Removed");
 
     let store = Store::open(agent_dir.path()).unwrap();
-    let gone = store.get(&item.id).unwrap().expect("墓碑保留在索引");
-    assert!(gone.deleted, "对齐后本地条目应为墓碑");
+    // M2 #17（PRD 7.4「补删完成：清理实体与索引、条目消失」）：语义较 M1
+    // 收紧——M1 断言「墓碑保留在索引」，#17 起补删完成后 hard_delete，
+    // 索引行一并清除（旧断言因此过时，改为断言清除；非放宽）。
+    assert!(
+        store.get(&item.id).unwrap().is_none(),
+        "补删完成后索引清除（PRD 7.4）"
+    );
     assert!(
         store.list(ListFilter::default()).unwrap().is_empty(),
         "默认列表不可见"
     );
-    assert!(
-        !store.file_body(&gone).unwrap().exists(),
-        "实体文件应被补删清理"
-    );
+    // 实体随补删清理（本地正文路径 = repo/<rel_path>）
+    let rel = item.rel_path.clone().expect("文本条目应有 rel_path");
+    let body = agent_dir.path().join("repo").join(rel);
+    assert!(!body.exists(), "实体文件应被补删清理");
 }
 
 // ---------- E3（issue #37）：真实 agent ↔ 真实 host 的探测回路 ----------

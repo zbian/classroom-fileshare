@@ -581,6 +581,48 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound(id.to_string()))
     }
 
+    /// 彻底删除条目（PRD 7.4「补删完成」终态）：清实体（若存在）→ 删索引行。
+    ///
+    /// 幂等：条目不存在时也返回 Ok（重复补删不报错）。事件去重表
+    /// （`event_log`）**不清理**——正是它保证重复 delete 事件被按 event_id
+    /// 去重（PRD 3.6）。
+    pub fn hard_delete(&self, id: &str) -> Result<()> {
+        if let Some(item) = self.get(id)? {
+            if let Ok(body) = self.file_body(&item) {
+                if body.exists() {
+                    let _ = std::fs::remove_file(&body);
+                }
+            }
+        }
+        self.conn
+            .execute("DELETE FROM share_items WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// 清理过期墓碑（PRD 7.4 墓碑保留策略）：`deleted=1` 且
+    /// `updated_at < older_than` 的条目 → 清实体 + 删索引行，返回清理条数。
+    ///
+    /// 语义：墓碑在保留期内随 manifest 下发，离线端上线即可补删；超过
+    /// 保留期视为「端长期离线、放弃补删」（验收口径见 issue #17 / PR）。
+    /// 调用方（host）用「现在 − 保留期」作为 `older_than`。
+    pub fn purge_tombstones(&self, older_than: i64) -> Result<usize> {
+        let ids: Vec<String> = {
+            let sql = "SELECT id FROM share_items WHERE deleted = 1 AND updated_at < ?1";
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map(params![older_than], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut n = 0;
+        for id in ids {
+            self.hard_delete(&id)?;
+            n += 1;
+        }
+        if n > 0 {
+            tracing::info!(count = n, older_than, "过期墓碑已清理");
+        }
+        Ok(n)
+    }
+
     /// 记录已见事件（event_id 去重表，PRD 3.6）。
     pub fn record_event(&self, ev: &Event) -> Result<()> {
         self.conn.execute(

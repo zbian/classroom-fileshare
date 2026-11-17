@@ -76,7 +76,7 @@ impl CollectHandler {
 
 #[async_trait]
 impl ClientHandler for CollectHandler {
-    async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
+    async fn on_frame(&self, frame: Frame, _tx: &mut mpsc::Sender<Frame>) -> anyhow::Result<()> {
         let _ = self.tx.send(frame);
         Ok(())
     }
@@ -191,8 +191,8 @@ struct ArcHandler(std::sync::Arc<CollectHandler>);
 
 #[async_trait]
 impl ClientHandler for ArcHandler {
-    async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
-        self.0.on_frame(frame).await
+    async fn on_frame(&self, frame: Frame, tx: &mut mpsc::Sender<Frame>) -> anyhow::Result<()> {
+        self.0.on_frame(frame, tx).await
     }
     async fn on_joined(&self, session_id: &str) {
         self.0.on_joined(session_id).await
@@ -388,7 +388,11 @@ async fn handler_error_is_fatal() {
     struct Failing;
     #[async_trait]
     impl ClientHandler for Failing {
-        async fn on_frame(&self, _frame: Frame) -> anyhow::Result<()> {
+        async fn on_frame(
+            &self,
+            _frame: Frame,
+            _tx: &mut mpsc::Sender<Frame>,
+        ) -> anyhow::Result<()> {
             anyhow::bail!("回调主动失败")
         }
     }

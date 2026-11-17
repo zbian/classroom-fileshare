@@ -66,6 +66,14 @@ pub enum HostEvent {
     StudentLeft(String),
     /// 条目新增/覆盖（教师自己 put 或学员提交）。
     ReceivedUpsert(classroom_protocol::ShareItem),
+    /// 学员补删确认（M2 #17，PRD 3.6/7.4）：离线端上线后完成延迟删除。
+    /// 供 svc 观测/日志使用（墓碑清理按 TTL，不依赖 ack）。
+    DeleteAcked {
+        /// 被删除条目 id。
+        item_id: String,
+        /// 确认方昵称。
+        nickname: String,
+    },
     /// 在线列表变化。
     Status(HostStatus),
 }
