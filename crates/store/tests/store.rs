@@ -646,3 +646,46 @@ fn hard_delete_is_idempotent() {
     store.hard_delete(&item.id).unwrap();
     store.hard_delete("not-exist-id").unwrap();
 }
+
+/// TC-08 观察项 O-A（M2 #17）：`remove_item_bodies` 删除实体（final + .bak）
+/// 但保留索引行（墓碑）；重复调用幂等（实体已不存在不报错）。
+#[test]
+fn remove_item_bodies_keeps_tombstone_row() {
+    let (_guard, root) = root("remove-bodies");
+    let store = Store::open(&root).unwrap();
+    let tmp = write_tmp(root.parent().unwrap(), "a.txt", b"old");
+    let h = sha256_file(&tmp).unwrap();
+    let item = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp,
+            &h,
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let body = store.file_body(&item).unwrap();
+    assert!(body.exists());
+    // 造一份 .bak（模拟覆盖过）
+    let mut bak_os = body.as_os_str().to_os_string();
+    bak_os.push(".bak");
+    let bak = std::path::PathBuf::from(bak_os);
+    std::fs::write(&bak, b"old-bak").unwrap();
+
+    store.remove_item_bodies(&item).unwrap();
+    assert!(!body.exists(), "实体应删除");
+    assert!(!bak.exists(), ".bak 也应删除");
+    // 索引行保留（墓碑供离线端补删）
+    assert!(
+        store.get(&item.id).unwrap().is_some(),
+        "索引行应保留（墓碑）"
+    );
+    // 重复调用幂等
+    store.remove_item_bodies(&item).unwrap();
+}

@@ -257,6 +257,8 @@ pub fn make_ipc_handler(
             AgentSend::Files { paths },
         ),
         GuiRequest::DeleteItem { id } => {
+            // TC-08 观察项 O-B：删除入口日志锚点（GUI 请求 → host 命令）
+            tracing::info!(item_id = %id, "delete-request");
             dispatch_teacher(&host_cmd, HostCommand::Delete { id }, "学员删除在 M2 提供")
         }
         GuiRequest::SetNickname { .. } => {

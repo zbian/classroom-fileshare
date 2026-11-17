@@ -342,11 +342,23 @@ impl Hub {
         let deleted = self.store.lock().unwrap().soft_delete(id, now);
         match deleted {
             Ok(item) => {
-                let ev = Self::make_event(EventKind::Delete, item, now);
+                let ev = Self::make_event(EventKind::Delete, item.clone(), now);
                 let _ = self.store.lock().unwrap().record_event(&ev);
                 // 教师端删除**立即完成**（不等任何离线端，PRD 7.4）：软删 +
                 // 墓碑 + 广播；离线端上线后经 manifest 比对补删（agent 侧）。
                 self.broadcast_event(&ev).await;
+                // TC-08 观察项 O-A（PRD 7.4 字面「删除实体、写墓碑、广播」）：
+                // 广播后**立即删除实体**（final + .bak）；墓碑行保留至 TTL，
+                // 供离线端 manifest 比对补删——此前实体滞留到 TTL purge。
+                if let Err(e) = self.store.lock().unwrap().remove_item_bodies(&item) {
+                    tracing::warn!(item_id = %item.id, error = %e, "删除实体失败");
+                }
+                // TC-08 观察项 O-B：删除广播日志锚点（回归/压测测量）
+                tracing::info!(
+                    item_id = %item.id,
+                    owner = %item.owner_id,
+                    "delete"
+                );
                 // M2 #17：惰性清理过期墓碑（不引入常驻定时器）——墓碑在
                 // 保留期内随 manifest 下发，超期视为「端长期离线，放弃补删」
                 if let Err(e) = self
@@ -450,10 +462,11 @@ impl SessionHandler for Hub {
                 );
                 return;
             }
+            // TC-08 观察项 O-B：补删 Ack 日志锚点（字段名稳定供 qa/M3 压测解析）
             tracing::info!(
                 item_id = %ev.item.id,
-                nickname = %expected,
-                "学员补删确认（Ack）"
+                from = %expected,
+                "delete-ack"
             );
             let _ = self
                 .notify

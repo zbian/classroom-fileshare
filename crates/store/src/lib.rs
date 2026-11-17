@@ -623,6 +623,31 @@ impl Store {
         Ok(n)
     }
 
+    /// 删除条目的文件实体（final + `.bak`），保留索引行（墓碑）——供离线端
+    /// 补删与 manifest 比对（M2 #17 / TC-08 观察项 O-A：PRD 7.4 字面
+    /// 「已删除：删除实体、写墓碑、广播 delete」，此前实体滞留在 TTL purge）。
+    ///
+    /// 容忍实体已不存在（幂等；`hard_delete`/重复调用安全）。
+    pub fn remove_item_bodies(&self, item: &ShareItem) -> Result<()> {
+        let Ok(final_path) = self.file_body(item) else {
+            return Ok(());
+        };
+        if final_path.exists() {
+            if let Err(e) = std::fs::remove_file(&final_path) {
+                tracing::warn!(path = %final_path.display(), error = %e, "删除条目实体失败");
+            }
+        }
+        let mut bak = final_path.as_os_str().to_os_string();
+        bak.push(".bak");
+        let bak_path = PathBuf::from(bak);
+        if bak_path.exists() {
+            if let Err(e) = std::fs::remove_file(&bak_path) {
+                tracing::warn!(path = %bak_path.display(), error = %e, "删除条目备份失败");
+            }
+        }
+        Ok(())
+    }
+
     /// 记录已见事件（event_id 去重表，PRD 3.6）。
     pub fn record_event(&self, ev: &Event) -> Result<()> {
         self.conn.execute(

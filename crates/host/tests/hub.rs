@@ -1292,6 +1292,20 @@ async fn online_student_delete_immediate_and_repeat_idempotent() {
         store.get(&item.id).unwrap().is_some_and(|i| i.deleted),
         "墓碑保留在教师端索引（供离线端补删）"
     );
+    // TC-08 观察项 O-A（PRD 7.4「删除实体、写墓碑、广播」）：删除后教师端
+    // 实体**立即**不存在（此前滞留到 TTL purge）
+    let teacher_body = store.file_body(&item).unwrap();
+    assert!(
+        !teacher_body.exists(),
+        "教师端删除后实体应立即清除: {}",
+        teacher_body.display()
+    );
+    let mut bak = teacher_body.as_os_str().to_os_string();
+    bak.push(".bak");
+    assert!(
+        !std::path::PathBuf::from(bak).exists(),
+        "教师端删除后 .bak 也应清除"
+    );
 }
 // ---------- M2 #104：学员端上行发送链路（真实 agent 命令通道 → 教师端）----------
 
