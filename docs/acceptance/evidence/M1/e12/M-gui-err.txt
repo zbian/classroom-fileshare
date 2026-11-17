@@ -1,0 +1,2 @@
+[role] 解析为 student（来源 SvcJson）
+[ipc] 服务管道已连接（role=Student）

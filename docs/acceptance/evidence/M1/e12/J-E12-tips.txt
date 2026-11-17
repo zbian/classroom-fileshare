@@ -1,0 +1,16 @@
+=== ④ tips（隔离安装路径，无预写 gui.json 绕过；Run 值含 --role）===
+tips 可见=True （轮询后 6ms 出现）
+（tips 窗口已出现，符合 FR-G-02）
+=== ③ 主界面状态/列表（UIA 文本，去重）===
+截图: J-E12-main.png
+未找到打开菜单项
+=== GUI 窗口 ===
+课堂共享 · 提醒|vis=False|2152,24 300x96
+课堂共享|vis=True|2464,24 72x72
+课堂共享|vis=False|234,234 1040x719
+com.classshare.gui-siw|vis=True|0,0 16x16
+MSCTFIME UI|vis=False|0,0 0x0
+Default IME|vis=False|0,0 0x0
+=== 主窗 UIA 文本 ===
+主窗状态: vis=False 1040x719
+=== ③ 主窗 UIA 文本（去重）===

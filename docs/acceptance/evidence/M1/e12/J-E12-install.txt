@@ -1,0 +1,33 @@
+=== E12 复验（rc.4 / fab6099）：真实 install.ps1 -Mode student ===
+WARNING: 未捕获主登录用户 SID：服务模式 GUI 令牌待首次登录后由服务自愈（SessionChange）授权；如需立即可用请携带 -UserSid 重装
+WARNING: 无管理员权限：已降级为仅当前用户登录自启。局限：未登录时不接收文件；服务崩溃不自动重启。
+GUI 角色:   <repo>\.wt\acc-m1\evidence\M1\e12\s\appdata\ClassShare\gui.json（role=student）
+
+=== 课堂共享安装取证（issue #14 五项）===
+服务名:     ClassShareSvc
+进程:       <repo>\.wt\acc-m1\target\release\classroom-svc.exe
+运行方式:   降级（HKCU Run 登录自启前台进程 --console）
+数据根:     <repo>\.wt\acc-m1\evidence\M1\e12\s\localappdata\ClassShare\data
+日志:       <repo>\.wt\acc-m1\evidence\M1\e12\s\localappdata\ClassShare\data\logs\svc.log（RFC3339 毫秒时间戳，RUST_LOG 可调）
+防火墙:     （降级模式无法配置防火墙；自动发现可能不可用，manual_addr 兜底）
+GUI 自启:   HKCU Run → <repo>\.wt\acc-m1\target\release\classroom-gui.exe --role=student
+令牌授权:   仅 LocalSystem——GUI 待首次登录自愈或 -UserSid 重装
+房间/发现:  学员自动连接首个发现的教师机（单教室默认；多教室请传 -Room 与教师一致）
+多实例:     命名管道多连接并发（每 GUI 一连接，已测 ≥2）；服务本体单实例（SCM 语义）
+=== ① 安装产物校验 ===
+svc.json:
+{
+    "pin":  null,
+    "mode":  "student",
+    "nickname":  "tipsTester",
+    "user_sid":  null,
+    "room_code":  "",
+    "manual_addr":  "127.0.0.1:47830",
+    "tcp_port":  47821
+}
+gui.json:
+{ "version": 1, "role": "student" }
+gui.json 存在: True
+HKCU Run 值:
+ClassShareSvc = <repo>\.wt\acc-m1\target\release\classroom-svc.exe --console
+ClassShareGUI = <repo>\.wt\acc-m1\target\release\classroom-gui.exe --role=student

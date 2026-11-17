@@ -1,0 +1,24 @@
+=== ② 三进程启动（GUI 运行 Run 值 --role=student；环境已隔离）===
+--- GUI stderr ---
+[role] 解析为 student（来源 Arg）
+[ipc] 服务管道已连接（role=Student）
+--- 学员 svc 日志 ---
+2026-11-17T14:25:30.415344Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T14:25:30.452282Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M1\e12\s\localappdata\ClassShare\data
+2026-11-17T14:25:30.452347Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T14:25:30.460214Z  INFO 已加入 addr=127.0.0.1:47830
+--- 教师探针 ---
+HOST started room=XK-204 port=47830
+HOST student joined: tipsTester
+--- 隔离数据根是否使用（确认未污染本机）---
+iso data 存在: True  本机 LOCALAPPDATA 数据根存在: False
+=== ③ 学员端服务状态/列表（student 管道直查，= GUI 数据源）===
+--- status ---
+REPLY status role=Student room=tcp://127.0.0.1:47830 online=0 nickname=tipsTester pending=0 state=Running
+--- list ---
+REPLY items n=1
+ITEM id=18ee9acb-2ac1-47c5-8825-45edfcb28cc3 kind=Text owner=teacher role=Teacher audience=All title=E12验证通知 size=2 version=1 deleted=false sync=Synced rel=teacher/texts/t90b1843b5d5d.txt
+--- GUI stderr 是否出现 EX-10/连接失败 ---
+含『连接失败』: False  含『EX-10』: False  行数: 2
+[role] 解析为 student（来源 Arg）
+[ipc] 服务管道已连接（role=Student）

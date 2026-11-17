@@ -1,0 +1,17 @@
+=== ⑥ teacher 模式对称（真实 install.ps1 -Mode teacher；GUI 不传 --role）===
+GUI 角色:   <repo>\.wt\acc-m1\evidence\M1\e12\t\appdata\ClassShare\gui.json（role=teacher）
+运行方式:   降级（HKCU Run 登录自启前台进程 --console）
+GUI 自启:   HKCU Run → <repo>\.wt\acc-m1\target\release\classroom-gui.exe --role=teacher
+房间/发现:  教师建课房间码 XK-204（安装后可在 GUI 修改）
+--- HKCU Run ---
+ClassShareSvc = <repo>\.wt\acc-m1\target\release\classroom-svc.exe --console
+ClassShareGUI = <repo>\.wt\acc-m1\target\release\classroom-gui.exe --role=teacher
+--- GUI 日志（应 role=teacher 来源 SvcJson + role=Teacher 管道）---
+[role] 解析为 teacher（来源 SvcJson）
+[ipc] 服务管道已连接（role=Teacher）
+--- svc 日志 ---
+2026-11-17T14:43:48.851089Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T14:43:48.862307Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T14:43:52.380477Z  WARN 教师文件广播失败 path=<repo>\.wt\acc-m1\target\release\classroom-gui.exe error=高风险文件类型: classroom-gui.exe
+--- teacher 状态（IPC）---
+REPLY status role=Teacher room=XK-204 online=0 nickname= pending=0 state=Running
