@@ -1,0 +1,18 @@
+本机 CI 六门禁执行汇总（验收侧独立复核）
+
+基线: main @ e822696（干净 detached worktree；执行时 HEAD；此后 main 前进至 c6792b0 仅前端 #96）
+执行: qa-acceptance   日期: 2026-11-17
+环境: Windows 11 26100 / PowerShell 5.1 / cargo 1.100.0 (MSVC) / Node 24 + pnpm 11.21.0
+权威脚本: scripts/local-ci.ps1（#87）
+
+门禁（按依赖顺序，6 依赖 5 的 ui/dist）:
+  [1] PS BOM 守卫（.ps1 必须有 BOM / .json 不得有 BOM）   PASS  0.2s
+  [2] cargo fmt --all --check                            PASS  0.5s
+  [3] cargo clippy --workspace --all-targets -D warnings PASS 36.6s
+  [4] cargo test --workspace                             PASS 51.0s   (146 passed / 0 failed)
+  [5] pnpm install --frozen-lockfile + pnpm build(三入口) PASS  3.5s
+  [6] GUI release clippy(custom-protocol,-D warnings)    PASS 38.0s
+  合计耗时 129.8s
+
+结论: 6/6 ALL PASS
+原始输出: local-ci-output.txt   测试分布: test-by-crate.txt / test-total.txt
