@@ -29,6 +29,10 @@ pub trait ClientHandler: Send + Sync {
     ///
     /// 返回 `Err` 视为致命错误，会话立即结束并向上抛出（调用方决定是否重连）。
     async fn on_frame(&self, frame: Frame) -> Result<()>;
+
+    /// 加入成功（在 [`Self::on_frame`] 首次回调之前调用，可据此通知上层
+    /// 「已加入房间」/ 展示会话标识）。默认空实现。
+    async fn on_joined(&self, _session_id: &str) {}
 }
 
 /// 客户端会话配置。
@@ -127,6 +131,7 @@ pub async fn run_client_session<H: ClientHandler>(
         }
     };
     tracing::info!(%session_id, "已加入房间");
+    handler.on_joined(&session_id).await;
 
     // ---- 可选：请求版本清单（重连对齐第一阶段） ----
     if cfg.request_manifest && tx.send(Frame::ManifestReq).await.is_err() {

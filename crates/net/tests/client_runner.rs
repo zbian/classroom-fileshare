@@ -59,9 +59,19 @@ fn join_hello(nickname: &str) -> Hello {
     }
 }
 
-/// 测试回调：把收到的业务帧转发到 channel，供断言。
+/// 测试回调：把收到的业务帧转发到 channel，记录 on_joined 的 session_id。
 struct CollectHandler {
     tx: mpsc::UnboundedSender<Frame>,
+    joined: std::sync::Mutex<Vec<String>>,
+}
+
+impl CollectHandler {
+    fn new(tx: mpsc::UnboundedSender<Frame>) -> Self {
+        Self {
+            tx,
+            joined: std::sync::Mutex::new(Vec::new()),
+        }
+    }
 }
 
 #[async_trait]
@@ -69,6 +79,10 @@ impl ClientHandler for CollectHandler {
     async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
         let _ = self.tx.send(frame);
         Ok(())
+    }
+
+    async fn on_joined(&self, session_id: &str) {
+        self.joined.lock().unwrap().push(session_id.to_string());
     }
 }
 
@@ -87,7 +101,7 @@ where
     addr
 }
 
-/// 用例 1：Hello 成功 → 业务帧分派到 handler（Event 原样到达）。
+/// 用例 1：Hello 成功 → `on_joined` 回调 + 业务帧分派到 handler。
 #[tokio::test]
 async fn hello_ok_then_business_frames_dispatched() {
     let addr = mock_server(|stream| async move {
@@ -114,7 +128,8 @@ async fn hello_ok_then_business_frames_dispatched() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cfg = ClientSessionConfig::new(addr, join_hello("alice"));
-    let task = tokio::spawn(run_client_session(cfg, CollectHandler { tx }));
+    let handler = CollectHandler::new(tx);
+    let task = tokio::spawn(run_client_session(cfg, handler));
 
     let frame = tokio::time::timeout(STEP_TIMEOUT, rx.recv())
         .await
@@ -129,6 +144,59 @@ async fn hello_ok_then_business_frames_dispatched() {
     }
 
     task.abort();
+}
+
+/// 用例 1b：`on_joined` 在业务帧之前回调，且携带服务端分配的 session_id。
+#[tokio::test]
+async fn on_joined_receives_session_id_before_frames() {
+    let addr = mock_server(|stream| async move {
+        let (mut reader, mut writer) = stream.into_split();
+        let _ = read_frame(&mut reader).await.unwrap();
+        writer
+            .write_all(&encode_frame(&Frame::HelloReply(HelloReply::Ok {
+                session_id: "sid-joined".into(),
+            })))
+            .await
+            .unwrap();
+        // 等 ManifestReq 后发一帧，确保会话进入主循环
+        let _ = read_frame(&mut reader).await;
+        writer
+            .write_all(&encode_frame(&Frame::Event(sample_event("加入后"))))
+            .await
+            .unwrap();
+        let _ = read_frame(&mut reader).await;
+    })
+    .await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let handler = std::sync::Arc::new(CollectHandler::new(tx));
+    let h = handler.clone();
+    let cfg = ClientSessionConfig::new(addr, join_hello("alice2"));
+    let task = tokio::spawn(run_client_session(cfg, ArcHandler(h)));
+    // 等业务帧（证明 joined 已在此前发生）
+    let _ = tokio::time::timeout(STEP_TIMEOUT, rx.recv())
+        .await
+        .expect("等待业务帧超时");
+    let joined = handler.joined.lock().unwrap().clone();
+    assert_eq!(
+        joined,
+        vec!["sid-joined".to_string()],
+        "on_joined 应收到 session_id"
+    );
+    task.abort();
+}
+
+/// Arc 包装以便测试在会话结束后仍能读取 handler 内部记录。
+struct ArcHandler(std::sync::Arc<CollectHandler>);
+
+#[async_trait]
+impl ClientHandler for ArcHandler {
+    async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
+        self.0.on_frame(frame).await
+    }
+    async fn on_joined(&self, session_id: &str) {
+        self.0.on_joined(session_id).await
+    }
 }
 
 /// 用例 2：join 被拒 → `SessionEnd::Rejected(code)`（致命，不重连）。
@@ -151,7 +219,7 @@ async fn rejected_hello_returns_rejected() {
         STEP_TIMEOUT,
         run_client_session(
             ClientSessionConfig::new(addr, join_hello("bob")),
-            CollectHandler { tx },
+            CollectHandler::new(tx),
         ),
     )
     .await
@@ -189,7 +257,7 @@ async fn heartbeat_sends_periodic_ping() {
     let mut cfg = ClientSessionConfig::new(addr, join_hello("carol"));
     cfg.heartbeat = Duration::from_millis(120);
     cfg.request_manifest = false;
-    let task = tokio::spawn(run_client_session(cfg, CollectHandler { tx }));
+    let task = tokio::spawn(run_client_session(cfg, CollectHandler::new(tx)));
 
     tokio::time::timeout(STEP_TIMEOUT, ping_rx.recv())
         .await
@@ -234,7 +302,7 @@ async fn auto_responds_pong_to_server_ping() {
     let mut cfg = ClientSessionConfig::new(addr, join_hello("dave"));
     cfg.heartbeat = Duration::from_secs(30); // 避免心跳干扰断言
     cfg.request_manifest = false;
-    let task = tokio::spawn(run_client_session(cfg, CollectHandler { tx }));
+    let task = tokio::spawn(run_client_session(cfg, CollectHandler::new(tx)));
 
     for i in 1..=2 {
         tokio::time::timeout(STEP_TIMEOUT, pong_rx.recv())
@@ -266,10 +334,13 @@ async fn peer_close_returns_closed() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut cfg = ClientSessionConfig::new(addr, join_hello("erin"));
     cfg.heartbeat = Duration::from_secs(30);
-    let end = tokio::time::timeout(STEP_TIMEOUT, run_client_session(cfg, CollectHandler { tx }))
-        .await
-        .expect("会话超时")
-        .expect("对端关闭应返回 Ok(Closed)");
+    let end = tokio::time::timeout(
+        STEP_TIMEOUT,
+        run_client_session(cfg, CollectHandler::new(tx)),
+    )
+    .await
+    .expect("会话超时")
+    .expect("对端关闭应返回 Ok(Closed)");
     assert_eq!(end, SessionEnd::Closed);
 }
 
@@ -302,7 +373,7 @@ async fn request_manifest_flag_controls_manifest_req() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut cfg = ClientSessionConfig::new(addr, join_hello("frank"));
     cfg.heartbeat = Duration::from_secs(30);
-    let task = tokio::spawn(run_client_session(cfg, CollectHandler { tx }));
+    let task = tokio::spawn(run_client_session(cfg, CollectHandler::new(tx)));
     let got = tokio::time::timeout(STEP_TIMEOUT, seen_rx.recv())
         .await
         .expect("等待清单请求超时")
