@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use classroom_protocol::{
     Audience, Event, EventKind, ItemKind, MergeDecision, NameReject, Role, ShareItem, SyncState,
+    MAX_FILE_SIZE,
 };
 use classroom_store::{
     is_reserved_device_name, sha256_file, ListFilter, PutOutcome, Store, StoreError,
@@ -306,6 +307,70 @@ fn risky_extension_rejected() {
         .expect_err("risky ext must be rejected");
     assert!(matches!(err, StoreError::RiskyExt(_)));
     assert!(!root.join("repo/alice/virus.exe").exists());
+}
+
+// ---------- E10（P0，PRD 5.3/9.4/EX-04）：100 MB 单文件上限 ----------
+
+/// 用稀疏文件构造指定长度的临时文件（不真写 100MB+ 内容）。
+fn sparse_tmp(dir: &Path, name: &str, len: u64) -> PathBuf {
+    let p = dir.join(name);
+    let f = fs::File::create(&p).unwrap();
+    f.set_len(len).unwrap();
+    p
+}
+
+#[test]
+fn file_over_limit_rejected_before_copy() {
+    let (_guard, root) = root("too-large");
+    let store = Store::open(&root).unwrap();
+    let tmp = sparse_tmp(root.parent().unwrap(), "big.bin", MAX_FILE_SIZE + 1);
+
+    let err = store
+        .put_file_from_tmp(
+            "alice",
+            Role::Student,
+            Audience::Teacher,
+            "big.bin",
+            &tmp,
+            "deadbeef", // 不应走到哈希校验：大小检查在 copy/hash 之前
+            100,
+        )
+        .expect_err("> 100MB 必须拒绝");
+    match err {
+        StoreError::FileTooLarge(size) => assert_eq!(size, MAX_FILE_SIZE + 1),
+        other => panic!("期望 FileTooLarge，实际 {other:?}"),
+    }
+    // EX-04：拒绝不产生任何落盘残留（含 .part）
+    assert!(dir_entries(&root.join("repo/alice")).is_empty());
+    // 索引无条目
+    assert!(store.list(ListFilter::default()).unwrap().is_empty());
+}
+
+#[test]
+fn file_at_exact_limit_passes() {
+    let (_guard, root) = root("at-limit");
+    let store = Store::open(&root).unwrap();
+    let tmp = sparse_tmp(root.parent().unwrap(), "limit.bin", MAX_FILE_SIZE);
+    let h = sha256_file(&tmp).unwrap(); // 稀疏全零 100MB 的真实哈希
+
+    let out = store
+        .put_file_from_tmp(
+            "alice",
+            Role::Student,
+            Audience::Teacher,
+            "limit.bin",
+            &tmp,
+            &h,
+            100,
+        )
+        .expect("恰好 100MB 应通过（边界不拒绝）");
+    match out {
+        PutOutcome::Created(item) => {
+            assert_eq!(item.size, MAX_FILE_SIZE);
+            assert_eq!(item.sha256.as_deref(), Some(h.as_str()));
+        }
+        other => panic!("期望 Created，实际 {other:?}"),
+    }
 }
 
 // ---------- Windows 保留设备名（lead 安全补充项） ----------

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use classroom_host::{HostCommand, HostConfig, HostEvent};
 use classroom_net::{encode_frame, read_frame, FileHeader, Frame, Hello, HelloErr, HelloReply};
-use classroom_protocol::{ItemKind, Role, PROTOCOL_VERSION};
+use classroom_protocol::{ItemKind, Role, MAX_FILE_SIZE, PROTOCOL_VERSION};
 use classroom_store::{ListFilter, Store};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -505,4 +505,83 @@ async fn dead_connection_evicted_and_nickname_reusable() {
     // 第二个 alice：探测 3s 无 Pong → 驱逐旧的 → 接受新 join
     let replacement = MiniAgent::join(port, "alice", None).await;
     assert!(replacement.is_ok(), "僵死连接应被驱逐、昵称可重新加入");
+}
+
+// ---------- E10（P0，PRD 5.3/9.4/EX-04）：100 MB 上限端到端 ----------
+
+/// >100MB 文件经 host 发送链路快速失败：不推送任何帧、不入库；
+/// 且拒绝后正常小文件仍可发送（EX-04 后半句）。稀疏文件构造，不真写 100MB。
+#[tokio::test]
+async fn oversized_file_rejected_and_small_file_still_sends() {
+    let host = start_host(None).await;
+    let port = host.port;
+    let mut a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    let src = tempfile::tempdir().unwrap();
+    let big = src.path().join("big.bin");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(MAX_FILE_SIZE + 1).unwrap();
+    drop(f);
+
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![big] })
+        .await
+        .unwrap();
+    // 超限必须在「读内存/入库/广播」之前被拒：学员侧 300ms 内无任何帧
+    let no_frame = tokio::time::timeout(Duration::from_millis(300), a.next()).await;
+    assert!(no_frame.is_err(), "超限文件不应推送任何帧");
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(
+        store.list(ListFilter::default()).unwrap().is_empty(),
+        "超限文件不得入库"
+    );
+
+    // EX-04 后半句：拒绝后链路仍正常
+    let small = src.path().join("small.txt");
+    std::fs::write(&small, b"ok").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![small] })
+        .await
+        .unwrap();
+    let item = match a.next().await {
+        Frame::Event(ev) => ev.item,
+        other => panic!("expected Event, got {other:?}"),
+    };
+    assert_eq!(item.title, "small.txt");
+    assert_eq!(item.size, 2);
+}
+
+/// .exe 端到端拒绝：确认 is_risky_ext 在 host → store put 路径生效（EX-05），
+/// 且拒绝后正常文件仍可发送。
+#[tokio::test]
+async fn executable_rejected_end_to_end() {
+    let host = start_host(None).await;
+    let port = host.port;
+    let mut a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    let src = tempfile::tempdir().unwrap();
+    let exe = src.path().join("virus.exe");
+    std::fs::write(&exe, b"MZ").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![exe] })
+        .await
+        .unwrap();
+    let no_frame = tokio::time::timeout(Duration::from_millis(300), a.next()).await;
+    assert!(no_frame.is_err(), "高风险类型不应推送任何帧");
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(store.list(ListFilter::default()).unwrap().is_empty());
+
+    let ok_file = src.path().join("课件.pdf");
+    std::fs::write(&ok_file, b"%PDF-1.7").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles {
+            paths: vec![ok_file],
+        })
+        .await
+        .unwrap();
+    let item = match a.next().await {
+        Frame::Event(ev) => ev.item,
+        other => panic!("expected Event, got {other:?}"),
+    };
+    assert_eq!(item.title, "课件.pdf");
 }
