@@ -46,6 +46,7 @@ fn remote_upsert(tag: &str, title: &str, version: u64) -> Event {
             version,
             deleted: false,
             sync_state: SyncState::Synced,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
@@ -688,4 +689,276 @@ fn remove_item_bodies_keeps_tombstone_row() {
     );
     // 重复调用幂等
     store.remove_item_bodies(&item).unwrap();
+}
+
+// ---------- M2 #103：占用退避重试队列（PRD 5.7 / EX-06）----------
+
+/// 以**独占**句柄持有文件（Windows `share_mode(0)`）→ 对目标的 rename 会
+/// 报 `ERROR_SHARING_VIOLATION`，用于模拟「被其他程序占用」。
+#[cfg(windows)]
+fn hold_file(path: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .expect("独占占用句柄")
+}
+
+#[cfg(not(windows))]
+fn hold_file(path: &Path) -> std::fs::File {
+    std::fs::File::open(path).expect("占用句柄")
+}
+
+/// 造 v1 → 占用目标 → 同名覆盖进入重试队列的公共前缀。
+fn busy_overwrite(
+    store: &Store,
+    root: &Path,
+) -> (ShareItem, ShareItem, std::fs::File, std::path::PathBuf) {
+    let tmp1 = write_tmp(root.parent().unwrap(), "a.txt", b"v1");
+    let h1 = sha256_file(&tmp1).unwrap();
+    let item1 = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp1,
+            &h1,
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let final_path = store.file_body(&item1).unwrap();
+    let hold = hold_file(&final_path);
+    let tmp2 = write_tmp(root.parent().unwrap(), "a2.txt", b"v2");
+    let h2 = sha256_file(&tmp2).unwrap();
+    let out = store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp2,
+            &h2,
+            200,
+        )
+        .unwrap();
+    let item2 = match out {
+        PutOutcome::RetryQueued { item, backed_up } => {
+            // 目标被独占时 rename(final→.bak) 同样失败（Windows 语义）：
+            // backed_up=false 是真实场景，会留下「备份失败」告警；
+            // 此处不强制断言（备份失败不影响入队与重试）。
+            let _ = backed_up;
+            item
+        }
+        other => panic!("期望 RetryQueued，实际 {other:?}"),
+    };
+    (item1, item2, hold, final_path)
+}
+
+/// #103 用例 1：目标被占用 → 条目 `RetryLocked` 入队（不报错、内容持久、
+/// 列表带出重试状态）。
+#[test]
+fn busy_target_enqueues_retry_and_marks_retry_locked() {
+    let (_guard, root) = root("retry-busy");
+    let store = Store::open(&root).unwrap();
+    let (item1, item2, hold, final_path) = busy_overwrite(&store, &root);
+
+    assert_eq!(item2.sync_state, SyncState::RetryLocked);
+    assert_eq!(item2.retry_count, 0);
+    assert_eq!(item2.version, item1.version + 1, "覆盖语义保持 version+1");
+    assert_eq!(item2.id, item1.id);
+
+    // 队列：1 项，内容持久在 data_root/retry/（不放 %TEMP%）
+    let queue = store.retry_snapshot();
+    assert_eq!(queue.len(), 1, "同一条目不重复入队");
+    assert_eq!(queue[0].item_id, item2.id);
+    assert_eq!(queue[0].attempts, 0);
+    assert!(
+        root.join(&queue[0].rel_part).exists(),
+        "待安装内容应持久化到 data_root/retry/"
+    );
+    // 列表带出重试状态（GUI 可显示「被占用重试 第 0/5 次」）
+    let listed = store.list(ListFilter::default()).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].sync_state, SyncState::RetryLocked);
+    assert_eq!(listed[0].retry_count, 0);
+    // 释放占用后确认：目标实体仍是 v1（新版本未安装）
+    drop(hold);
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"v1");
+}
+
+/// #103 用例 2：释放占用后重试 → 成功：内容最新、`.bak` 恰 1 份、
+/// `Synced`、计数归零、队列清空。
+#[test]
+fn retry_succeeds_after_release() {
+    let (_guard, root) = root("retry-success");
+    let store = Store::open(&root).unwrap();
+    let (item1, item2, hold, final_path) = busy_overwrite(&store, &root);
+    drop(hold); // 其他程序关闭占用
+
+    let outcome = store.retry_attempt(&item2.id, 300, 0).unwrap();
+    assert_eq!(
+        outcome,
+        classroom_store::RetryOutcome::Succeeded {
+            item_id: item2.id.clone()
+        }
+    );
+    let after = store.get(&item2.id).unwrap().expect("条目存在");
+    assert_eq!(after.sync_state, SyncState::Synced, "成功后转 Synced");
+    assert_eq!(after.retry_count, 0, "成功后计数归零");
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"v2", "内容为最新版");
+    assert!(store.retry_snapshot().is_empty(), "队列已清空");
+    // `.bak` 恰 1 份且为旧版
+    let mut bak_os = final_path.as_os_str().to_os_string();
+    bak_os.push(".bak");
+    let bak = std::path::PathBuf::from(bak_os);
+    assert!(bak.exists(), ".bak 存在");
+    assert_eq!(std::fs::read(&bak).unwrap(), b"v1");
+    assert!(
+        !std::fs::read_dir(final_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+            .nth(1)
+            .is_some(),
+        "只保留 1 份 .bak"
+    );
+    let _ = item1;
+}
+
+/// #103 用例 3：始终占用 → 退避重试 **≤5 次** → 耗尽转 `Failed` +
+/// `retry_count` 显示上限；队列清空（不无限重试）。
+#[test]
+fn retry_exhausts_after_five_attempts() {
+    let (_guard, root) = root("retry-exhaust");
+    let store = Store::open(&root).unwrap();
+    let (_item1, item2, hold, _final_path) = busy_overwrite(&store, &root);
+
+    // 前 4 次：仍占用 → StillBusy（attempts 1..4）
+    for i in 1..=4u32 {
+        let outcome = store.retry_attempt(&item2.id, 300 + i as i64, 0).unwrap();
+        match outcome {
+            classroom_store::RetryOutcome::StillBusy { attempts, .. } => {
+                assert_eq!(attempts, i, "第 {i} 次重试计数递增")
+            }
+            other => panic!("第 {i} 次期望 StillBusy，实际 {other:?}"),
+        }
+        let listed = store.get(&item2.id).unwrap().unwrap();
+        assert_eq!(listed.retry_count, i, "列表带出第 {i} 次");
+    }
+    // 第 5 次：耗尽
+    let outcome = store.retry_attempt(&item2.id, 400, 0).unwrap();
+    assert_eq!(
+        outcome,
+        classroom_store::RetryOutcome::Exhausted {
+            item_id: item2.id.clone()
+        }
+    );
+    let after = store.get(&item2.id).unwrap().expect("条目保留（Failed）");
+    assert_eq!(after.sync_state, SyncState::Failed);
+    assert_eq!(
+        after.retry_count,
+        classroom_store::RETRY_MAX_ATTEMPTS,
+        "耗尽后 retry_count 保持上限供 GUI 显示「已用尽」"
+    );
+    assert!(store.retry_snapshot().is_empty(), "耗尽后移出队列");
+    // 再调用不 panic（队列已无此项 → Aborted）
+    let again = store.retry_attempt(&item2.id, 500, 0).unwrap();
+    assert!(matches!(
+        again,
+        classroom_store::RetryOutcome::Aborted { .. }
+    ));
+    drop(hold);
+}
+
+/// #103 用例 4：队列**重启持久化**——重开 store 后队列仍在（计数/内容）。
+#[test]
+fn retry_queue_persists_across_reopen() {
+    let (_guard, root) = root("retry-persist");
+    let (item2, rel_part) = {
+        let store = Store::open(&root).unwrap();
+        let (_item1, item2, hold, _final) = busy_overwrite(&store, &root);
+        // 推进一次重试（仍占用）以验证 attempts 也持久化
+        let _ = store.retry_attempt(&item2.id, 300, 0).unwrap();
+        let rel = store.retry_snapshot()[0].rel_part.clone();
+        drop(hold);
+        (item2, rel)
+    };
+    // 重开（模拟服务重启）
+    let store = Store::open(&root).unwrap();
+    let queue = store.retry_snapshot();
+    assert_eq!(queue.len(), 1, "重启后队列仍在");
+    assert_eq!(queue[0].item_id, item2.id);
+    assert_eq!(queue[0].attempts, 1, "重试计数持久化");
+    assert!(root.join(&rel_part).exists(), "待安装内容仍在");
+    // 列表仍带出 RetryLocked + 计数
+    let listed = store.get(&item2.id).unwrap().unwrap();
+    assert_eq!(listed.sync_state, SyncState::RetryLocked);
+    assert_eq!(listed.retry_count, 1);
+}
+
+/// #103 用例 5：**备份失败告警**——`.bak` 写入失败时不回滚新版本，
+/// 但产生 `StoreWarning::BackupFailed`（供 svc 转 `SvcNotify::Warning`）。
+#[test]
+fn backup_failure_reports_warning_without_rollback() {
+    let (_guard, root) = root("backup-fail");
+    let store = Store::open(&root).unwrap();
+    let tmp1 = write_tmp(root.parent().unwrap(), "a.txt", b"v1");
+    let h1 = sha256_file(&tmp1).unwrap();
+    let item1 = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp1,
+            &h1,
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let final_path = store.file_body(&item1).unwrap();
+    // 让 `.bak` 无法写入：在同名路径建**目录**
+    let mut bak_os = final_path.as_os_str().to_os_string();
+    bak_os.push(".bak");
+    let bak = std::path::PathBuf::from(bak_os);
+    std::fs::create_dir_all(&bak).unwrap();
+
+    let tmp2 = write_tmp(root.parent().unwrap(), "a2.txt", b"v2");
+    let h2 = sha256_file(&tmp2).unwrap();
+    let out = store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp2,
+            &h2,
+            200,
+        )
+        .unwrap();
+    assert!(
+        matches!(out, PutOutcome::Overwritten { .. }),
+        "备份失败不阻止新版本覆盖（PRD 5.7 不回滚），实际 {out:?}"
+    );
+    // 新版本已落盘
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"v2");
+    // 告警已记录（一次性取走）
+    let warnings = store.take_warnings();
+    assert!(
+        warnings.iter().any(|w| matches!(
+            w,
+            classroom_store::StoreWarning::BackupFailed { title, .. } if title == "a.txt"
+        )),
+        "应记录备份失败告警: {warnings:?}"
+    );
+    assert!(store.take_warnings().is_empty(), "告警取走后清空");
 }

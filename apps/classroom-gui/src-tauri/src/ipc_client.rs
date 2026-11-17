@@ -478,6 +478,7 @@ mod tests {
             version: 1,
             deleted: false,
             sync_state: classroom_protocol::SyncState::Synced,
+            retry_count: 0,
         }
     }
 

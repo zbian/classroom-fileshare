@@ -28,6 +28,7 @@ fn sample_item(title: &str) -> ShareItem {
         version: 1,
         deleted: false,
         sync_state: SyncState::Synced,
+        retry_count: 0,
     }
 }
 

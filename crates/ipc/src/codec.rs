@@ -73,6 +73,8 @@ pub(crate) fn handshake_msg(token: &str) -> IpcMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // M2 #103：Warning 契约用例使用
+    use crate::WarningKind;
     use crate::{GuiReply, ItemUpdatedPayload, ServiceState, StatusSnapshot};
     use classroom_net::Beacon;
     use classroom_protocol::{Audience, ItemKind, Role, ShareItem, SyncState};
@@ -93,6 +95,7 @@ mod tests {
             version: 1,
             deleted: false,
             sync_state: SyncState::Synced,
+            retry_count: 0,
         }
     }
 
@@ -169,6 +172,12 @@ mod tests {
                 pin_required: true,
                 host_name: "PC".into(),
             }])),
+            // M2 #103：同步异常告警契约（GUI SyncIssuesBanner 接入）
+            IpcMessage::Notify(SvcNotify::Warning {
+                kind: WarningKind::RetryExhausted,
+                item_id: "item-1".into(),
+                detail: "目标文件被占用，重试 5 次仍未成功".into(),
+            }),
         ];
         for m in msgs {
             let bytes = encode(&m).unwrap();

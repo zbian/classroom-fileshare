@@ -105,6 +105,8 @@ pub async fn run_core(
                 pin: cfg.pin.clone(),
                 data_root: data_root.to_path_buf(),
                 tcp_port: cfg.tcp_port,
+                // M2 #103：占用重试初始退避（秒）；生产默认 1s，按 2^n 递增
+                retry_initial_backoff_secs: 1,
             };
             tokio::spawn(async move {
                 if let Err(e) = run_host(host_cfg, cmd_rx, ev_tx).await {
@@ -408,6 +410,26 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
         CoreEvent::Host(HostEvent::StudentLeft(n)) => {
             vec![SvcNotify::StatusChanged(format!("学员离线：{n}"))]
         }
+        // M2 #103：同步异常告警（重试耗尽 / 备份失败）→ GUI SyncIssuesBanner
+        CoreEvent::Host(HostEvent::Warning {
+            kind,
+            item_id,
+            detail,
+        }) => {
+            let kind = match kind {
+                classroom_host::HostWarningKind::BackupFailed => {
+                    classroom_ipc::WarningKind::BackupFailed
+                }
+                classroom_host::HostWarningKind::RetryExhausted => {
+                    classroom_ipc::WarningKind::RetryExhausted
+                }
+            };
+            vec![SvcNotify::Warning {
+                kind,
+                item_id: item_id.clone(),
+                detail: detail.clone(),
+            }]
+        }
         CoreEvent::Agent(AgentEvent::Removed(id)) => vec![SvcNotify::ItemRemoved(id.clone())],
         CoreEvent::Agent(AgentEvent::Discovered(beacons)) => {
             vec![SvcNotify::Discovered(beacons.clone())]
@@ -464,6 +486,7 @@ mod tests {
             version,
             deleted: false,
             sync_state: SyncState::Synced,
+            retry_count: 0,
         }
     }
 
@@ -638,6 +661,7 @@ mod tests {
                 version: 1,
                 deleted,
                 sync_state: SyncState::Synced,
+                retry_count: 0,
             }
         }
         let items = vec![
