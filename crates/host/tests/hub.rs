@@ -1662,6 +1662,17 @@ async fn offline_submissions_resend_after_reconnect() {
         _ => None,
     })
     .await;
+    // E15（#123）：发送成功仅登记「待确认」，下一轮泵 tick 才出队——此处等
+    // 在线条目确认出队后再断网，避免其残留在队列影响「离线 2 条」断言。
+    let clear_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !classroom_agent::pending::load(dir.path()).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < clear_deadline,
+            "在线发送后队列未确认出队: {:?}",
+            classroom_agent::pending::load(dir.path())
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // 断网：教师机停机（agent 进入重连循环，上行不可用）；等端口完全释放
     host.cmd.send(HostCommand::Shutdown).await.unwrap();
@@ -1748,9 +1759,16 @@ async fn offline_submissions_resend_after_reconnect() {
     titles.dedup();
     assert_eq!(titles.len(), 3, "在线 1 条 + 离线 2 条，无重复条目");
 
-    // 补发成功 → 待发队列清空（内容文件也清理）
-    let ops = classroom_agent::pending::load(dir.path());
-    assert!(ops.is_empty(), "补发成功后队列清空，实际: {ops:?}");
+    // 补发成功 → 待发队列清空（内容文件也清理；E15 延迟确认 → 轮询 ≤5s）
+    let clear_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !classroom_agent::pending::load(dir.path()).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < clear_deadline,
+            "补发成功后队列应清空（E15 延迟确认）: {:?}",
+            classroom_agent::pending::load(dir.path())
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     task.abort();
 }
 
@@ -1815,10 +1833,158 @@ async fn pending_queue_survives_agent_restart() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(
-        classroom_agent::pending::load(dir2.path()).is_empty(),
-        "补发成功后队列清空"
-    );
+    let clear_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !classroom_agent::pending::load(dir2.path()).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < clear_deadline,
+            "补发成功后队列应清空（E15 延迟确认）: {:?}",
+            classroom_agent::pending::load(dir2.path())
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     task2.abort();
     let _ = &mut host2;
+}
+// ---------- E15（#123）：待发队列不得在会话未就绪时误确认出队 ----------
+
+/// 启动真实 agent 但**不等待 Synced**（教师机离线场景：agent 会持续重连）。
+async fn start_real_agent_no_wait(
+    port: u16,
+    nickname: &str,
+    dir: tempfile::TempDir,
+) -> (
+    mpsc::Sender<classroom_agent::AgentCommand>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<classroom_agent::AgentCommand>(8);
+    let (ev_tx, _ev_rx) = mpsc::channel(64);
+    let cfg = classroom_agent::AgentConfig {
+        nickname: nickname.into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
+        data_root: dir.path().to_path_buf(),
+    };
+    let task = tokio::spawn(classroom_agent::run_agent_with_commands(cfg, ev_tx, cmd_rx));
+    (cmd_tx, task, dir)
+}
+
+/// E15 用例 1（qa Trace1 时序）：**教师机不在线**时提交 → 队列必须保留
+/// （不得因「帧写入通道」被误判成功而出队）→ 教师上线 ≤10s 全部送达。
+#[tokio::test]
+async fn offline_submission_not_lost_when_teacher_offline() {
+    let port = free_port();
+    let host_root = tempfile::tempdir().unwrap();
+    let host_data = host_root.path().to_path_buf();
+    // 教师机尚未上线
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_no_wait(port, "alice", dir).await;
+
+    for (title, body) in [("离线A", "a"), ("离线B", "b")] {
+        cmd_tx
+            .send(classroom_agent::AgentCommand::SendText {
+                title: title.into(),
+                body: body.into(),
+            })
+            .await
+            .expect("投递");
+    }
+    // 等落盘 2 条
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if classroom_agent::pending::load(dir.path()).len() == 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "断网提交应落盘到待发队列"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // 关键断言（E15）：教师不在线 2.5s 后队列仍然完整（未被误确认出队）
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        classroom_agent::pending::load(dir.path()).len(),
+        2,
+        "E15：教师机不在线时不得标记成功/出队（数据丢失）"
+    );
+
+    // 教师上线 → ≤10s 全部送达且队列清空
+    let mut _host = start_host_on(port, None, host_data.clone()).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let store = Store::open(&host_data).unwrap();
+        let all = store.list(ListFilter::default()).unwrap();
+        if all.iter().filter(|i| i.title.starts_with("离线")).count() >= 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "教师上线后 10s 内应送达全部离线提交"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !classroom_agent::pending::load(dir.path()).is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "送达后队列应清空");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
+}
+
+/// E15 用例 2（qa Trace2 时序）：会话**断开瞬间**提交 → 队列保留 + 退避
+/// （不得丢件）→ 教师恢复后送达。
+#[tokio::test]
+async fn submission_during_disconnect_is_kept_and_resent() {
+    let port = free_port();
+    let host_root = tempfile::tempdir().unwrap();
+    let host_data = host_root.path().to_path_buf();
+    let host = start_host_on(port, None, host_data.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+
+    // 停教师（会话即将断开），**立即**提交（不等 Disconnected → 覆盖 Trace2）
+    host.cmd.send(HostCommand::Shutdown).await.unwrap();
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "断开瞬间".into(),
+            body: "x".into(),
+        })
+        .await
+        .expect("投递");
+
+    // 2 秒后：无论是否发送过，队列必须仍在（未被误确认）
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    assert_eq!(
+        classroom_agent::pending::load(dir.path()).len(),
+        1,
+        "E15：断开瞬间提交不得丢件（队列应保留）"
+    );
+
+    // 教师恢复 → ≤10s 送达
+    let mut _host2 = start_host_on(port, None, host_data.clone()).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let store = Store::open(&host_data).unwrap();
+        if store
+            .list(ListFilter::default())
+            .unwrap()
+            .iter()
+            .any(|i| i.title == "断开瞬间")
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "教师恢复后 10s 内应送达"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !classroom_agent::pending::load(dir.path()).is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "送达后队列应清空");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
 }
