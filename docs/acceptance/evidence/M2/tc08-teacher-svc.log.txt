@@ -1,0 +1,77 @@
+2026-11-17T15:41:40.258113Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc08\teacher\ClassShare\data
+2026-11-17T15:41:40.274741Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc08\teacher\ClassShare\data\ipc.token user_sid=None
+2026-11-17T15:41:40.276916Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T15:41:40.310722Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc08\teacher\ClassShare\data
+2026-11-17T15:41:40.310769Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T15:41:40.316242Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T15:41:44.084116Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:41:44.456563Z  INFO 学员加入 nickname=dev01 session_id=3b90f926-2499-424f-a1aa-011cee3cf77a
+2026-11-17T15:41:44.509781Z  INFO 学员加入 nickname=dev02 session_id=f764b339-c42a-4766-af60-d797f5a02a13
+2026-11-17T15:41:44.537560Z  INFO 学员加入 nickname=dev03 session_id=9998e1ba-c39e-4dcf-b2d5-ec6ca97b85ad
+2026-11-17T15:41:44.542378Z  INFO 学员加入 nickname=dev04 session_id=9388b5c3-67ae-4e34-bea1-cf246eb274a2
+2026-11-17T15:41:44.548378Z  INFO 学员加入 nickname=dev06 session_id=a0fdd9ad-f66f-4dd9-a8cb-6f7a6e8d6942
+2026-11-17T15:41:44.551392Z  INFO 学员加入 nickname=dev05 session_id=c1a31c89-274e-4e73-a882-c3f475c1b3f5
+2026-11-17T15:41:44.565498Z  INFO 学员加入 nickname=dev08 session_id=709af798-fed0-4641-a144-8dc25921e8bd
+2026-11-17T15:41:44.570488Z  INFO 学员加入 nickname=dev07 session_id=c635b7dd-8d00-4e87-9408-d496c4d7f114
+2026-11-17T15:41:49.088131Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:41:54.096382Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:41:54.556563Z  INFO broadcast item_id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 file=删除测试.bin size=1048576 audience="all"
+2026-11-17T15:41:59.103242Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:04.106440Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:09.115035Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:14.124424Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:19.132091Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:20.237933Z  INFO 学员离线 nickname=dev07
+2026-11-17T15:42:20.247802Z  INFO 学员离线 nickname=dev08
+2026-11-17T15:42:24.265144Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:42:29.272690Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:43:11.247050Z  INFO broadcast item_id=a0ce0627-0dd0-41ec-bfea-f95083db2ea2 file=删除测试2.bin size=1048576 audience="all"
+2026-11-17T15:43:21.409530Z  INFO 学员加入 nickname=dev07 session_id=68954a08-5163-4db9-bcea-d5aa887db1ad
+2026-11-17T15:43:21.429141Z  INFO 学员补删确认（Ack） item_id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 nickname=dev07
+2026-11-17T15:43:55.108692Z  INFO broadcast item_id=ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b file=删除测试3.bin size=1048576 audience="all"
+2026-11-17T15:46:45.105903Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:46:46.114831Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:46:48.120850Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:46:53.133022Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:46:58.187618Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:03.196291Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:08.204874Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:13.214619Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:18.219601Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:23.229083Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:28.237671Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:33.247956Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:38.256447Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:43.263483Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:48.269169Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:53.276879Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:47:58.286747Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:03.297275Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:08.307048Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:13.323159Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:18.328589Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:23.338841Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:28.345885Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:33.354665Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:38.364858Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:43.374937Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:48.381923Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:53.388348Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:48:58.395660Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:03.404833Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:08.413343Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:13.444414Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:18.483670Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:23.493638Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:28.503687Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:33.514397Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:38.523979Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:40.290599Z  INFO 删除未生效（条目不存在或已删除） item_id=ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b error=条目不存在: ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b
+2026-11-17T15:49:40.705020Z  INFO 删除未生效（条目不存在或已删除） item_id=ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b error=条目不存在: ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b
+2026-11-17T15:49:41.146314Z  INFO 删除未生效（条目不存在或已删除） item_id=ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b error=条目不存在: ff8a8a34-8af8-43e8-a7d6-b536cd9ca31b
+2026-11-17T15:49:43.271749Z  INFO 学员加入 nickname=dev08 session_id=89d2fedf-d49a-4ac3-91fd-2efbfa4d72e8
+2026-11-17T15:49:43.298811Z  INFO 学员补删确认（Ack） item_id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 nickname=dev08
+2026-11-17T15:49:43.533814Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:48.547225Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:53.592038Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T15:49:58.610549Z  WARN IPC 握手被拒：令牌错误
