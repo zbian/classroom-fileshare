@@ -1,0 +1,8 @@
+2026-11-17T14:00:23.142764Z  INFO 前台降级模式启动（--console） mode=Student data_root=C:\Users\Bian\AppData\Local\Temp\e12e2e\stu\ClassShare\data
+2026-11-17T14:00:23.155322Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=C:\Users\Bian\AppData\Local\Temp\e12e2e\stu\ClassShare\data\ipc.token user_sid=None
+2026-11-17T14:00:23.155388Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T14:00:23.189701Z  INFO 服务核心就绪 mode=Student data_root=C:\Users\Bian\AppData\Local\Temp\e12e2e\stu\ClassShare\data
+2026-11-17T14:00:23.189761Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T14:00:23.196667Z  INFO 已加入 addr=127.0.0.1:47821
+2026-11-17T14:00:34.329319Z  INFO received item_id=d0f24790-a908-453d-9af5-877edf13f9e0 file=E12 冒烟通知 size=12 from=teacher
+2026-11-17T14:00:34.337962Z  INFO applied item_id=d0f24790-a908-453d-9af5-877edf13f9e0 version=1

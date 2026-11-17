@@ -52,6 +52,36 @@ function Write-SvcConfig([string]$Dir, [hashtable]$Config) {
     [IO.File]::WriteAllText((Join-Path $Dir 'svc.json'), $json, [Text.UTF8Encoding]::new($false))
 }
 
+# E12 ①：GUI 角色必须与安装模式一致。
+# 学员机 GUI 若按默认（teacher）去连 `classshare-svc-teacher`，而学员 svc 监听
+# `-student` → 必然连不上（qa 实测：状态「服务未运行」、列表空、无 tips）。
+# 双保险：① HKCU Run 值携带 --role=<mode>（每次登录自启即生效）
+#         ② 写 %APPDATA%\ClassShare\gui.json 的 role（手动启动 GUI 也正确）
+# 保留既有字段（图标位置/暂停开关/昵称完成标记），仅覆盖 role。
+function Write-GuiRole([string]$Role) {
+    $dir = Join-Path $env:APPDATA 'ClassShare'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $path = Join-Path $dir 'gui.json'
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $existing = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            $existing | Add-Member -NotePropertyName role -NotePropertyValue $Role -Force
+            $json = $existing | ConvertTo-Json -Depth 8
+        }
+        catch {
+            Write-Warning "gui.json 解析失败，重建（原文件备份为 gui.json.bak）：$($_.Exception.Message)"
+            Copy-Item -LiteralPath $path -Destination ($path + '.bak') -Force
+            $json = '{ "version": 1, "role": "' + $Role + '" }'
+        }
+    }
+    else {
+        $json = '{ "version": 1, "role": "' + $Role + '" }'
+    }
+    # 无 BOM UTF-8：GUI 侧 serde_json 不接受 BOM（与 svc.json 同源经验）
+    [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+    Write-Host "GUI 角色:   $path（role=$Role）"
+}
+
 $svcExe = Resolve-Binary $SvcExe 'classroom-svc.exe'
 $guiExe = if ($GuiExe) { (Resolve-Path -LiteralPath $GuiExe).Path } else { $null }
 
@@ -148,13 +178,17 @@ if ($isAdmin) {
 }
 
 # GUI 登录自启（写入执行安装的用户的 HKCU；机房多用户场景需逐用户或镜像配置）
+# E12 ①：Run 值必须带 --role=<mode>，否则学员机 GUI 首连用默认 teacher 管道。
 if ($guiExe) {
     reg.exe add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v ClassShareGUI `
-        /t REG_SZ /d "`"$guiExe`"" /f | Out-Null
+        /t REG_SZ /d "`"$guiExe`" --role=$Mode" /f | Out-Null
 } else {
     # qa v1.2 E2：不静默跳过——显式警告（TC-11 步骤 5 依赖此注册）
     Write-Warning '未指定 -GuiExe：GUI 登录自启未注册（登录后需手动启动 GUI；验收用例依赖此注册项）'
 }
+# E12 ①（双保险）：无论是否注册自启，都持久化 gui.json 角色，
+# 保证手动启动 GUI 时角色同样正确。
+Write-GuiRole $Mode
 
 Write-Host ''
 Write-Host '=== 课堂共享安装取证（issue #14 五项）==='
@@ -164,7 +198,9 @@ Write-Host "运行方式:   $runMode"
 Write-Host "数据根:     $dataRoot"
 Write-Host "日志:       $(Join-Path $dataRoot 'logs\svc.log')（RFC3339 毫秒时间戳，RUST_LOG 可调）"
 Write-Host "防火墙:     $firewallSummary"
-Write-Host "GUI 自启:   $(if ($guiExe) { "HKCU Run → $guiExe" } else { '未注册（未指定 -GuiExe）——TC-11 步骤 5 依赖此注册项' })"
+# E12：自启值含 --role；单引号拼接避免嵌套双引号在 PS 5.1 下的解析坑
+$guiRunDesc = if ($guiExe) { 'HKCU Run → ' + $guiExe + ' --role=' + $Mode } else { '未注册（未指定 -GuiExe）——TC-11 步骤 5 依赖此注册项' }
+Write-Host "GUI 自启:   $guiRunDesc"
 Write-Host "令牌授权:   $(if ($userSid) { "LocalSystem + 主登录用户（$userSid）" } else { '仅 LocalSystem——GUI 待首次登录自愈或 -UserSid 重装' })"
 Write-Host "房间/发现:  $(if ($Mode -eq 'teacher') { "教师建课房间码 $effectiveRoom（安装后可在 GUI 修改）" } elseif ($effectiveRoom) { "学员自动发现匹配房间 $effectiveRoom（多教室，需与教师一致）" } else { '学员自动连接首个发现的教师机（单教室默认；多教室请传 -Room 与教师一致）' })"
 Write-Host "多实例:     命名管道多连接并发（每 GUI 一连接，已测 ≥2）；服务本体单实例（SCM 语义）"
