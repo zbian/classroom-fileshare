@@ -82,12 +82,16 @@ export const useMainStore = create<MainStore>((set, get) => ({
     // 角色来自 gui.json（Rust get_icon_state；M1 由 --role= 写入，产品期由服务/安装器决定）
     try {
       const st = await client.status().catch(() => null)
-      const iconState = await invoke<{ pausedTips: boolean; role: string }>('get_icon_state').catch(() => null)
+      const iconState = await invoke<{ pausedTips: boolean; nicknameDone?: boolean; role: string }>(
+        'get_icon_state',
+      ).catch(() => null)
       const role: Role =
         iconState?.role === 'student' ? 'student' : iconState?.role === 'teacher' ? 'teacher' : 'unset'
       client.setContext?.({ role: role === 'unset' ? 'teacher' : role })
-      set({ role, status: st })
-      if (role === 'student') set({ dialog: { ...get().dialog, nickname: true } })
+      const nicknameDone = iconState?.nicknameDone === true
+      set({ role, status: st, nicknameDone })
+      // B1 仅首次弹（PRD 6.1：昵称本地持久化，重启不再弹）
+      if (role === 'student' && !nicknameDone) set({ dialog: { ...get().dialog, nickname: true } })
     } catch {
       set({ role: 'teacher' })
     }
@@ -188,6 +192,8 @@ export const useMainStore = create<MainStore>((set, get) => ({
   async setNickname(nickname, pin) {
     try {
       await get().client.setNickname(nickname, pin)
+      // 持久化「首次昵称已完成」到 gui.json（PRD 6.1 重启不再弹；失败不阻塞进入课堂）
+      await invoke('set_nickname_done').catch(() => undefined)
       set({ nicknameDone: true, dialog: { ...get().dialog, nickname: false } })
       get().showToast('已进入课堂')
       await get().refresh()

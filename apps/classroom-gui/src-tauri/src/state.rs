@@ -25,6 +25,9 @@ pub struct IconState {
     /// 「暂停接收提醒」本地开关（T9/T13 接 ipc 后同步给服务）
     #[serde(default)]
     pub paused_tips: bool,
+    /// 学员首次昵称已完成（PRD 6.1：重启不再弹 B1）
+    #[serde(default)]
+    pub nickname_done: bool,
     #[serde(default)]
     pub placement: Option<IconPlacement>,
 }
@@ -109,6 +112,7 @@ mod tests {
             role: "teacher".into(),
             icon: IconState {
                 paused_tips: true,
+                nickname_done: false,
                 placement: Some(IconPlacement {
                     monitor: "DELL U2415".into(),
                     x_pct: 0.95,

@@ -423,19 +423,22 @@ pub struct MenuLayout {
 #[serde(rename_all = "camelCase")]
 pub struct IconStateDto {
     pub paused_tips: bool,
+    /// 学员首次昵称已完成（B1 不再弹出）
+    pub nickname_done: bool,
     /// "teacher" | "student" | "unset"（GuiConfig.role）
     pub role: String,
 }
 
 pub fn get_icon_state(app: &AppHandle) -> IconStateDto {
-    let (paused, role) = app
+    let (paused, done, role) = app
         .state::<AppState>()
         .config
         .lock()
-        .map(|c| (c.icon.paused_tips, c.role.clone()))
-        .unwrap_or((false, "unset".into()));
+        .map(|c| (c.icon.paused_tips, c.icon.nickname_done, c.role.clone()))
+        .unwrap_or((false, false, "unset".into()));
     IconStateDto {
         paused_tips: paused,
+        nickname_done: done,
         role,
     }
 }

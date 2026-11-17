@@ -74,6 +74,7 @@ fn main() {
             update_tips_height,
             tips_dismissed,
             open_main_locate,
+            set_nickname_done,
             svc_request,
             dev_demo_tips
         ])
@@ -151,6 +152,17 @@ async fn svc_request(
     ipc_client::svc_request(app, request).await
 }
 
+/// 学员首次昵称完成置位（B1 不再弹出；PRD 6.1 重启不再弹）。
+#[tauri::command]
+fn set_nickname_done(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut guard = state.config.lock().map_err(|e| e.to_string())?;
+        guard.icon.nickname_done = true;
+        guard.clone()
+    };
+    snapshot.save().map_err(|e| e.to_string())
+}
 /// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
 #[tauri::command]
 fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
