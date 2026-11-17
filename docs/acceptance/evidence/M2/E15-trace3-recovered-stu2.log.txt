@@ -1,0 +1,6 @@
+2026-11-17T17:00:43.375485Z  INFO 前台降级模式启动（--console） mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\e15b-010028\stu\ClassShare\data
+2026-11-17T17:00:43.391071Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T17:00:43.398845Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\e15b-010028\stu\ClassShare\data
+2026-11-17T17:00:43.398890Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T17:00:43.404925Z  INFO 延迟补发送成功 op_id=fe80825e-b514-4a90-be8f-f26ab6f4c950 created_at=1794934841
+2026-11-17T17:00:43.903770Z  INFO 已加入房间 session_id=00c4aee8-22af-4404-b0c9-a7810e4b5db1

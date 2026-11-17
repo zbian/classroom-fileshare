@@ -1,0 +1,6 @@
+2026-11-17T16:58:55.292882Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc09loss-005821\tea\ClassShare\data
+2026-11-17T16:58:55.311073Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T16:58:55.319329Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc09loss-005821\tea\ClassShare\data
+2026-11-17T16:58:55.319367Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T16:58:55.321196Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T16:58:55.441996Z  INFO 学员加入 nickname=alice session_id=92b6fdd3-808b-462d-963d-afbe9c809cd3

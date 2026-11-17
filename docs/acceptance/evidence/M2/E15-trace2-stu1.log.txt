@@ -1,0 +1,10 @@
+2026-11-17T16:58:27.900868Z  INFO 前台降级模式启动（--console） mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\tc09loss-005821\stu\ClassShare\data
+2026-11-17T16:58:27.922302Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc09loss-005821\stu\ClassShare\data\ipc.token user_sid=None
+2026-11-17T16:58:27.925292Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T16:58:27.966159Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\tc09loss-005821\stu\ClassShare\data
+2026-11-17T16:58:27.966219Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T16:58:27.975332Z  INFO 已加入房间 session_id=99d82442-34d4-4458-80fc-a9941b31d5fc
+2026-11-17T16:58:33.894125Z  INFO 与教师机断开，稍后自动重连 retry_in=1s addr=127.0.0.1:47821
+2026-11-17T16:58:35.086869Z  INFO 上行发送成功 op_id=1bdaba1c-640d-4b27-bcf3-90b4f082d375
+2026-11-17T16:58:36.950088Z  INFO 与教师机断开，稍后自动重连 retry_in=2s addr=127.0.0.1:47821
+2026-11-17T16:58:41.008236Z  INFO 与教师机断开，稍后自动重连 retry_in=4s addr=127.0.0.1:47821

@@ -1,0 +1,29 @@
+{
+    "offline_submit_returns_ok":  true,
+    "pending_count_status":  "REPLY status role=Student room=tcp://127.0.0.1:47821 online=0 nickname=alice pending=2 state=Running",
+    "queue_json_before_restore":  "[\n  {\n    \"id\": \"deb5896f-a111-4c25-b48b-6fabd7427858\",\n    \"kind\": \"Text\",\n    \"title\": \"绂荤嚎鏉＄洰A\",\n    \"content_rel\": \"pending/deb5896f-a111-4c25-b48b-6fabd7427858.bin\",\n    \"size\": 13,\n    \"sha256\": \"e6c80e6a2a506d391e54c692c7cb495dca2487555367f9ce86a85b62de4d5162\",\n    \"created_at\": 1794934651,\n    \"attempts\": 0,\n    \"next_at\": 0\n  },\n  {\n    \"id\": \"0d0b4504-cefa-4adc-8a1a-39bcc251b22e\",\n    \"kind\": \"Text\",\n    \"title\": \"绂荤嚎鏉＄洰B\",\n    \"content_rel\": \"pending/0d0b4504-cefa-4adc-8a1a-39bcc251b22e.bin\",\n    \"size\": 13,\n    \"sha256\": \"2325f562792d0d63a8dac4ce941387d791855946c208d5611463b9a905b095ef\",\n    \"created_at\": 1794934652,\n    \"attempts\": 0,\n    \"next_at\": 0\n  }\n]",
+    "pending_bin_count":  2,
+    "queued_log_count":  2,
+    "queued_log_seen":  true,
+    "restored_and_received":  true,
+    "restore_to_received_ms":  708,
+    "within_10s":  true,
+    "teacher_titles":  [
+                           "离线条目B",
+                           "离线条目A",
+                           "在线条目"
+                       ],
+    "unique_titles":  [
+                          "离线条目B",
+                          "离线条目A",
+                          "在线条目"
+                      ],
+    "duplicate_count":  0,
+    "pending_count_after":  "REPLY status role=Student room=tcp://127.0.0.1:47821 online=0 nickname=alice pending=0 state=Running",
+    "queue_after":  "[]",
+    "pending_bins_after":  0,
+    "powerloss_queue_before_kill":  "[\n  {\n    \"id\": \"b757e331-6ad1-497f-aa1b-03e026541e4e\",\n    \"kind\": \"Text\",\n    \"title\": \"鏂數鏉＄洰C\",\n    \"content_rel\": \"pending/b757e331-6ad1-497f-aa1b-03e026541e4e.bin\",\n    \"size\": 13,\n    \"sha256\": \"084f91f9526dd99624a7be2c59cee06564219073733c63ea3af99958c1bbc28f\",\n    \"created_at\": 1794934656,\n    \"attempts\": 0,\n    \"next_at\": 0\n  }\n]",
+    "powerloss_received_after_restart":  false,
+    "powerloss_queue_after":  "[]",
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\tc09-005711"
+}
