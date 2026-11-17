@@ -51,3 +51,59 @@
 
 仅 `apps/classroom-gui/src-tauri/src/main.rs`（+ 单测）；`crates/**`、`scripts/**` 零改动。
 门禁：`scripts/local-ci.ps1` 六项 ALL PASS（含 workspace 150 passed、release clippy）。
+
+## 复现步骤（可直接复制执行，PowerShell 7 / 5.1 均可）
+
+前提：仓库根目录、已 `cargo build -p classroom-gui -p classroom-svc`（debug 产物即可）。
+以下命令把 `LOCALAPPDATA` / `PROGRAMDATA` 指向**隔离临时目录**，不动本机真实数据。
+
+```powershell
+# 0) 建隔离环境与教师配置（data_root = <T>\tea\ClassShare\data）
+$base = "<仓库绝对路径>\.wt\fix-93-e13"
+$gui  = Join-Path $base "target\debug\classroom-gui.exe"
+$svc  = Join-Path $base "target\debug\classroom-svc.exe"
+$T    = Join-Path $env:TEMP "e13-repro"
+$A    = Join-Path $T "tea"; $PD = Join-Path $T "pd"
+Remove-Item -LiteralPath $T -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $A "ClassShare"), $PD | Out-Null
+# 无 BOM UTF-8（svc 侧 serde_json 不接受 BOM）
+[IO.File]::WriteAllText((Join-Path $A "ClassShare\svc.json"),
+  '{"mode":"teacher","room_code":"XK-204","tcp_port":47821}', [Text.UTF8Encoding]::new($false))
+
+# 1) 起教师服务（隔离环境；日志落 $svcLog）
+$svcLog = Join-Path $T "svc.log"
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.Run("cmd /c set LOCALAPPDATA=$A&& set PROGRAMDATA=$PD&& `"$svc`" --console 2>$svcLog", 0, $false)
+Start-Sleep -Seconds 3
+
+# 2) 起 GUI（第一次启动；修复点：不应把自身 exe 当共享文件发送）
+$guiLog = Join-Path $T "gui.log"
+[void]$shell.Run("cmd /c set LOCALAPPDATA=$A&& set PROGRAMDATA=$PD&& `"$gui`" --role=teacher 2>$guiLog", 0, $false)
+Start-Sleep -Seconds 6
+
+# 3) 断言：svc 日志中自身 exe 出现 0 次、高风险告警 0 次（修复前每次启动必现 WARN）
+$svcTxt = Get-Content -LiteralPath $svcLog -Encoding UTF8 -Raw
+"exe_mentions=" + (($svcTxt -split 'classroom-gui\.exe').Count - 1)   # 期望 0
+"risky_warns="  + (($svcTxt -split '高风险').Count - 1)               # 期望 0
+
+# 4) 单实例 argv 语义 + 文件链路：第二实例带真实文件启动
+$f = Join-Path $T "E13证据文件.txt"; "hello e13" | Set-Content -LiteralPath $f -Encoding UTF8
+$p2 = Start-Process -FilePath cmd.exe -ArgumentList "/c",
+  "set LOCALAPPDATA=$A&& set PROGRAMDATA=$PD&& `"$gui`" `"$f`"" -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 5
+"second_exited=" + $p2.HasExited     # 期望 True（单实例语义）
+# GUI 日志中应出现：argv[0]=exe 路径、argv[1]=文件  （即 argc=2，说明含 argv[0]）
+Get-Content -LiteralPath $guiLog -Encoding UTF8 | Select-String "single-instance"
+# svc 日志应出现：broadcast ... file=E13证据文件.txt ... （文件链路正常）
+Get-Content -LiteralPath $svcLog -Encoding UTF8 | Select-String "E13证据文件"
+
+# 5) 清理
+Stop-Process -Name classroom-gui, classroom-svc -Force -ErrorAction SilentlyContinue
+```
+
+预期输出：`exe_mentions=0`、`risky_warns=0`、`second_exited=True`、
+GUI 日志 `[single-instance] argc=2 argv=["…\classroom-gui.exe","…\E13证据文件.txt"]`、
+svc 日志 `broadcast item_id=… file=E13证据文件.txt size=14 audience="all"`。
+
+门禁复跑：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-ci.ps1`
+（期望 6 项 ALL PASS，其中 cargo test workspace = **150 passed**）
