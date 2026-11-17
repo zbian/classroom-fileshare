@@ -3,9 +3,9 @@
 | 项目 | 内容 |
 | --- | --- |
 | 里程碑 | M1-P0（能上一节课的最小闭环） |
-| 冻结基线 | `bd34ed2`（含 T-12 / PR #66 `6b91583` + 终审记录 #67） |
+| 冻结基线 | `e134b76`（含 E9 自动发现连接 #69） |
 | 冻结日期 | 2026-11-17 |
-| 状态 | 代码侧冻结（验收待 T-14） |
+| 状态 | **代码侧冻结完成**（验收进行中：qa 单机部分验收） |
 | 依据 | PRD 第 12 章 P0 范围、[M1 实施计划](plans/2026-11-13-m1-p0.md) |
 
 ## 1 交付范围
@@ -32,6 +32,7 @@
 | T-11 | #12 | #33 | GUI 15 秒 tips 气泡 |
 | T-12 | #13 | #66 | GUI 桌面入口三件（右键粘贴/文件拖放/资源管理器右键） |
 | T-13 | #14 | #44 | Windows 服务包装 + 安装/卸载脚本 |
+| **E9** | #15 跟踪 | **#69** | **agent 自动发现并连接（PRD 2.4/3.1 P0 要求，冻结巡检补齐）** |
 | 安全缺陷 | #49 | #50 | E7 令牌 ACL（icacls→windows-rs API 直写） |
 | 存储加固 | — | #46/#63 | busy_timeout + WAL 并发收口 |
 | 取证锚点 | #37/#49 | #39/#48 | E4 broadcast/received/applied、E6 size 语义 |
@@ -40,16 +41,16 @@
 
 T-8 置顶图标(#29) · T-11 tips(#33) · T-9 教师界面+RealGuiClient(#53) · T-10 学员视图(#59) · T-12 桌面入口三件(#66)
 
-## 2 质量门（实跑证据）
+## 2 质量门（终态实跑）
 
 | 门 | 命令 | 结果 |
 | --- | --- | --- |
 | fmt | `cargo fmt --all --check` | exit 0 |
 | clippy | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0（含 GUI src-tauri，无交叉破坏） |
-| test | `cargo test --workspace` | exit 0：25 binaries / **106 passed / 0 failed / 0 panicked** |
-| PS BOM | CI 守卫（scripts + apps 自有 ps1） | 3/3 有 BOM、PS 5.1 语法 0 错误 |
+| test | `cargo test --workspace` | exit 0：25 binaries / **108 passed / 0 failed / 0 panicked** |
+| PS BOM（全仓 5 个 ps1） | 手动核验 + CI 守卫（scripts+apps） | 5/5 BOM=True、PS 5.1 语法 0 错误 |
 
-106 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）· agent 8（接收/重连/墓碑/E3 探测回路）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 10（配置/清理/运行时/服务）· gui(src-tauri) 12（窗口/ipc client）
+108 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）· agent 9（接收/重连/墓碑/E3 探测回路/**E9 自动发现**）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 11（配置/清理/运行时/服务/room_filter 四态）· gui(src-tauri) 12（窗口/ipc client）
 
 CI 作业：rust（fmt/clippy/test）+ web（pnpm build）+ PowerShell BOM 守卫
 
@@ -65,32 +66,40 @@ CI 作业：rust（fmt/clippy/test）+ web（pnpm build）+ PowerShell BOM 守�
 | 并发打开 store 撞 BUSY（生产双连接场景） | CI（run 82） | WAL + busy_timeout 5000 + open 重试 |
 | 注册表 `%*` 外层引号致多选塌缩 | reviewer-2（PR #66） | 裸 `%*` + CommandLineToArgvW 三形态证据 |
 | PS 脚本 BOM 回归 | reviewer-2（PR #66 终审） | 补 BOM + **CI 守卫根治** |
+| **beacon 自动连接缺失（学员须手填 IP）** | **reviewer-2（全仓巡检）** | **E9 补齐：discovery 泵 + room_filter 房间隔离 + 锁定首个目标；学员不传 -Room 也能入班** |
 
-## 4 已知 Deferral（M2 集结）
+## 4 已知 Deferral（17 项，均已有归属）
 
 | # | 项 | 归属 |
 | --- | --- | --- |
-| 1 | ack 跟踪（FileAck/事件 ack 收集与状态回写） | #16（M2） |
-| 2 | 占用重试的完整退避（当前入队语义 + SCM 层策略） | #20（M2） |
-| 3 | Unicode 文本拖放（OLE IDropTarget） | #16（M2） |
-| 4 | 学员回传（FR-S-02/03，host 现明确拒绝） | #16（M2） |
-| 5 | 删除同步全链（在线已完成；延迟补删端到端） | #17（M2） |
-| 6 | 离线待发队列（PendingOp 持久化 + 补发） | #18（M2） |
-| 7 | 会话身份绑定 + net client runner 抽取（含 WTS 取 SID） | #16（M2） |
-| 8 | 心跳无 Pong 读超时（会话活性治理） | #16（M2） |
-| 9 | LocalSystem ACE 冗余（无害，评估收敛） | #16（M2） |
-| 10 | grant_for_session 无自动化单测（WTS 路径） | #16（M2） |
-| 11 | GHA runner ACL 环境备案（机制调查） | research |
-| 12 | CI BOM 守卫改全仓扫描（当前盲区 docs/acceptance/scripts） | #22（M3） |
+| 1 | ack 跟踪（FileAck/事件 ack 收集与状态回写） | #16 / #17 协同 |
+| 2 | 占用重试完整退避（≤5 次；当前入队语义 + SCM 层策略） | #20 |
+| 3 | Unicode 文本拖放（OLE IDropTarget） | **#20**（拖拽投放完整交互） |
+| 4 | 学员回传（FR-S-02/03，host 现明确拒绝） | #16 |
+| 5 | 删除同步全链（在线已完成；延迟补删端到端） | #17 |
+| 6 | 离线待发队列（PendingOp 持久化 + 补发） | #18 |
+| 7 | 会话身份绑定 + net client runner 抽取（含 WTS 取 SID） | #16 |
+| 8 | 心跳 Pong 读超时（会话活性治理） | #16 |
+| 9 | LocalSystem ACE 冗余累积（无害，评估收敛） | #16 |
+| 10 | grant_for_session 无自动化单测（WTS 路径） | #16 / #21 |
+| 11 | ensure_client 惰性重连竞态（单飞防 tips 双弹） | #16 |
+| 12 | 「开机自启 已开启」硬编码改注入真实状态 | #20 |
+| 13 | ServerHandle sessions 累积 / 退避不重置 | #22（备查级） |
+| 14 | bak→final 崩溃回滚自愈（自愈路径已确认） | #18 / #22 |
+| 15 | CI BOM 守卫改全仓扫描（当前盲区 docs/acceptance/scripts） | **#16（M2 首个任务）** |
+| 16 | GHA runner ACL 写入静默无效机制调查 | research |
+| 17 | 2 项测试补强 nit（pragma_query format! 拼接、gui.json BOM 剥离单测） | #21 |
 
-## 5 交接 T-14（qa 真机验收）
+## 5 交接 T-14（qa 验收）
 
-**需管理员/多机环境**：
-- TC-11：不登录收文件（服务开机自启 + 机器级数据根）
-- TC-12：右键退出后服务存活 + 数据完整
-- TC-13 前半：卸载清理（服务/自启/右键注册项）
-- TC-01 双机：真实发现链路 + 重名拒绝（E3 真机复验：静默死亡/强杀两情形）
-- user_sid 双授予取证：安装后 + 首次登录后各取一次 icacls
+**已执行（单机部分）**：TC-06 同名覆盖、TC-12 右键退出、TC-13 前半卸载清理、TC-01 教师侧、TC-02/03 多 agent 时延趋势、E7 user_sid 取证
+
+**需双机/管理员环境（延后）**：
+- TC-01 学员侧真实发现与重名拒绝（**学员安装不传 `-Room` 即可自动入班**，教师先建好房间再让学员加入）
+- TC-02/03 真实多端分发
+- TC-11 不登录收文件
+- E3 真机复验（静默死亡/强杀两情形）
+- E9 真实 beacon 发现（受限广播环境依赖）
 
 **M3 范围**：安装包（NSIS）与静默部署、30 台 p95 压测、日志按天切分
 
@@ -102,10 +111,11 @@ CI 作业：rust（fmt/clippy/test）+ web（pnpm build）+ PowerShell BOM 守�
 | 取证脚本（单机采集 + 跨节点 Δ 汇总） | [docs/acceptance/scripts/](../acceptance/scripts/) |
 | GUI 手动/自动清单与截图 | `apps/classroom-gui/docs/t8..t12/` |
 | 评审记录（全部 PR） | [docs/reviews/](../reviews/) |
-| 缺陷台账（E1–E8） | 验收方案 §3.8 |
+| 缺陷台账（E1–E9） | 验收方案 §3.8 |
 
 ## 7 冻结结论
 
-M1 代码侧**具备验收条件**：P0 全部功能实现并入库、106 用例全绿、fmt/clippy 零告警、CI 三作业守卫、安全缺陷链（E1–E8）全部闭环、12 项 Deferral 均有归属。
+M1 代码侧**已冻结**：P0 全部功能实现并入库（含 E9 自动发现补齐）、**108 用例全绿**、fmt/clippy 零告警、CI 三作业守卫、安全缺陷链（E1–E9）全部闭环、17 项 Deferral 均有归属。
 
-**待 T-14 真机验收通过后打 `v0.1.0`**（release note 须注明 TC-02 缩减口径：≥3 台真机全绿 + 多 agent 压测代理，正式 30 台 p95 留 M3）。
+- 预发布：`v0.1.0-rc.1`
+- **正式 `v0.1.0` 条件**：T-14 验收通过（单机部分已执行；双机项待资源到位后补验，release note 须注明 TC-02 缩减口径：≥3 台真机全绿 + 多 agent 压测代理，正式 30 台 p95 留 M3）
