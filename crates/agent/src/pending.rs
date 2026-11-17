@@ -33,6 +33,12 @@ pub enum PendingKind {
 pub struct PendingOp {
     /// 操作 id（同时是内容文件名）。
     pub id: String,
+    /// 本地条目 id（与上行 Event 的 `item.id` 一致；M2 #121）。
+    #[serde(default)]
+    pub item_id: String,
+    /// 条目版本（与上行 Event 的 `item.version` 一致；M2 #121）。
+    #[serde(default = "default_version")]
+    pub version: u64,
     /// 类型。
     pub kind: PendingKind,
     /// 文本标题 / 文件名。
@@ -49,6 +55,11 @@ pub struct PendingOp {
     pub attempts: u32,
     /// 下次允许补发时间（退避）。
     pub next_at: i64,
+}
+
+/// 旧队列 JSON 兼容默认值（M2 #121 前持久化的条目无 item_id/version）。
+fn default_version() -> u64 {
+    1
 }
 
 /// 待发内容目录（`data_root/pending/`）。
@@ -116,11 +127,28 @@ impl PendingQueue {
                 "待发队列中部分内容缺失，已丢弃（不自动删除其他未同步内容）"
             );
         }
+        // #131 评审：升级前持久化的旧队列无 `item_id/version` 字段（serde
+        // default 得到空串/1）→ **回填新 uuid**，避免补发时以空 item.id 上行
+        // 导致 host 端按空 id 登记/配对。
+        let mut backfilled = false;
+        for op in ops.iter_mut() {
+            if op.item_id.is_empty() {
+                op.item_id = uuid::Uuid::new_v4().to_string();
+                backfilled = true;
+            }
+            if op.version == 0 {
+                op.version = default_version();
+                backfilled = true;
+            }
+        }
+        if backfilled {
+            tracing::warn!("待发队列存在旧格式条目，已回填 item_id/version");
+        }
         let q = Self {
             root: root.to_path_buf(),
             ops,
         };
-        if before != q.ops.len() {
+        if before != q.ops.len() || backfilled {
             let _ = save(root, &q.ops);
         }
         q
@@ -209,6 +237,8 @@ mod tests {
     fn op(id: &str, created_at: i64) -> PendingOp {
         PendingOp {
             id: id.into(),
+            item_id: format!("item-{id}"),
+            version: 1,
             kind: PendingKind::Text,
             title: "作业".into(),
             content_rel: format!("pending/{id}.bin"),
@@ -292,4 +322,39 @@ mod tests {
         assert_eq!(q2.snapshot()[0].id, "alive");
         assert_eq!(q2.due(1000).len(), 1);
     }
+}
+
+/// #131 评审：升级前持久化的旧队列 JSON（无 `item_id`/`version` 字段）载入后
+/// **回填**——item_id 非空、version=1，补发不会以空 id 上行。
+#[test]
+fn legacy_queue_without_item_id_is_backfilled() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // 内容文件存在（否则会被当缺失丢弃）
+    std::fs::create_dir_all(pending_dir(root)).unwrap();
+    std::fs::write(pending_dir(root).join("old1.bin"), b"abc").unwrap();
+    // 旧格式 JSON（缺 item_id/version）
+    let legacy = r#"[
+        {
+            "id": "old1",
+            "kind": "Text",
+            "title": "旧作业",
+            "content_rel": "pending/old1.bin",
+            "size": 3,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "created_at": 100,
+            "attempts": 0,
+            "next_at": 0
+        }
+    ]"#;
+    std::fs::write(queue_path(root), legacy).unwrap();
+
+    let q = PendingQueue::open(root);
+    assert_eq!(q.len(), 1, "旧格式条目保留");
+    let op = &q.snapshot()[0];
+    assert!(!op.item_id.is_empty(), "item_id 已回填: {op:?}");
+    assert_eq!(op.version, 1, "version 默认 1");
+    // 回填已持久化（重开仍非空）
+    let q2 = PendingQueue::open(root);
+    assert_eq!(q2.snapshot()[0].item_id, op.item_id, "回填结果已落盘");
 }

@@ -801,45 +801,63 @@ impl SessionHandler for Hub {
             };
         }
 
-        // 入库：owner=会话昵称（服务端权威，学员无法伪造）、
-        // Student 角色、audience=Teacher（仅教师可见）。
+        // 入库（M2 #121）：**按学员上行 Event 的 id/version 落库**——
+        // 学员本地「我共享的」与教师端看到的同一条目（id/version 一致）。
+        // owner=会话昵称（服务端权威，学员无法伪造）、Student、audience=Teacher。
         let now = unix_now();
-        let put = if ev.item.kind == classroom_protocol::ItemKind::Text {
-            // 文本回传：内容帧承载正文（与教师广播同源），按 UTF-8 解出正文
-            match std::fs::read_to_string(&tmp) {
-                Ok(body) => self.store.lock().unwrap().put_text(
-                    &nickname,
-                    Role::Student,
-                    Audience::Teacher,
-                    &ev.item.title,
-                    &body,
-                    now,
-                ),
-                Err(e) => {
-                    let _ = std::fs::remove_file(&tmp);
-                    tracing::warn!(error = %e, "文本正文 UTF-8 解码失败");
-                    return FileAck {
-                        item_id: header.item_id,
-                        sha256_ok: false,
-                    };
-                }
+        let content = match std::fs::read(&tmp) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                tracing::warn!(error = %e, "上传内容读取失败");
+                return FileAck {
+                    item_id: header.item_id,
+                    sha256_ok: false,
+                };
             }
-        } else {
-            self.store.lock().unwrap().put_file_from_tmp(
-                &nickname,
-                Role::Student,
-                Audience::Teacher,
-                &header.file_name,
-                &tmp,
-                &header.sha256,
-                now,
-            )
         };
         let _ = std::fs::remove_file(&tmp);
-
+        let (kind, size, sha) = match ev.item.kind {
+            classroom_protocol::ItemKind::Text => {
+                // 文本 size = 字符数（PRD 3.5）
+                match std::str::from_utf8(&content) {
+                    Ok(body) => (
+                        classroom_protocol::ItemKind::Text,
+                        body.chars().count() as u64,
+                        None,
+                    ),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "文本正文 UTF-8 解码失败");
+                        return FileAck {
+                            item_id: header.item_id,
+                            sha256_ok: false,
+                        };
+                    }
+                }
+            }
+            classroom_protocol::ItemKind::File => (
+                classroom_protocol::ItemKind::File,
+                content.len() as u64,
+                Some(header.sha256.clone()),
+            ),
+        };
+        let put = self.store.lock().unwrap().put_entry_with_id(
+            &ev.item.id,
+            &nickname,
+            Role::Student,
+            Audience::Teacher,
+            &ev.item.title,
+            kind,
+            &content,
+            size,
+            sha.as_deref(),
+            ev.item.version,
+            classroom_protocol::SyncState::Synced,
+            now,
+        );
         match put {
             Ok(outcome) => {
-                let item = latest_item(outcome);
+                let item = outcome;
                 tracing::info!(
                     owner = %nickname,
                     item_id = %item.id,

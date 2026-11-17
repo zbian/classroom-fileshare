@@ -414,6 +414,130 @@ impl Store {
     }
 
     /// 存入或覆盖一条文本：正文原子落盘，作用域键命中时旧版转唯一 `.bak`。
+    /// 按作用域键查询条目（M2 #121：学员端发送前判断同名提交，复用 id/version
+    /// 以保证本地与教师端一致）。
+    pub fn find_by_scope(
+        &self,
+        owner_id: &str,
+        audience: Audience,
+        title: &str,
+    ) -> Result<Option<ShareItem>> {
+        let owner = safe_component(owner_id)?;
+        self.find_scope(owner, &audience, title)
+    }
+
+    /// 按**外部给定的 id/version** 落库内容（M2 #121，PRD 6.x「我共享的」）。
+    ///
+    /// 学员本地提交（agent）与教师端学员回传入库（host #94）共用本方法，
+    /// 保证**两端 id/version 一致**（本地「我共享的」与教师端看到的同一条目）：
+    /// - 同名（同 `owner_id + audience + title`）已有旧行且 id 不同 →
+    ///   清掉旧行与旧实体，保证单条（同名覆盖语义）
+    /// - 内容按 `kind` 写入（Text：`<owner>/texts/t<hash>.txt`；File：
+    ///   `<owner>/<name>`），原子替换 + 旧版 `.bak` 恰 1 份（PRD 7.3）
+    /// - `version` / `sync_state` 由调用方给定（学员端 `PendingSync` → FileAck
+    ///   后 `Synced`；host 端定位 `Synced`）
+    ///
+    /// 安全：`owner_id` 经 `safe_component`、标题经 `sanitize_file_name`、
+    /// 文件另拒风险扩展名（PRD 9.4 / 5.3）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_entry_with_id(
+        &self,
+        id: &str,
+        owner_id: &str,
+        role: Role,
+        audience: Audience,
+        title: &str,
+        kind: ItemKind,
+        content: &[u8],
+        size: u64,
+        sha256: Option<&str>,
+        version: u64,
+        sync_state: SyncState,
+        now: i64,
+    ) -> Result<ShareItem> {
+        let owner = safe_component(owner_id)?;
+        let name = sanitize_file_name(title)?;
+        if kind == ItemKind::File && classroom_protocol::is_risky_ext(&name) {
+            return Err(StoreError::RiskyExt(name));
+        }
+        // 同名旧行 → **沿用旧 id**（条目身份稳定、单条；调用方 id 仅新建时
+        // 采用），version 兜底取 `max(调用方给定, 旧 version + 1)`——客户端
+        // （模拟端/旧端）未递增版本或传入新 id 时，服务端仍保证「同一条目、
+        // version+1」（PRD 7.3）。旧行由后续 upsert（同 id）直接替换，无需删除
+        // （删除会连带清掉实体，导致覆盖前无法生成 `.bak`）。
+        let (created_at, version, id) = match self.find_scope(owner, &audience, &name)? {
+            Some(prev) => (
+                prev.created_at,
+                version.max(prev.version + 1),
+                prev.id.clone(),
+            ),
+            None => (now, version, id.to_string()),
+        };
+        // 内容写入（原子替换 + 旧版 .bak 恰 1 份）
+        let owner_dir = self.repo().join(owner);
+        let final_path = match kind {
+            ItemKind::Text => {
+                let dir = owner_dir.join("texts");
+                std::fs::create_dir_all(&dir)?;
+                let h = scope_hash(owner, &audience, &name);
+                dir.join(format!("t{h}.txt"))
+            }
+            ItemKind::File => {
+                std::fs::create_dir_all(&owner_dir)?;
+                owner_dir.join(&name)
+            }
+        };
+        let mut bak_os = final_path.as_os_str().to_os_string();
+        bak_os.push(".bak");
+        let bak_path = PathBuf::from(bak_os);
+        let mut part_os = final_path.as_os_str().to_os_string();
+        part_os.push(".part");
+        let write_path = PathBuf::from(part_os);
+        std::fs::write(&write_path, content)?;
+        if final_path.exists() {
+            let _ = std::fs::remove_file(&bak_path);
+            std::fs::rename(&final_path, &bak_path)?;
+        }
+        std::fs::rename(&write_path, &final_path)?;
+        let item = ShareItem {
+            id: id.to_string(),
+            kind,
+            owner_id: owner.to_string(),
+            owner_role: role,
+            audience,
+            title: name,
+            size,
+            sha256: sha256.map(|s| s.to_string()),
+            rel_path: Some(self.rel_of(&final_path)),
+            created_at,
+            updated_at: now,
+            version,
+            deleted: false,
+            sync_state,
+            retry_count: 0,
+        };
+        self.upsert_item(&item)?;
+        tracing::debug!(
+            item_id = %item.id,
+            version = item.version,
+            kind = ?item.kind,
+            "entry put (with id)"
+        );
+        Ok(item)
+    }
+
+    /// 标记条目为 `Synced`（M2 #121：学员本地提交收到 host `FileAck{ok}` 后）。
+    pub fn mark_synced(&self, id: &str) -> Result<Option<ShareItem>> {
+        let n = self.conn.execute(
+            "UPDATE share_items SET sync_state = 'Synced' WHERE id = ?1",
+            params![id],
+        )?;
+        if n == 0 {
+            return Ok(None);
+        }
+        self.get(id)
+    }
+
     pub fn put_text(
         &self,
         owner_id: &str,
