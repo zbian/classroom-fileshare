@@ -34,5 +34,9 @@ classroom-protocol = { path = "../../../crates/protocol" }
 # 正确生产构建：scripts/build-gui.ps1（= pnpm build + cargo build --release --features custom-protocol）。
 custom-protocol = ["tauri/custom-protocol"]
 
+[dev-dependencies]
+# 单测需要 tokio time paused（E12 退避重连测试），workspace full 不含 test-util
+tokio = { workspace = true, features = ["test-util"] }
+
 # 说明：tauri 相关版本暂列于本成员 crate（lead 特批），
 # 待 T1a 合入 main 后可收编进根 [workspace.dependencies] 统一管理。

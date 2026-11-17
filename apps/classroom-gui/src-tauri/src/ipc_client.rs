@@ -95,22 +95,68 @@ fn load_shared_token() -> anyhow::Result<String> {
     load_or_create_token(&fallback)
 }
 
-/// setup 后台连接 + 通知转发。连接失败仅记录（`ensure_client` 惰性重连兜底）。
+/// 首连/重连退避：1s → 2s → 5s 封顶（E12 ②：常驻图标场景下服务可能晚于 GUI
+/// 启动或重启，必须自动重试，不能只在有 UI 请求时才连）。
+fn backoff_delay(attempt: u32) -> std::time::Duration {
+    match attempt {
+        0 => std::time::Duration::from_secs(1),
+        1 => std::time::Duration::from_secs(2),
+        _ => std::time::Duration::from_secs(5),
+    }
+}
+
+/// 带退避的无限重连，直到 `connect` 成功返回（E12 ②）。
+///
+/// `connect` 由调用方注入（真实实现 = [`connect`]；单测用假实现验证重试次数
+/// 与退避节奏），避免「mock≠真实」的最常见形态：这里测的是重试控制流本身。
+async fn retry_until_connected<T, E, F, Fut>(mut connect: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempt: u32 = 0;
+    loop {
+        match connect().await {
+            Ok(value) => return value,
+            Err(e) => {
+                let delay = backoff_delay(attempt);
+                eprintln!(
+                    "[ipc] 连接失败（第 {} 次）：{e}；{}s 后重试",
+                    attempt + 1,
+                    delay.as_secs()
+                );
+                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// setup 后台连接 + 通知转发。**连接由本函数独占负责**：
+/// 首连失败自动退避重试；连接断开（服务退出/重启）后回到重试循环，
+/// 因此常驻图标即使没人打开主界面也能自动恢复（E12 ②）。
 pub fn start_bridge(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        match connect(&app).await {
-            Ok((client, rx)) => {
-                let role = role_from_config(&app);
-                eprintln!("[ipc] 服务管道已连接（role={role:?}）");
-                *app.state::<IpcBridge>().client.lock().expect("ipc lock") = Some(client);
-                // 连接成功即通知前端重拉结构化状态（主窗已开时自愈 EX-10）
-                let _ = app.emit(
-                    "svc://notify",
-                    retag(&SvcNotify::StatusChanged(String::new())),
-                );
-                forward_loop(&app, rx).await;
-            }
-            Err(e) => eprintln!("[ipc] 连接失败（服务未起？）：{e:#}"),
+        loop {
+            let (client, rx) = {
+                let app_for_connect = app.clone();
+                retry_until_connected(|| {
+                    let app = app_for_connect.clone();
+                    async move { connect(&app).await }
+                })
+                .await
+            };
+            let role = role_from_config(&app);
+            eprintln!("[ipc] 服务管道已连接（role={role:?}）");
+            *app.state::<IpcBridge>().client.lock().expect("ipc lock") = Some(client);
+            // 连接成功即通知前端重拉结构化状态（主窗已开时自愈 EX-10）
+            let _ = app.emit(
+                "svc://notify",
+                retag(&SvcNotify::StatusChanged(String::new())),
+            );
+            // 阻塞直到通道关闭（服务退出）；之后回到重连
+            forward_loop(&app, rx).await;
         }
     });
 }
@@ -252,22 +298,21 @@ fn human_size(bytes: u64) -> String {
 
 /// 惰性重连：请求前无客户端时尝试一次；仍失败返回 EX-10 文案。
 async fn ensure_client(app: &AppHandle) -> Result<IpcClient, String> {
-    if let Some(c) = app
-        .state::<IpcBridge>()
-        .client
-        .lock()
-        .expect("ipc lock")
-        .clone()
-    {
-        return Ok(c);
+    // 连接所有权归 start_bridge（含退避重连）：这里只等待其就绪，避免出现
+    // 第二条连接与两个 forward_loop（双通知/双 tips 的经典竞态）。
+    for _ in 0..=12 {
+        if let Some(c) = app
+            .state::<IpcBridge>()
+            .client
+            .lock()
+            .expect("ipc lock")
+            .clone()
+        {
+            return Ok(c);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let (client, rx) = connect(app)
-        .await
-        .map_err(|_| "后台服务未运行".to_string())?;
-    let app2 = app.clone();
-    tauri::async_runtime::spawn(async move { forward_loop(&app2, rx).await });
-    *app.state::<IpcBridge>().client.lock().expect("ipc lock") = Some(client.clone());
-    Ok(client)
+    Err("后台服务未运行".to_string())
 }
 
 /// svc_request：前端唯一入口（GuiRequest 外部不可辨名形态 → 反序列化 → 转发）。
@@ -530,5 +575,39 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(880_640), "860 KB");
         assert_eq!(human_size(2_516_582), "2.4 MB");
+    }
+
+    /// E12 ②：退避节奏 1s → 2s → 5s 封顶。
+    #[test]
+    fn backoff_is_one_two_five_capped() {
+        assert_eq!(backoff_delay(0), std::time::Duration::from_secs(1));
+        assert_eq!(backoff_delay(1), std::time::Duration::from_secs(2));
+        assert_eq!(backoff_delay(2), std::time::Duration::from_secs(5));
+        assert_eq!(backoff_delay(9), std::time::Duration::from_secs(5));
+    }
+
+    /// E12 ②（续）：首连失败后自动退避重试直到成功——对应真实时序
+    /// 「GUI 登录自启早于服务就绪」（常驻图标、无人打开主界面也必须自愈）。
+    #[tokio::test(start_paused = true)]
+    async fn retry_until_connected_recovers_after_failures() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let counter = attempts.clone();
+        let value = retry_until_connected(|| {
+            let counter = counter.clone();
+            async move {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if n < 3 {
+                    Err("服务未就绪")
+                } else {
+                    Ok(42u8)
+                }
+            }
+        })
+        .await;
+        assert_eq!(value, 42, "第 3 次尝试应成功返回");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3, "失败 2 次后才成功");
     }
 }

@@ -101,6 +101,33 @@ impl AppState {
     }
 }
 
+/// 解析启动参数 `--role=teacher|student`（非法值忽略）。纯函数便于单测。
+pub(crate) fn parse_role_arg(args: &[String]) -> Option<&'static str> {
+    args.iter().find_map(|a| match a.strip_prefix("--role=")? {
+        "teacher" => Some("teacher"),
+        "student" => Some("student"),
+        _ => None,
+    })
+}
+
+/// 应用 `--role` 到内存配置，返回 `(role, 待持久化快照)`。
+///
+/// **必须在 `ipc_client::start_bridge` 之前调用**（E12 时序竞争）：桥用
+/// [`crate::ipc_client`] 内的 role_from_config 选管道名
+/// （`classshare-svc-teacher` / `-student`），若角色写入晚于桥启动，首连会用
+/// 旧的/默认 teacher 角色 → 学员机必然连不上。
+///
+/// 持久化与内存更新分离，便于单测在不触碰磁盘的前提下断言状态迁移；
+/// 调用方负责 `snapshot.save()`。
+pub(crate) fn apply_role_arg(state: &AppState, args: &[String]) -> Option<(String, GuiConfig)> {
+    let role = parse_role_arg(args)?.to_string();
+    let mut cfg = state.config.lock().ok()?;
+    cfg.role = role.clone();
+    let snapshot = cfg.clone();
+    drop(cfg);
+    Some((role, snapshot))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +162,45 @@ mod tests {
         let cfg: GuiConfig = serde_json::from_str("{}").unwrap();
         assert!(!cfg.icon.paused_tips);
         assert!(cfg.icon.placement.is_none());
+    }
+
+    /// E12 ①：`--role` 解析（仅接受 teacher/student，其余忽略）。
+    #[test]
+    fn parse_role_arg_accepts_only_known_roles() {
+        let args = |s: &str| s.split(' ').map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            parse_role_arg(&args("app.exe --role=student")),
+            Some("student")
+        );
+        assert_eq!(
+            parse_role_arg(&args("app.exe --role=teacher")),
+            Some("teacher")
+        );
+        assert_eq!(parse_role_arg(&args("app.exe --role=admin")), None);
+        assert_eq!(parse_role_arg(&args("app.exe")), None);
+    }
+
+    /// E12 ①（续）：role 写入内存状态并产出待持久化快照——
+    /// 该动作在 setup 中先于 start_bridge 执行，桥据此选择学员/教师管道。
+    #[test]
+    fn apply_role_arg_updates_state_before_bridge() {
+        let state = AppState::new(GuiConfig::default());
+        // 默认角色为空（等价 teacher 兜底），先确认基线
+        assert_eq!(state.config.lock().unwrap().role, "");
+
+        let args: Vec<String> = ["app.exe", "--role=student"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (role, snapshot) = apply_role_arg(&state, &args).expect("应解析出 student");
+        assert_eq!(role, "student");
+        assert_eq!(snapshot.role, "student", "快照用于持久化，必须已带新角色");
+        // 内存状态同步更新：start_bridge 之后的 role_from_config 会读到 student
+        assert_eq!(state.config.lock().unwrap().role, "student");
+
+        // 无 --role 时不动既有配置
+        let before = state.config.lock().unwrap().role.clone();
+        assert!(apply_role_arg(&state, &["app.exe".to_string()]).is_none());
+        assert_eq!(state.config.lock().unwrap().role, before);
     }
 }
