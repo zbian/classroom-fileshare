@@ -68,9 +68,13 @@ export default function TeacherSharesTab() {
   const items = useMainStore((s) => s.items)
   const keyword = useMainStore((s) => s.keyword)
   const kindFilter = useMainStore((s) => s.kindFilter)
+  // #127：关键字非空时由服务端按「标题或文本正文」过滤，客户端只再做类型筛选
+  const serverFiltered = useMainStore((s) => s.serverFiltered)
+  const totalCount = useMainStore((s) => s.totalCount)
 
   const filter = { keyword, kind: kindFilter }
-  const visible = filterItems(items, filter)
+  // 服务端已按 keyword 过滤过 → 客户端只保留类型筛选（避免把「命中正文但标题不含」的条目二次剔除）
+  const visible = filterItems(items, { keyword: serverFiltered ? '' : keyword, kind: kindFilter })
   const filtering = isFilterActive(filter)
 
   if (items.length === 0) {
@@ -90,7 +94,7 @@ export default function TeacherSharesTab() {
       </div>
       <SyncIssuesBanner />
       <div className="list-meta">
-        {filtering ? `筛选后 ${visible.length} / ${items.length} 条` : `共 ${items.length} 条`}
+        {filtering ? `筛选后 ${visible.length} / ${totalCount} 条` : `共 ${items.length} 条`}
       </div>
       <div className="grid-head" style={{ gridTemplateColumns: COLS }}>
         <span>类型</span>
