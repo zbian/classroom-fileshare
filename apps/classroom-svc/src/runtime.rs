@@ -123,6 +123,9 @@ pub async fn run_core(
                 nickname: cfg.nickname.clone(),
                 pin: cfg.pin.clone(),
                 manual_addr: cfg.manual_addr,
+                // E9：自动发现房间过滤——svc.json room_code 为空 → None
+                // （连首个发现，单教室 1 步入班）；非空 → 精确匹配（多教室）
+                room_filter: cfg.room_filter(),
                 data_root: data_root.to_path_buf(),
             };
             agent_task = Some(tokio::spawn(async move {

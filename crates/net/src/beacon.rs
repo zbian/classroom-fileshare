@@ -60,6 +60,22 @@ pub fn spawn_beacon(info: Beacon) -> JoinHandle<()> {
 
 /// 学员端：监听 [`DISCOVERY_PORT`]，把收到的信标推给 `sink`（解析失败的包忽略）。
 pub fn spawn_discovery(sink: mpsc::Sender<Beacon>) -> JoinHandle<()> {
+    let (addr_tx, mut addr_rx) = mpsc::channel(16);
+    let handle = spawn_discovery_with_addr(addr_tx);
+    tokio::spawn(async move {
+        while let Some((_peer, b)) = addr_rx.recv().await {
+            if sink.send(b).await.is_err() {
+                break;
+            }
+        }
+    });
+    handle
+}
+
+/// 学员端（带来源地址）：监听 [`DISCOVERY_PORT`]，把 `(来源 SocketAddr,
+/// 信标)` 推给 `sink`——自动连接需要 `peer.ip()` 与 `beacon.tcp_port`
+/// 组合出连接目标（E9：T-4 已知遗留，Beacon 本身不含来源 IP）。
+pub fn spawn_discovery_with_addr(sink: mpsc::Sender<(SocketAddr, Beacon)>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let sock = match UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).await {
             Ok(s) => s,
@@ -74,7 +90,7 @@ pub fn spawn_discovery(sink: mpsc::Sender<Beacon>) -> JoinHandle<()> {
             match sock.recv_from(&mut buf).await {
                 Ok((n, peer)) => match serde_json::from_slice::<Beacon>(&buf[..n]) {
                     Ok(b) => {
-                        if sink.send(b).await.is_err() {
+                        if sink.send((peer, b)).await.is_err() {
                             break; // 接收方已关闭
                         }
                     }

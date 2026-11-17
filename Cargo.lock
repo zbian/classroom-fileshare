@@ -529,6 +529,7 @@ dependencies = [
  "classroom-net",
  "classroom-protocol",
  "classroom-store",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",
