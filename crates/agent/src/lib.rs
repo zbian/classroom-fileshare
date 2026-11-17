@@ -1454,6 +1454,10 @@ impl Incoming {
     }
 
     /// 接收端占用：内容持久到 `data_root/retry_recv/`，条目入重试队列（M2 #117）。
+    ///
+    /// 覆盖语义（评审修正）：同一 item 连续被占用时（教师连续覆盖 v2→v3 且学员
+    /// 端持续锁定）→ **先移除旧队列项与旧内容，再写新内容与条目**，保证重试使用
+    /// **最新内容**（否则旧 sha 与新内容不符 → 重试中止 Failed）。
     fn enqueue_recv_retry(
         &self,
         item: &ShareItem,
@@ -1462,10 +1466,12 @@ impl Incoming {
     ) -> anyhow::Result<()> {
         let data_root = self.repo.parent().ok_or_else(|| anyhow!("repo 无父目录"))?;
         std::fs::create_dir_all(recv_retry::retry_content_dir(data_root))?;
+        let mut q = recv_retry::RecvRetryQueue::open(data_root);
+        // 先移除同 item 旧条目（含旧内容），再落新内容
+        q.remove(&item.id);
         let dest = recv_retry::retry_content_dir(data_root).join(format!("{}.part", item.id));
         std::fs::rename(part, &dest)?;
         let rel_path = item.rel_path.clone().unwrap_or_default();
-        let mut q = recv_retry::RecvRetryQueue::open(data_root);
         q.push(recv_retry::RecvRetryEntry {
             item_id: item.id.clone(),
             rel_path,

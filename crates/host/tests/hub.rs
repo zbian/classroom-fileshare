@@ -2828,3 +2828,74 @@ async fn recv_retry_sustained_lock_keeps_session() {
     assert_eq!(done.version, v1.version + 1);
     task.abort();
 }
+
+/// #117 评审修正：同一 item 连续被占用（教师连续覆盖 v2→v3 且学员端持续锁定）
+/// → 重试使用**最新内容**（队列内容/sha 更新，不得因旧 sha 哈希不符而中止）。
+#[tokio::test]
+async fn recv_retry_uses_latest_content_on_repeated_overwrite() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    // v1 落盘并锁定
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("连更.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "连更.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let lock = hold_exclusive(&agent_store(&agent_root).file_body(&first).unwrap());
+
+    // v2 → v3（持续锁定，两次都入队；第二次必须覆盖队列内容）
+    for content in [b"v2".as_slice(), b"v3".as_slice()] {
+        let f = src.path().join("连更.pdf");
+        std::fs::write(&f, content).unwrap();
+        host.cmd
+            .send(HostCommand::SendFiles { paths: vec![f] })
+            .await
+            .unwrap();
+        let _ = next_matching(&mut host.events, |e| match e {
+            HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+            _ => None,
+        })
+        .await;
+        // 等该版本进入队列（RetryLocked 或队列内容更新）
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    // 队列应为 1 项且尝试次数已复位（内容最新）
+    {
+        let queue = classroom_agent::recv_retry::load(&agent_root);
+        assert_eq!(queue.len(), 1, "同 item 不重复入队");
+    }
+
+    // 释放 → 自动完成，内容必须是最新（v3）
+    drop(lock);
+    let done = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read(agent_store(&agent_root).file_body(&done).unwrap()).unwrap(),
+        b"v3",
+        "重试应使用最新内容（v3）"
+    );
+    task.abort();
+}
