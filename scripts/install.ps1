@@ -46,9 +46,15 @@ function Write-SvcConfig([string]$Dir, [hashtable]$Config) {
 $svcExe = Resolve-Binary $SvcExe 'classroom-svc.exe'
 $guiExe = if ($GuiExe) { (Resolve-Path $GuiExe).Path } else { $null }
 
+# PR #69 发现 1（PRD 2.4「学生 1 步设昵称」）：学员模式未显式传 -Room 时
+# 写空字符串 → svc 侧 room_filter=None → 自动连接首个发现（单教室学生
+# 无需知道房间码）；多教室需显式 -Room 与教师一致。教师模式保持默认。
+$roomExplicit = $PSBoundParameters.ContainsKey('Room')
+$effectiveRoom = if ($Mode -eq 'student' -and -not $roomExplicit) { '' } else { $Room }
+
 $svcConfig = [ordered]@{
     mode        = $Mode
-    room_code   = $Room
+    room_code   = $effectiveRoom
     pin         = if ($Pin) { $Pin } else { $null }
     nickname    = if ($Nickname) { $Nickname } else { '' }
     manual_addr = if ($ManualAddr) { $ManualAddr } else { $null }
@@ -151,4 +157,5 @@ Write-Host "日志:       $(Join-Path $dataRoot 'logs\svc.log')（RFC3339 毫秒
 Write-Host "防火墙:     $firewallSummary"
 Write-Host "GUI 自启:   $(if ($guiExe) { "HKCU Run → $guiExe" } else { '未注册（未指定 -GuiExe）——TC-11 步骤 5 依赖此注册项' })"
 Write-Host "令牌授权:   $(if ($userSid) { "LocalSystem + 主登录用户（$userSid）" } else { '仅 LocalSystem——GUI 待首次登录自愈或 -UserSid 重装' })"
+Write-Host "房间/发现:  $(if ($Mode -eq 'teacher') { "教师建课房间码 $effectiveRoom（安装后可在 GUI 修改）" } elseif ($effectiveRoom) { "学员自动发现匹配房间 $effectiveRoom（多教室，需与教师一致）" } else { '学员自动连接首个发现的教师机（单教室默认；多教室请传 -Room 与教师一致）' })"
 Write-Host "多实例:     命名管道多连接并发（每 GUI 一连接，已测 ≥2）；服务本体单实例（SCM 语义）"

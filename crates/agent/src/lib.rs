@@ -90,7 +90,6 @@ pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> an
     ));
     tracing::info!("未配置 manual_addr，进入自动发现模式");
 
-    let mut backoff = Duration::from_secs(1);
     loop {
         // 等待发现目标（未发现时阻塞，不消耗 CPU）
         let target = loop {
@@ -101,10 +100,9 @@ pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> an
                 anyhow::bail!("discovery 任务已退出");
             }
         };
+        // connect_loop 仅在致命错误（join 被拒）时返回 `?` 上抛，
+        // 正常路径（断线重连）永不返回——此处无需退避（PR #69 顺手项）
         connect_loop(&cfg, &mut store, target, &notify).await?;
-        // connect_loop 仅在致命错误时返回；正常路径不会走到这里
-        backoff = (backoff * 2).min(Duration::from_secs(5));
-        tokio::time::sleep(backoff).await;
     }
 }
 
@@ -132,9 +130,14 @@ async fn discovery_pump(
                 let _ = notify.send(AgentEvent::Discovered(seen.clone())).await;
             }
             if matches_room {
-                // 连接目标 = 信标来源 IP + 教师 TCP 端口（T-4 遗留补齐）
+                // 连接目标 = 信标来源 IP + 教师 TCP 端口（T-4 遗留补齐）。
+                // 有 room_filter：同房间最新信标覆盖（教师换 IP/端口跟上）；
+                // 无 filter：**锁定首个发现的目标**，避免多教师机广播时
+                // 目标抖动（PR #69 顺手项）
                 let target = SocketAddr::new(peer.ip(), beacon.tcp_port);
-                let _ = target_tx.send(Some(target));
+                if room_filter.is_some() || target_tx.borrow().is_none() {
+                    let _ = target_tx.send(Some(target));
+                }
             }
         }
         // discovery 任务结束（端口绑定失败/接收错误）：休息后重试监听

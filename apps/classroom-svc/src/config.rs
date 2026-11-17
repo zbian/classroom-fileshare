@@ -48,6 +48,20 @@ pub struct SvcConfig {
     pub user_sid: Option<String>,
 }
 
+impl SvcConfig {
+    /// 学员端自动发现的房间过滤（E9/PR #69 发现 1）：`room_code` 为空串
+    /// → None（连首个发现，单教室默认）；非空 → 精确匹配。
+    /// PRD 2.4「学生 1 步设昵称」——单教室学生无需知道房间码。
+    pub fn room_filter(&self) -> Option<String> {
+        let code = self.room_code.trim();
+        if code.is_empty() {
+            None
+        } else {
+            Some(code.to_string())
+        }
+    }
+}
+
 fn default_room_code() -> String {
     "XK-204".into()
 }
@@ -132,6 +146,25 @@ mod tests {
         let cfg = load_config(&path).unwrap();
         assert_eq!(cfg.mode, SvcMode::Student);
         assert_eq!(cfg.nickname, "bob");
+    }
+
+    /// PR #69 发现 1：学员端房间过滤——空串 → None（连首个发现，
+    /// 单教室 1 步入班）；非空 → Some（多教室精确匹配）。
+    #[test]
+    fn room_filter_empty_means_first_discovery() {
+        let mut cfg: SvcConfig = serde_json::from_str(r#"{"mode":"student"}"#).unwrap();
+        cfg.room_code = String::new();
+        assert_eq!(cfg.room_filter(), None, "空串 → 连首个发现");
+
+        cfg.room_code = "  ".into();
+        assert_eq!(cfg.room_filter(), None, "纯空白同空串");
+
+        cfg.room_code = "XK-204".into();
+        assert_eq!(cfg.room_filter(), Some("XK-204".into()), "非空精确过滤");
+
+        // 教师模式默认房间码保持 XK-204（教师建课可改）
+        let teacher: SvcConfig = serde_json::from_str(r#"{"mode":"teacher"}"#).unwrap();
+        assert_eq!(teacher.room_filter(), Some("XK-204".into()));
     }
 
     #[test]
