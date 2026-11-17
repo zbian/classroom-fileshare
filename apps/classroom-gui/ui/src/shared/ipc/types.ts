@@ -26,6 +26,8 @@ export interface ShareItem {
   version: number
   deleted: boolean
   sync_state: SyncState
+  /** 占用退避重试次数（#103 契约：0 表示未进入重试；上限 5 次后转 Failed） */
+  retry_count?: number
 }
 
 export interface ListFilter {
@@ -72,6 +74,9 @@ export type GuiRequest =
   | { t: 'PauseTips'; paused: boolean }
   | { t: 'ShutdownGuiOnly' }
 
+/** #103 告警类型（与 Rust WarningKind 对齐，snake 序列化为 CamelCase 值） */
+export type WarningKind = 'BackupFailed' | 'RetryExhausted' | 'DiskFull'
+
 export type SvcNotify =
   | { t: 'ShareReceived'; item: ShareItem }
   | { t: 'ItemUpdated'; payload: ItemUpdatedPayload }
@@ -79,6 +84,11 @@ export type SvcNotify =
   | { t: 'StatusChanged'; text: string }
   | { t: 'TransferProgress'; item_id: string; pct: number }
   | { t: 'Discovered'; beacons: Beacon[] }
+  /** #103：同步异常告警（占用重试耗尽/备份写入失败/磁盘不足）；图形化聚合展示 */
+  | {
+      t: 'Warning'
+      payload: { kind: WarningKind; item_id: string; detail: string }
+    }
 
 export type GuiReply =
   | { t: 'Ok' }

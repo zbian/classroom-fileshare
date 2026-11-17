@@ -429,6 +429,21 @@ fn retag(n: &SvcNotify) -> Value {
 mod tests {
     use super::*;
 
+    /// #20b：Warning 通知经 retag 后前端契约形态为 {"t":"Warning","payload":{kind,item_id,detail}}
+    /// （notify 统一 payload 外壳；store 的 case 'Warning' 读取 n.payload）
+    #[test]
+    fn warning_notify_retagged_for_frontend() {
+        let n = SvcNotify::Warning {
+            kind: classroom_ipc::WarningKind::RetryExhausted,
+            item_id: "item-1".into(),
+            detail: "占用重试耗尽（5 次）".into(),
+        };
+        let v = retag(&n);
+        assert_eq!(v["t"], "Warning");
+        assert_eq!(v["payload"]["kind"], "RetryExhausted");
+        assert_eq!(v["payload"]["item_id"], "item-1");
+        assert_eq!(v["payload"]["detail"], "占用重试耗尽（5 次）");
+    }
     /// 前端契约：unit 变体经 {"Status": null} 形态反序列化（client.ts 的 request 形态）
     #[test]
     fn gui_request_deserializes_null_map_form() {
