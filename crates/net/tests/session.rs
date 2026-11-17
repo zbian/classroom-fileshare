@@ -30,6 +30,7 @@ struct MockHandler {
     events_tx: mpsc::UnboundedSender<Event>,
     received_files: Mutex<HashMap<String, Vec<u8>>>,
     disconnects: Mutex<Vec<String>>,
+    manifest_reqs: Mutex<u32>,
 }
 
 impl MockHandler {
@@ -41,6 +42,7 @@ impl MockHandler {
                 events_tx: tx,
                 received_files: Mutex::new(HashMap::new()),
                 disconnects: Mutex::new(Vec::new()),
+                manifest_reqs: Mutex::new(0),
             }),
             rx,
         )
@@ -76,12 +78,14 @@ impl SessionHandler for MockHandler {
         }
     }
 
-    async fn on_event(&self, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
+    // M2 S3：签名新增 session_id（断言零改动；此处仅用于上下文记录
+    async fn on_event(&self, _session_id: &str, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
         self.events_tx.send(ev).expect("event channel alive");
     }
 
     async fn on_file_chunk_stream(
         &self,
+        _session_id: &str,
         header: FileHeader,
         mut chunks: mpsc::Receiver<FileChunk>,
         _expected_sha256: String,
@@ -109,7 +113,8 @@ impl SessionHandler for MockHandler {
             .push(session_id.to_string());
     }
 
-    async fn on_manifest_req(&self, tx: &mut mpsc::Sender<Frame>) {
+    async fn on_manifest_req(&self, _session_id: &str, tx: &mut mpsc::Sender<Frame>) {
+        *self.manifest_reqs.lock().unwrap() += 1;
         tx.send(Frame::Manifest(vec![("item-a".into(), 1, false)]))
             .await
             .ok();
@@ -434,4 +439,104 @@ async fn manifest_req_answered_via_callback() {
         Frame::Manifest(entries) => assert_eq!(entries, vec![("item-a".to_string(), 1, false)]),
         other => panic!("expected Manifest, got {other:?}"),
     }
+}
+
+/// M2 S3（issue #89，设计 §3.2）：**未 join 守卫**——未认证连接发送的
+/// Event / FileHeader / FileChunk / FileEnd / ManifestReq 五类帧一律不分发
+/// 给 handler（不回帧、不断连）；join 之后的同一事件正常分发（对照组）。
+#[tokio::test]
+async fn frames_before_join_are_dropped() {
+    let (addr, mut events_rx, handler) = spawn_server(None).await;
+    let mut sock =
+        tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .expect("connect timeout")
+            .expect("connect");
+
+    // 未 join：五类帧全部注入
+    send(&mut sock, &Frame::Event(sample_event("注入"))).await;
+    send(
+        &mut sock,
+        &Frame::FileHeader(FileHeader {
+            item_id: "f".into(),
+            file_name: "x.bin".into(),
+            size: 1,
+            sha256: sha256_hex(b"x"),
+        }),
+    )
+    .await;
+    send(
+        &mut sock,
+        &Frame::FileChunk(FileChunk {
+            item_id: "f".into(),
+            seq: 0,
+            bytes: vec![b'x'],
+        }),
+    )
+    .await;
+    send(
+        &mut sock,
+        &Frame::FileEnd(classroom_net::FileEnd {
+            item_id: "f".into(),
+        }),
+    )
+    .await;
+    send(&mut sock, &Frame::ManifestReq).await;
+
+    // 断言：handler 一个回调都没触发（300ms 静默窗口）
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), events_rx.recv())
+            .await
+            .is_err(),
+        "未 join 的事件不得分发到 handler"
+    );
+    assert!(
+        handler.received_files.lock().unwrap().is_empty(),
+        "未 join 的文件流不得进入 handler"
+    );
+    assert_eq!(
+        *handler.manifest_reqs.lock().unwrap(),
+        0,
+        "未 join 的清单请求不得进入 handler"
+    );
+
+    // 对照组：join 后同一事件正常分发（守卫只拦未认证路径）
+    send(
+        &mut sock,
+        &Frame::Hello(Hello::Join {
+            protocol_version: PROTOCOL_VERSION,
+            nickname: "alice".into(),
+            role: Role::Student,
+            pin: None,
+        }),
+    )
+    .await;
+    match read_frame(&mut sock).await.unwrap() {
+        Frame::HelloReply(HelloReply::Ok { .. }) => {}
+        other => panic!("expected HelloReply::Ok, got {other:?}"),
+    }
+    send(&mut sock, &Frame::Event(sample_event("合法"))).await;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("event timeout")
+        .expect("event present");
+    assert_eq!(got.event_id, "ev-合法");
+
+    // 重复 Hello 被忽略（已认证会话不得变更身份）：再次 Hello → 无应答帧
+    send(
+        &mut sock,
+        &Frame::Hello(Hello::Join {
+            protocol_version: PROTOCOL_VERSION,
+            nickname: "mallory".into(),
+            role: Role::Student,
+            pin: None,
+        }),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), read_frame(&mut sock))
+            .await
+            .is_err(),
+        "重复 Hello 不应得到应答（身份不可二次变更）"
+    );
 }

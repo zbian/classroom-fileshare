@@ -18,7 +18,7 @@ use classroom_net::{
     FileAck, FileChunk, FileEnd, FileHeader, Frame, Hello, HelloErr, HelloReply, SessionHandler,
 };
 use classroom_protocol::{
-    is_reserved_device_name, Audience, Event, EventKind, MergeDecision, Role, ShareItem, CHUNK_SIZE,
+    is_reserved_device_name, Audience, Event, EventKind, Role, ShareItem, CHUNK_SIZE,
 };
 use classroom_store::{sha256_file, ListFilter, PutOutcome, Store};
 
@@ -26,6 +26,12 @@ use crate::room::Admitter;
 use crate::{HostCommand, HostEvent, HostStatus, StudentInfo};
 
 /// 教师端固定的 owner_id。
+///
+/// **保留昵称**（M2 S3，issue #89 / 设计文档 §3.4）：这是教师作用域的保留
+/// 值，`on_hello` 在 join 层强制拒绝该昵称（返回 `HelloErr::InvalidNickname`）
+/// ——否则学员把昵称设为 `teacher` 后伪造 `owner_id = "teacher"` 恰好能通过
+/// 「owner 与会话昵称一致」校验，从而顶替教师作用域（M1 的 A2 过滤只拦
+/// owner≠teacher，此变体可穿透）。
 pub const TEACHER_OWNER: &str = "teacher";
 
 pub(crate) struct Hub {
@@ -344,6 +350,14 @@ impl SessionHandler for Hub {
                 code: HelloErr::InvalidNickname,
             };
         }
+        // M2 S3（设计 §3.4）：教师作用域保留昵称不得被学员占用——否则学员
+        // 可伪造 owner_id="teacher" 通过「身份一致」校验，顶替教师作用域。
+        if nickname == TEACHER_OWNER {
+            tracing::warn!(%nickname, "拒绝教师保留昵称加入（教师作用域保留值）");
+            return HelloReply::Err {
+                code: HelloErr::InvalidNickname,
+            };
+        }
         // PR #34 B 项（重名存活探测）：同名已在线时先探测旧连接——
         // 课堂合盖休眠/断网（无 RST）极常见，无条件拒绝会把昵称锁死到
         // 教师重启；无脑替换又破坏 PRD EX-02/TC-01 的重名拒绝语义。
@@ -381,38 +395,86 @@ impl SessionHandler for Hub {
         HelloReply::Ok { session_id }
     }
 
-    async fn on_event(&self, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
-        // PR #34 A2（最小加固）：仅接受教师端 owner 的事件，其余忽略——
-        // 阻止定制客户端伪造任意 owner 入库；M2 回传的会话身份绑定另走接口修订
-        if ev.item.owner_id != TEACHER_OWNER {
+    async fn on_event(&self, session_id: &str, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
+        // ===== M2 S3 会话身份绑定（接口修订 #9①，设计文档 §3.3）=====
+        // 三重校验，任一失败即丢弃（不落库、不广播、不 ack）：
+        // ① 会话存在（net 层未 join 守卫之上再兜一层：conns 是唯一身份源）
+        let expected_owner = {
+            let conns = self.conns.lock().unwrap();
+            conns.get(session_id).map(|c| c.nickname.clone())
+        };
+        let Some(expected_owner) = expected_owner else {
             tracing::warn!(
-                owner = %ev.item.owner_id,
+                %session_id,
                 event_id = %ev.event_id,
-                "忽略非教师 owner 的事件"
+                "未注册会话的事件，丢弃"
+            );
+            return;
+        };
+        // ② 身份一致：owner_id 必须等于该会话 join 时认证的昵称（冒名防线）
+        if ev.item.owner_id != expected_owner {
+            tracing::warn!(
+                %session_id,
+                owner = %ev.item.owner_id,
+                expected = %expected_owner,
+                event_id = %ev.event_id,
+                "冒名事件被拒（owner_id 与会话昵称不一致）"
             );
             return;
         }
-        // 先取出决策再 match，确保 MutexGuard 不跨 await
-        let decision = self.store.lock().unwrap().apply_remote(&ev);
-        match decision {
-            Ok(MergeDecision::Overwrite(item)) => {
-                // 学员定向内容只入教师 store，不转发给其他学员（PRD 3.3）
-                let _ = self.notify.send(HostEvent::ReceivedUpsert(*item)).await;
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, event_id = %ev.event_id, "应用学员事件失败"),
+        // ③ 方向合法：学员事件只能定向教师（伪造 audience=All 会被拒绝，
+        //    否则内容会扩散给其他学员，PRD 3.3 学生互不可见）
+        if ev.item.audience != Audience::Teacher {
+            tracing::warn!(
+                %session_id,
+                audience = ?ev.item.audience,
+                event_id = %ev.event_id,
+                "越权广播被拒（学员事件必须定向教师）"
+            );
+            return;
         }
+        // ④ owner_role 必须为 Student（学员回传的会话身份固定为学生）
+        if ev.item.owner_role != Role::Student {
+            tracing::warn!(
+                %session_id,
+                role = ?ev.item.owner_role,
+                event_id = %ev.event_id,
+                "角色不符的事件被拒（学员会话只能提交 Student 角色内容）"
+            );
+            return;
+        }
+        // ===== 通过身份校验 =====
+        // S3 只收紧不放宽：学员回传的落库链路在 S4（issue #89 之后的
+        // #17/#18）启用；此处保持 M1「学员回传未启用」语义，仅记录。
+        // 对比 M1：原 A2 过滤（仅接受 owner==teacher）在此收紧后不可达——
+        // 保留昵称 teacher 已在 join 层拒绝，故 socket 上不存在教师身份。
+        tracing::info!(
+            %session_id,
+            event_id = %ev.event_id,
+            "学员事件通过身份校验（回传入库在 S4 启用，暂不落库）"
+        );
     }
 
     async fn on_file_chunk_stream(
         &self,
+        session_id: &str,
         header: FileHeader,
         mut chunks: mpsc::Receiver<FileChunk>,
         _expected_sha256: String,
     ) -> FileAck {
-        // 学员→教师文件回传在 M2（P1，FR-S-03）启用；M1 排空流并明确拒绝
+        // M2 S3：仅已认证会话可发起文件流（net 层未 join 守卫之上再校验
+        // conns 身份源）。学员→教师文件回传在 M2 S4 启用（FR-S-03），
+        // 当前排空流并明确拒绝。
+        let known = self.conns.lock().unwrap().contains_key(session_id);
         while chunks.recv().await.is_some() {}
-        tracing::warn!(item_id = %header.item_id, "学员文件回传将在 M2 启用，已拒绝");
+        if !known {
+            tracing::warn!(%session_id, item_id = %header.item_id, "未注册会话的文件流，拒绝");
+            return FileAck {
+                item_id: header.item_id,
+                sha256_ok: false,
+            };
+        }
+        tracing::warn!(%session_id, item_id = %header.item_id, "学员文件回传将在 M2 S4 启用，已拒绝");
         FileAck {
             item_id: header.item_id,
             sha256_ok: false,
@@ -437,7 +499,13 @@ impl SessionHandler for Hub {
         }
     }
 
-    async fn on_manifest_req(&self, tx: &mut mpsc::Sender<Frame>) {
+    async fn on_manifest_req(&self, session_id: &str, tx: &mut mpsc::Sender<Frame>) {
+        // M2 S3：清单请求必须来自已认证会话（net 层未 join 守卫之上再校验
+        // conns 身份源；未注册会话不返回任何清单内容）。
+        if !self.conns.lock().unwrap().contains_key(session_id) {
+            tracing::warn!(%session_id, "未注册会话的清单请求，丢弃");
+            return;
+        }
         // PR #34 A1：清单仅含教师广播内容（owner=teacher + audience=All），
         // 不泄露学员提交条目
         let filter = ListFilter {
