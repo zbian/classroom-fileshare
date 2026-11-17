@@ -1,0 +1,2 @@
+LISTEN start 25s
+NOTIFY warning kind=RetryExhausted item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd detail=目标文件被占用，重试 5 次仍未成功，条目已置失败

@@ -229,6 +229,17 @@
 
 建议：① 教师操作返回前 await host 结果（或 host 回执经 SvcNotify 映射为 GUI 提示）；② 最低限度：GUI 在操作后**校验列表状态**（如 rename 后比对标题）并在不一致时提示失败；③ 与 #114/S5 的 ack 聚合可统一考虑。
 
+### 3.9 EX-06 同步告警（IPC 契约，为 #125 banner 提供数据面证据）
+
+基线 `main @ fa1c95e`。方法：QA 探针以真实 IPC 客户端订阅 `SvcNotify`（`listen` 模式，不经 GUI），分别触发两类告警并抓取通知原文。证据 `evidence/M2/Warning-*`。
+
+| 告警类型 | 触发方式 | IPC 通知实测（原文） | 判定 |
+| --- | --- | --- | --- |
+| `RetryExhausted` | 用排他句柄锁住教师端目标文件 → 同名覆盖 → 退避 5 次耗尽 | `NOTIFY warning kind=RetryExhausted item_id=c3c82d58-… detail=目标文件被占用，重试 5 次仍未成功，条目已置失败` | ✅ 契约正确（含 item_id 与中文 detail） |
+| `BackupFailed` | 锁定目标 → 覆盖时 `.bak` 备份失败（不回滚新版本） | `NOTIFY warning kind=BackupFailed item_id=1769cfc8-… detail=旧版本备份失败（目标被占用）` | ✅ 契约正确 |
+
+**说明**：#125（EX-06 banner GUI）的界面聚合展示证据仍由 dev-gui E2E 提供、QA 按四要素复核；本节为**数据面/IPC 侧独立取证**（可交叉验证 banner 展示内容非硬编码）。同时观察到：备份失败时同一条目会先后产生 `BackupFailed` 与后续 `RetryExhausted`（两条告警），#125 的聚合去重逻辑应能合并/分列展示，复核时需核对。
+
 ## 4 缺陷与观察项（M2 期间）
 
 | 编号 | 级别 | 内容 | 状态 |
