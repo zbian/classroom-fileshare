@@ -51,6 +51,14 @@ export interface ItemUpdatedPayload {
   old_version?: number | null
 }
 
+/// 学员提交分组（#94 契约）：教师端「学生提交」左树行
+/// 口径：audience=Teacher 条目按 owner 聚合（不含墓碑），latest_at 为 Unix 秒（最大 updated_at）
+export interface SubmissionGroup {
+  owner_id: string
+  count: number
+  latest_at: number
+}
+
 export type GuiRequest =
   | { t: 'List'; filter: ListFilter }
   | { t: 'SendText'; title: string; body: string }
@@ -60,6 +68,7 @@ export type GuiRequest =
   | { t: 'SetNickname'; nickname: string; pin?: string | null }
   | { t: 'ConfigureRoom'; room: string; pin?: string | null; allow_discovery: boolean }
   | { t: 'Status' }
+  | { t: 'Submissions' }
   | { t: 'PauseTips'; paused: boolean }
   | { t: 'ShutdownGuiOnly' }
 
@@ -76,6 +85,8 @@ export type GuiReply =
   | { t: 'Items'; items: ShareItem[] }
   /** 修订 #6④：结构化状态快照（替代原 StatusText 单轨） */
   | { t: 'Status'; snapshot: StatusSnapshot }
+  /// #94：教师端学生提交分组（retag 后契约键 submissions）
+  | { t: 'Submissions'; submissions: SubmissionGroup[] }
   /** 修订 #7①：OpenItem 返回实体绝对路径（GUI 用户会话负责打开） */
   | { t: 'FilePath'; path: string }
 

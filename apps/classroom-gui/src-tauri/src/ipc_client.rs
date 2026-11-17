@@ -397,6 +397,7 @@ fn retag_reply(reply: &GuiReply) -> Value {
             let (k, v) = map.into_iter().next().expect("外部不可辨名枚举单键");
             let key = match k.as_str() {
                 "Items" => "items",
+                "Submissions" => "submissions",
                 "Status" => "snapshot",
                 "FilePath" => "path",
                 other => other,

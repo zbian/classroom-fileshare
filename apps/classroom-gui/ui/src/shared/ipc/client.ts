@@ -8,7 +8,7 @@
  *
  * 事件负载形态与 crates/ipc 的 SvcNotify 对齐（见 types.ts）。
  */
-import type { GuiReply, ListFilter, ServiceStatus, ShareItem, SvcNotify } from './types'
+import type { GuiReply, ListFilter, ServiceStatus, ShareItem, SubmissionGroup, SvcNotify } from './types'
 
 export type NotifyHandler = (n: SvcNotify) => void
 
@@ -20,6 +20,8 @@ export type UiShareItem = ShareItem & { is_new?: boolean }
 
 export interface GuiClient {
   list(filter: ListFilter): Promise<UiShareItem[]>
+  /** #94：教师端学生提交分组（左树数据源：昵称 / 条数 / 最新时间） */
+  submissions(): Promise<SubmissionGroup[]>
   sendText(title: string, body: string): Promise<GuiReply>
   sendFiles(paths: string[]): Promise<GuiReply>
   deleteItem(id: string): Promise<GuiReply>
@@ -121,10 +123,38 @@ export function parseStatusText(text: string): ServiceStatus {
   return { running, room, online, raw: text }
 }
 
+/** #94：mock 学员提交样例（教师端「学生提交」左树数据源）
+ *  口径：audience=Teacher、owner_role=Student，按 owner 聚合由 submissions() 完成 */
+function seedSubmissions(): UiShareItem[] {
+  const rows: Array<[string, string, 'Text' | 'File', number, number]> = [
+    ['小林', '第三题的疑问', 'Text', 86, 6],
+    ['小林', '作业.docx', 'File', 436_000, 14],
+    ['小林', '课堂笔记.md', 'File', 12_000, 41],
+    ['小周', '实验数据.xlsx', 'File', 88_000, 22],
+    ['小周', '补充问题', 'Text', 54, 33],
+  ]
+  return rows.map(([owner, title, kind, size, mins], i) => ({
+    id: `sub-${i}-${title}`,
+    kind,
+    owner_id: owner,
+    owner_role: 'Student',
+    audience: 'Teacher',
+    title,
+    size,
+    created_at: Date.now() - mins * 60_000,
+    updated_at: Date.now() - mins * 60_000,
+    version: 1,
+    deleted: false,
+    sync_state: 'Synced',
+  }))
+}
+
 export class MockGuiClient implements GuiClient {
   private items: ShareItem[] = seedItems()
   private teacherShares: UiShareItem[] = seedTeacherShares()
   private studentMine: UiShareItem[] = seedStudentMine()
+  /** #94：学员提交样例（教师端分组树/明细） */
+  private submissionRows: UiShareItem[] = seedSubmissions()
   private handlers = new Set<NotifyHandler>()
   private down = false
   private room = 'XK-204'
@@ -144,10 +174,28 @@ export class MockGuiClient implements GuiClient {
     if (ctx.role === 'teacher' || ctx.role === 'student') this.role = ctx.role
   }
 
+  /** #94：学员提交分组聚合（mock：内置两组提交；未读由前端本地水位维护） */
+  submissions(): Promise<SubmissionGroup[]> {
+    if (this.down) return Promise.reject(new Error('后台服务未运行'))
+    const byOwner = new Map<string, SubmissionGroup>()
+    for (const row of this.submissionRows) {
+      if (row.deleted) continue
+      const g = byOwner.get(row.owner_id) ?? { owner_id: row.owner_id, count: 0, latest_at: 0 }
+      g.count += 1
+      g.latest_at = Math.max(g.latest_at, row.updated_at)
+      byOwner.set(row.owner_id, g)
+    }
+    // 契约口径（#94）：latest_at 倒序，最新提交的学员在前
+    return Promise.resolve([...byOwner.values()].sort((a, b) => b.latest_at - a.latest_at))
+  }
+
   list(filter: ListFilter): Promise<UiShareItem[]> {
     if (this.down) return Promise.reject(new Error('后台服务未运行'))
     let rows: UiShareItem[]
-    if (filter.owner === 'teacher') {
+    if (filter.owner && filter.owner !== 'teacher') {
+      // 教师端「学生提交」右表：ListFilter{audience: Teacher, owner: 昵称}
+      rows = this.submissionRows.filter((i) => !i.deleted && i.owner_id === filter.owner)
+    } else if (filter.owner === 'teacher') {
       rows = this.teacherShares.filter((i) => !i.deleted)
     } else if (this.role === 'student') {
       rows = this.studentMine.filter((i) => !i.deleted)
@@ -298,6 +346,12 @@ export class RealGuiClient implements GuiClient {
 
   list(filter: ListFilter): Promise<UiShareItem[]> {
     return this.request({ List: filter }).then((r) => (r.t === 'Items' ? r.items : []))
+  }
+  /** #94：教师端学生提交分组（服务端按 owner 聚合，latest_at 倒序） */
+  submissions(): Promise<SubmissionGroup[]> {
+    return this.request({ Submissions: null }).then((r) =>
+      r.t === 'Submissions' ? r.submissions : [],
+    )
   }
   sendText(title: string, body: string): Promise<GuiReply> {
     return this.request({ SendText: { title, body } })

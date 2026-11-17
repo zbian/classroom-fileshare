@@ -8,6 +8,7 @@ import './main.css'
 import { useMainStore, type TabKey } from './store'
 import MySharesTab from './views/MySharesTab'
 import TeacherSharesTab from './views/TeacherSharesTab'
+import SubmissionsTab from './views/SubmissionsTab'
 import PasteTextDialog from './dialogs/PasteTextDialog'
 import CreateRoomDialog from './dialogs/CreateRoomDialog'
 import DeleteConfirmDialog from './dialogs/DeleteConfirmDialog'
@@ -92,9 +93,11 @@ function TabBar() {
   const activeTab = useMainStore((s) => s.activeTab)
   const setActiveTab = useMainStore((s) => s.setActiveTab)
   const items = useMainStore((s) => s.items)
+  // #16：左树分组计数（教师端「学生提交 (N)」）
+  const groups = useMainStore((s) => s.groups)
   const teacherTabs: { key: TabKey; label: string; disabled?: boolean; hint?: string }[] = [
     { key: 'mine', label: `我共享的 (${items.length})` },
-    { key: 'submissions', label: '学生提交', disabled: true, hint: 'M2（FR-T-05）' },
+    { key: 'submissions', label: `学生提交 (${groups.length})` },
     { key: 'records', label: '收发记录', disabled: true, hint: 'M2' },
   ]
   const studentTabs: { key: TabKey; label: string; disabled?: boolean; hint?: string }[] = [
@@ -130,6 +133,9 @@ function Toolbar() {
   const selected = useMainStore((s) => s.items.find((i) => i.id === s.selectedId))
   const client = useMainStore((s) => s.client)
   const showToast = useMainStore((s) => s.showToast)
+  // #16：学生提交只读工具栏所需
+  const selectedOwner = useMainStore((s) => s.selectedOwner)
+  const loadSubmissions = useMainStore((s) => s.loadSubmissions)
 
   const search = (
     <span className="search-wrap">
@@ -158,6 +164,23 @@ function Toolbar() {
       <option value="Text">文本</option>
     </select>
   )
+
+  // #16 学生提交：只读工具栏（PRD 5.5：不可改名 / 删除 / 覆盖），无任何写操作
+  if (role === 'teacher' && activeTab === 'submissions') {
+    return (
+      <div className="app-toolbar">
+        <span className="chip">只读</span>
+        <span style={{ fontSize: 12, color: 'var(--sub)' }}>
+          学生提交不可改名 / 删除 / 覆盖
+          {selectedOwner ? ` · 当前：${selectedOwner}` : ''}
+        </span>
+        <span className="spacer" />
+        <button className="btn" onClick={() => void loadSubmissions()}>
+          刷新
+        </button>
+      </div>
+    )
+  }
 
   // 学员 D1：只读工具栏（无任何增删改控件，review 硬性条目）
   if (role === 'student' && activeTab === 'teacher') {
@@ -238,7 +261,7 @@ function FooterHint() {
       <div className="info" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <span style={{ flex: 1 }}>
           {role === 'student'
-            ? '拖入文件 / 文本，或 Ctrl+V 粘贴一段文字直接共享给教师'
+            ? '把文件拖到桌面浮动图标即可发送给教师 · 文本可直接 Ctrl+V 粘贴后共享'
             : '把文件拖到桌面浮动图标即可共享 · 文本可直接 Ctrl+V 粘贴后共享'}
         </span>
         {role === 'teacher' ? (
@@ -307,7 +330,9 @@ export default function App() {
       <TabBar />
       <Toolbar />
       <main className="app-content">
-        {isStudentTeacherTab ? (
+        {role === 'teacher' && activeTab === 'submissions' ? (
+          <SubmissionsTab />
+        ) : isStudentTeacherTab ? (
           <TeacherSharesTab />
         ) : (
           <MySharesTab flavor={role === 'student' ? 'student' : 'teacher'} />
