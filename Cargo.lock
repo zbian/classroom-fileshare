@@ -530,6 +530,7 @@ dependencies = [
  "classroom-net",
  "classroom-protocol",
  "classroom-store",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",

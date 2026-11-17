@@ -55,7 +55,9 @@ pub(crate) struct Hub {
     /// session_id → 学员上行 Event。文本/文件内容经随后的 FileHeader→Chunk→
     /// End 分块流承载（与教师广播的 Event+文件帧模型对称）；内容到位后才
     /// 入库，避免「元数据先落库、内容永远不来」的半成品条目。
-    uploads: Mutex<HashMap<String, Event>>,
+    /// session_id → (item_id → 上行 Event)：允许同一会话**并发多个**待完成
+    /// 上传（M2 #18 补发可能连续投递多条；按 item_id 精确配对内容帧）。
+    uploads: Mutex<HashMap<String, HashMap<String, Event>>>,
     /// 占用重试初始退避（秒，M2 #103；由 HostConfig 注入，测试可缩短）。
     retry_initial_backoff_secs: i64,
     port: AtomicU16,
@@ -644,7 +646,12 @@ impl SessionHandler for Hub {
         // Event + 文件帧模型对称）；内容到位、哈希校验通过后才入库——
         // 避免「元数据先落库、内容永远不来」的半成品条目。
         let mut uploads = self.uploads.lock().unwrap();
-        if uploads.insert(session_id.to_string(), ev.clone()).is_some() {
+        if uploads
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(ev.item.id.clone(), ev.clone())
+            .is_some()
+        {
             tracing::warn!(%session_id, "上一个未完成的上传被新事件替换");
         }
         tracing::info!(
@@ -678,7 +685,12 @@ impl SessionHandler for Hub {
             };
         };
         // 取出该会话登记的元数据事件（必须与内容帧 item_id 对应）
-        let pending = self.uploads.lock().unwrap().remove(session_id);
+        let pending = self
+            .uploads
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .and_then(|m| m.remove(&header.item_id));
         let Some(ev) = pending.filter(|e| e.item.id == header.item_id) else {
             drain_chunks_bounded(&mut chunks).await;
             tracing::warn!(

@@ -7,6 +7,8 @@
 //! PRD 7.2）、删除事件落地为墓碑并清理实体、断线自动重连并经 Manifest +
 //! 重推对齐。学员回传（发送）是 M2（P1）内容。
 
+pub mod pending;
+
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,8 @@ use classroom_protocol::{
     PROTOCOL_VERSION,
 };
 use classroom_store::{sha256_file, Store};
+
+use pending::{PendingKind, PendingOp, PendingQueue};
 
 /// 学员端配置。
 pub struct AgentConfig {
@@ -57,6 +61,20 @@ pub enum AgentEvent {
     Removed(String),
     /// 版本清单已到达（对齐完成的第一阶段）。
     Synced,
+    /// 待发队列变化（M2 #18，PRD 6.8）：GUI/状态条展示「待发送 N 条」。
+    PendingOpsChanged {
+        /// 队列长度。
+        count: u32,
+        /// 待发内容总字节数。
+        bytes: u64,
+    },
+    /// 待发缓存超过阈值（PRD 6.8/9.2）：提示清理，**不自动删除**未同步内容。
+    PendingCacheFull {
+        /// 当前占用字节数。
+        bytes: u64,
+        /// 阈值。
+        limit: u64,
+    },
 }
 
 fn unix_now() -> i64 {
@@ -121,7 +139,25 @@ pub async fn run_agent_with_commands(
     // 当前会话的上行发送端：连接建立时装入、会话结束时清空；命令泵据此
     // 判定「是否已连接」（net 层同一写任务，无第二套发送路径）
     let uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>> = Arc::new(Mutex::new(None));
-    tokio::spawn(command_pump(commands, uplink.clone(), cfg.nickname.clone()));
+    // M2 #18：离线待发队列（持久化在 data_root/pending/；断电不丢）
+    let pending = Arc::new(Mutex::new(PendingQueue::open(&cfg.data_root)));
+    tokio::spawn(command_pump(
+        commands,
+        uplink.clone(),
+        pending.clone(),
+        notify.clone(),
+        cfg.nickname.clone(),
+        cfg.data_root.clone(),
+    ));
+    // M2 #18：补发泵——连接可用时按操作时间顺序补做离线操作（失败退避，
+    // 单条失败不阻塞队列；PRD 6.8）
+    tokio::spawn(resend_pump(
+        pending.clone(),
+        uplink.clone(),
+        notify.clone(),
+        cfg.nickname.clone(),
+        cfg.data_root.clone(),
+    ));
 
     if let Some(addr) = cfg.manual_addr {
         return connect_loop(&cfg, &store, addr, &notify, &uplink).await;
@@ -152,7 +188,12 @@ pub async fn run_agent_with_commands(
     }
 }
 
-/// 上行命令泵：`AgentCommand` → 协议帧 → 当前会话（#104）。
+/// 待发缓存阈值（PRD 6.8 / 9.2）：超过后提示清理，**不自动删除**未同步内容。
+pub const PENDING_CACHE_LIMIT_BYTES: u64 = 100 * 1024 * 1024;
+
+/// 上行命令泵：`AgentCommand` → **先持久化待发内容** → 尝试立即发送；
+/// 未连接/发送失败则留在待发队列，由补发泵（[`resend_pump`]）在重连后补做
+/// （M2 #18，PRD 6.8）。
 ///
 /// 设计说明（与 #17 的 `ClientHandler::on_frame(tx)` 关系）：两者最终都经
 /// **同一个** `mpsc::Sender<Frame>` 写入（net 运行器的单一写任务），不存在
@@ -160,53 +201,81 @@ pub async fn run_agent_with_commands(
 /// - `on_frame(tx)`：**会话内被动回应**（收到帧后的即时 Ack 等）；
 /// - 本泵：**会话外主动上行**（GUI 触发的发送，跨重连由 uplink 槽更换端点）。
 ///
-/// 内存策略（评审建议 1）：**流式构造 + 立即发送**——多选大文件不再把所有
-/// 帧累计进内存（旧实现峰值 N×100MB），单文件峰值 ≤ 单文件大小；通道容量
-/// （32 帧）提供背压。
+/// 内存策略（#104 评审建议 1）：**流式构造 + 立即发送**——单文件峰值 ≤
+/// 单文件大小；通道容量（32 帧）提供背压。
 async fn command_pump(
     mut commands: mpsc::Receiver<AgentCommand>,
     uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
+    pending: Arc<Mutex<PendingQueue>>,
+    notify: mpsc::Sender<AgentEvent>,
     nickname: String,
+    data_root: std::path::PathBuf,
 ) {
     while let Some(cmd) = commands.recv().await {
+        // M2 #18：先落盘（PendingOp 持久化，断电不丢；PRD 6.8/9.2），
+        // 再尝试立即发送；成功后从队列移除，失败留给补发泵
+        let ops = match prepare_ops(cmd, &data_root).await {
+            Ok(ops) => ops,
+            Err(e) => {
+                tracing::warn!(error = %e, "上行内容准备失败（未入队）");
+                continue;
+            }
+        };
+        {
+            let mut q = pending.lock().unwrap();
+            for op in &ops {
+                q.push(op.clone());
+            }
+        }
+        notify_pending(&notify, &pending).await;
+        check_cache_threshold(&notify, &pending).await;
+
+        // 已连接则尝试立即发送（失败交由补发泵退避重试）
         let sender = uplink.lock().unwrap().clone();
         let Some(sender) = sender else {
-            // svc 在 IPC 应答前已按连接状态拦截；此处为竞态兜底
-            tracing::warn!("未连接教师机，丢弃上行发送（离线补发归 #18）");
+            tracing::info!(count = ops.len(), "未连接教师机，已入待发队列");
             continue;
         };
-        if let Err(e) = stream_command(cmd, &nickname, &sender).await {
-            tracing::warn!(error = %e, "上行发送失败（通道关闭或内容非法）");
+        for op in ops {
+            match stream_op(&op, &data_root, &nickname, &sender).await {
+                Ok(()) => {
+                    pending.lock().unwrap().complete(&op.id);
+                    tracing::info!(op_id = %op.id, "上行发送成功");
+                }
+                Err(e) => {
+                    tracing::warn!(op_id = %op.id, error = %e, "上行发送失败，留待补发");
+                    break; // 会话已断：后续条目由补发泵按序处理
+                }
+            }
         }
+        notify_pending(&notify, &pending).await;
     }
     tracing::debug!("上行命令通道关闭，命令泵退出");
 }
 
-/// 把一条上行命令**流式**翻译为协议帧并立即发送。
-async fn stream_command(
+/// 把一条命令拆成待发操作并在 `data_root/pending/` 落盘内容（PRD 9.2 本地缓存）。
+///
+/// - 文本：`validate_text` 预检（PRD 10.3），内容 = 正文 UTF-8 字节
+/// - 文件：≤100MB（E10）+ 风险类型（PRD 5.3）预检，内容 = 文件字节
+async fn prepare_ops(
     cmd: AgentCommand,
-    nickname: &str,
-    tx: &mpsc::Sender<Frame>,
-) -> anyhow::Result<()> {
+    data_root: &std::path::Path,
+) -> anyhow::Result<Vec<PendingOp>> {
+    let dir = pending::pending_dir(data_root);
+    tokio::fs::create_dir_all(&dir).await?;
     let now = unix_now();
+    let mut ops = Vec::new();
     match cmd {
         AgentCommand::SendText { title, body } => {
-            // PRD 10.3：标题/正文长度与合法性（发送端预检，host 侧再复检）
             classroom_protocol::validate_text(&title, &body)?;
-            let bytes = body.as_bytes();
-            let sha = sha256_bytes_hex(bytes);
-            let item_id = uuid::Uuid::new_v4().to_string();
-            let ev = upload_event(
-                nickname,
-                &item_id,
-                ItemKind::Text,
+            let bytes = body.as_bytes().to_vec();
+            ops.push(write_pending_content(
+                data_root,
+                PendingKind::Text,
                 &title,
-                body.chars().count() as u64,
-                None,
+                bytes,
                 now,
-            );
-            send_frame(tx, Frame::Event(ev)).await?;
-            send_content(tx, &item_id, &title, bytes, &sha).await?;
+            )?);
         }
         AgentCommand::SendFiles { paths } => {
             if paths.is_empty() {
@@ -231,26 +300,146 @@ async fn stream_command(
                     anyhow::bail!("高风险文件类型不允许发送: {title}");
                 }
                 let bytes = tokio::fs::read(&path).await?;
-                let sha = sha256_bytes_hex(&bytes);
-                let item_id = uuid::Uuid::new_v4().to_string();
-                let ev = upload_event(
-                    nickname,
-                    &item_id,
-                    ItemKind::File,
+                ops.push(write_pending_content(
+                    data_root,
+                    PendingKind::File,
                     &title,
-                    bytes.len() as u64,
-                    Some(sha.clone()),
+                    bytes,
                     now,
-                );
-                send_frame(tx, Frame::Event(ev)).await?;
-                send_content(tx, &item_id, &title, &bytes, &sha).await?;
-                // bytes 在此 drop：单文件峰值释放后再读下一个（流式语义）
+                )?);
             }
         }
     }
-    Ok(())
+    Ok(ops)
 }
 
+/// 写入待发内容文件并构造队列项（`pending/<id>.bin`）。
+fn write_pending_content(
+    data_root: &std::path::Path,
+    kind: PendingKind,
+    title: &str,
+    bytes: Vec<u8>,
+    now: i64,
+) -> anyhow::Result<PendingOp> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let sha = sha256_bytes_hex(&bytes);
+    let content_rel = format!("pending/{id}.bin");
+    std::fs::write(data_root.join(&content_rel), &bytes)?;
+    Ok(PendingOp {
+        id,
+        kind,
+        title: title.to_string(),
+        content_rel,
+        size: bytes.len() as u64,
+        sha256: sha,
+        created_at: now,
+        attempts: 0,
+        next_at: 0, // 立即可发
+    })
+}
+
+/// 按待发操作发送（内容从 `data_root/<content_rel>` 流式读取；先复校验哈希）。
+///
+/// `event_id` 由 op.id 确定性生成（`up-{op.id}`）——同一操作重发时 host 端
+/// 事件去重/同名覆盖保证**不产生重复条目**（TC-09）。
+async fn stream_op(
+    op: &PendingOp,
+    data_root: &std::path::Path,
+    nickname: &str,
+    tx: &mpsc::Sender<Frame>,
+) -> anyhow::Result<()> {
+    let bytes = tokio::fs::read(data_root.join(&op.content_rel)).await?;
+    if sha256_bytes_hex(&bytes) != op.sha256 {
+        anyhow::bail!("待发内容校验失败（哈希不符）");
+    }
+    let now = unix_now();
+    let (kind, size) = match op.kind {
+        PendingKind::Text => (
+            ItemKind::Text,
+            String::from_utf8_lossy(&bytes).chars().count() as u64,
+        ),
+        PendingKind::File => (ItemKind::File, bytes.len() as u64),
+    };
+    let sha = op.sha256.clone();
+    let ev = upload_event(
+        nickname,
+        &op.id,
+        kind,
+        &op.title,
+        size,
+        match op.kind {
+            PendingKind::File => Some(sha.clone()),
+            PendingKind::Text => None,
+        },
+        now,
+    );
+    send_frame(tx, Frame::Event(ev)).await?;
+    send_content(tx, &op.id, &op.title, &bytes, &sha).await
+}
+
+/// 补发泵（M2 #18，PRD 6.8）：连接可用时按**操作时间顺序**补发到期项；
+/// 单条失败按退避重试（1s 起 ×2，封顶 60s）并记次数，**不阻塞其他条目**。
+async fn resend_pump(
+    pending: Arc<Mutex<PendingQueue>>,
+    uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
+    notify: mpsc::Sender<AgentEvent>,
+    nickname: String,
+    data_root: std::path::PathBuf,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let Some(sender) = uplink.lock().unwrap().clone() else {
+            continue; // 未连接：保持队列，等重连
+        };
+        let due = pending.lock().unwrap().due(unix_now());
+        if due.is_empty() {
+            continue;
+        }
+        for op in due {
+            match stream_op(&op, &data_root, &nickname, &sender).await {
+                Ok(()) => {
+                    pending.lock().unwrap().complete(&op.id);
+                    tracing::info!(op_id = %op.id, created_at = op.created_at, "延迟补发送成功");
+                    notify_pending(&notify, &pending).await;
+                }
+                Err(e) => {
+                    let attempts = pending.lock().unwrap().retry_later(&op.id, unix_now());
+                    tracing::warn!(op_id = %op.id, attempts, error = %e, "补发送失败，退避重试");
+                    // 单条失败不阻塞队列：继续处理下一条
+                }
+            }
+        }
+    }
+}
+
+/// 推送待发队列状态（GUI 状态条「待发送 N 条」）。
+async fn notify_pending(notify: &mpsc::Sender<AgentEvent>, pending: &Arc<Mutex<PendingQueue>>) {
+    let (count, bytes) = {
+        let q = pending.lock().unwrap();
+        (q.len() as u32, q.total_bytes())
+    };
+    let _ = notify
+        .send(AgentEvent::PendingOpsChanged { count, bytes })
+        .await;
+}
+
+/// 缓存阈值检查（PRD 6.8/9.2）：超阈值只**提示清理**，不自动删除。
+async fn check_cache_threshold(
+    notify: &mpsc::Sender<AgentEvent>,
+    pending: &Arc<Mutex<PendingQueue>>,
+) {
+    let bytes = pending.lock().unwrap().total_bytes();
+    if bytes > PENDING_CACHE_LIMIT_BYTES {
+        let _ = notify
+            .send(AgentEvent::PendingCacheFull {
+                bytes,
+                limit: PENDING_CACHE_LIMIT_BYTES,
+            })
+            .await;
+    }
+}
 /// 构造学员上行事件（owner=本机昵称；host 以会话身份权威校验，#94 契约）。
 fn upload_event(
     nickname: &str,

@@ -52,14 +52,11 @@ async fn student_core_serves_ipc_and_stops_cleanly() {
                 })
                 .await
             {
-                Ok(Err(msg)) => assert!(
-                    // M2 #104：student 发送链路已打通；无教师机连接时
-                    // 明确报「未连接教师机…」（断言「明确错误、不静默成功」
-                    // 不变，文案随新语义更新）
-                    msg.contains("未连接") || msg.contains("不支持发送"),
-                    "student 未连接时发送应明确报错: {msg}"
-                ),
-                other => panic!("student SendText 应返回错误而非静默成功: {other:?}"),
+                // M2 #18（PRD 6.8）：student 未连接教师机时**不再报错**——
+                // 命令入离线待发队列（持久化 data_root/pending），重连后
+                // 自动补发；IPC 返回 Ok（断网可提交，不静默丢弃）
+                Ok(Ok(GuiReply::Ok)) => {}
+                other => panic!("student 断网提交应入队并返回 Ok: {other:?}"),
             }
             served = true;
             break;
