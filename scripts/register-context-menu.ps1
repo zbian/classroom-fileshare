@@ -1,4 +1,4 @@
-# 课堂共享 · 资源管理器右键扩展注册（HKCU，免管理员，PRD 3.7 / T-12）
+﻿# 课堂共享 · 资源管理器右键扩展注册（HKCU，免管理员，PRD 3.7 / T-12）
 # 用法：
 #   register-context-menu.ps1            # 自动找 target\debug|release 下的 exe
 #   register-context-menu.ps1 -ExePath <path>
