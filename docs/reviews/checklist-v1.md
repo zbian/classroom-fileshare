@@ -22,6 +22,7 @@
 - [ ] 日志统一 tracing，不含文件正文、文本内容、学生昵称等隐私（PRD 9.6）
 - [ ] 不引入 PRD 2.5 范围外功能（跨网段/云端中继/账号/版本历史/全局热键）
 - [ ] 分支/提交/PR 格式合规：Conventional Commits、Refs/Closes #issue、GUI 变更附截图（DEVELOPMENT.md）
+- [ ] **分支基点与合并面**：先 `git merge-base origin/main <head>` 判基点是否基于最新 main；再以 **three-dot** `git diff origin/main...<head> --stat` 判**真实合并面**（见 [附录 B](#附录-b-分支基点与合并面判据三步法2026-11-17-增补)）。基点陈旧时：门禁/取证数字对 main 无效（须 rebase 重跑），且若分支自身修改/删除了 main 已存在文件，three-dot 会把倒退带进合并面
 
 ## protocol（T-02）
 
@@ -115,3 +116,30 @@
 - [ ] 本机 CI 门禁 `.\scripts\local-ci.ps1` **ALL PASS**（6 项：PS BOM 守卫 / fmt / clippy / test / pnpm build / GUI release clippy），汇总输出贴 PR（DEVELOPMENT.md「本机 CI（门禁）」）
 - [ ] GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，用户指令 2026-11-17）；无 GHA 相关表述残留
 - [ ] 门禁 1 含双面规则：`.ps1` 必须有 UTF-8 BOM、`.json` 数据不得带 BOM
+
+## 附录 B 分支基点与合并面判据（三步法，2026-11-17 增补）
+
+> 背景：M1 评审期多次出现「分支从旧 main 分出」的情况。曾把 `git diff origin/main..<head>`（two-dot 树面）误当作「合并会回退 main」的判断依据，据此写出错误判例（PR #85 首版留言）。经 lead 实测纠正并固化本节，**三步必须分开做**。
+
+### B.1 三步判据
+
+| 步 | 命令 | 判什么 | 注意 |
+| --- | --- | --- | --- |
+| 1 | `git merge-base origin/main <head>`<br>`git merge-base --is-ancestor <该 merge-base> origin/main` | **基点是否基于最新 main**（识别 stale base） | 不是 main tip 即「基点陈旧」 |
+| 2 | `git diff <merge-base> <head> --stat`<br>（等价 **three-dot** `git diff origin/main...<head> --stat`） | **真实合并面**——squash merge 实际应用的差集 | 评审「这个 PR 会带来什么」只看这一步 |
+| 3 | `git diff origin/main..<head> --stat`（**two-dot 树面**） | 仅参考「若强行把 head 树对齐 main 会差什么」 | **不得作为回退判断依据**（见 B.2） |
+
+### B.2 两个方向的错误判例（都要避免）
+
+1. **过度警告（我们犯过的错）**：把 two-dot 的「删除 XXX（-191 行）」当成「合并会删掉 main 上已合入的 PR」→ **错**。squash merge 应用 three-dot，stale base 本身**不会回退 main**。PR #85 实测：two-dot 44 文件 ±3000 行（假象）vs **three-dot 8 文件 1191 行纯新增（真实面，无回退风险）**。
+2. **过度安心（同样要防）**：stale base ≠ 永远安全。**three-dot 仍可能包含真实倒退**——
+   - 分支上**删除了** main 已存在的文件 → three-dot 含该删除 → squash 会真的删；
+   - 分支基于**旧版文件**做了修改，而 main 后来也改了同一文件 → 无文本冲突时可能静默合并出语义倒退；有冲突时 GitHub 显示 CONFLICTING；
+   - 有人用 `checkout <head> -- .` / `reset --hard` 等**树面方式**操作才会整体回退（正规 squash 不会）。
+
+### B.3 结论与处置口径
+
+- **基点陈旧 → 必须 rebase**，但理由要写准：
+  1. **主要理由（硬）**：门禁/取证跑的是旧树，数字与证据对当前 main **无效**（「取证环境 ≠ 发布环境」，与本项目反复出现的「测试形态 ≠ 真实形态」同型）；
+  2. 次要理由：rebase 后 diff 收敛、便于评审，并让 B.2-2 的叠加风险显形（冲突或口径不一致）。
+- **禁止**写「合并会回退 main」作为阻塞理由（除非 three-dot 实测确实包含对 main 已存在文件的删除/倒退——这种情况须在记录里给出 `git diff main...<head> --stat` 的具体行）。
