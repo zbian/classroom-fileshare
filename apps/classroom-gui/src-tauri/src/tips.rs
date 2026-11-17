@@ -8,6 +8,9 @@
 use crate::state::AppState;
 use crate::windows::{self, ICON_LABEL};
 use serde::Serialize;
+// 仅 dev 演示（cfg(debug_assertions)）使用；release 下不引入（release
+// clippy 守卫：M1 收尾修复 unused import 盲区）
+#[cfg(debug_assertions)]
 use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
@@ -19,6 +22,11 @@ pub const TIPS_W: f64 = 300.0;
 pub const TIPS_MIN_H: f64 = 96.0;
 
 /// 单条 tips 载荷。M1 为演示形态；T7 接入后由 ShareItem 映射出展示字段。
+///
+/// release 构建下仅 `demo_tips`（cfg debug）构造它，故 release clippy 报
+/// dead_code；真实接线（SvcNotify::ShareReceived → push_tip）是 M2 项
+/// （记 #16），接线后移除本条 allow。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TipDto {
@@ -54,6 +62,11 @@ pub fn ensure_tips_window(app: &AppHandle) -> tauri::Result<()> {
 
 /// 推送一条 tips（服务通知与演示共用入口）。
 /// 数据永远下发；「暂停接收提醒」只抑制窗口显示，不影响接收（PRD 4.3）。
+///
+/// release clippy dead_code：当前唯一调用方 `demo_tips` 为 cfg(debug)；
+/// SvcNotify::ShareReceived → push_tip 的真实接线是 M2 项（记 #16），
+/// 接线后移除本条 allow。
+#[allow(dead_code)]
 pub fn push_tip(app: &AppHandle, tip: TipDto) {
     if let Some(w) = app.get_webview_window(TIPS_LABEL) {
         #[cfg(debug_assertions)]

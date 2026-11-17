@@ -280,9 +280,11 @@ fn handle_icon_event(window: &Window, event: &tauri::WindowEvent) {
         // 图标常驻：Alt+F4/系统关闭请求一律阻止，退出只走菜单
         tauri::WindowEvent::CloseRequested { api, .. } => api.prevent_close(),
         tauri::WindowEvent::DragDrop(dd) => handle_drag_drop(&app, dd),
-        tauri::WindowEvent::Resized(size) => {
+        // 下划线前缀：仅供 debug 日志使用（release clippy 守卫：M1 收尾修复
+        // unused variable 盲区）
+        tauri::WindowEvent::Resized(_size) => {
             #[cfg(debug_assertions)]
-            eprintln!("[t8] icon resized: {size:?}");
+            eprintln!("[t8] icon resized: {_size:?}");
         }
         _ => {}
     }
