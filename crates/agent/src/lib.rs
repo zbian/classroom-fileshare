@@ -1,13 +1,11 @@
 //! 学员端：发现、加入、接收与重连对齐（PRD 6.x、7.5、FR-S-01..08 的 M1 子集）。
 //!
-//! M1 范围：手动地址连接（RK-04 备用路径）、join（携带 PIN）、心跳 5s、
-//! 接收教师广播（文本正文与文件都经文件帧传输，先落盘再通知——PRD 7.2）、
-//! 删除事件落地为墓碑并清理实体、断线自动重连并经 Manifest + 重推对齐。
-//! 学员回传（发送）是 M2（P1）内容。
-//!
-//! beacon 自动发现连接的遗留缺口：`spawn_discovery` 的 Beacon 不含来源 IP
-//! （接口未传出 recv_from 的 peer 地址），M1 仅透传 [`AgentEvent::Discovered`]
-//! 供 GUI 展示，连接一律走 `manual_addr`；M2/T-10 补自动连接。
+//! M1 范围：**自动发现并连接**（E9：beacon → `(peer.ip, tcp_port)` 目标，
+//! 支持 `room_filter` 房间码过滤；PRD 2.4 学生 1 步设昵称 / 3.1 自动发现）、
+//! `manual_addr` 直连（RK-04 备用路径，优先级更高）、join（携带 PIN）、
+//! 心跳 5s、接收教师广播（文本正文与文件都经文件帧传输，先落盘再通知——
+//! PRD 7.2）、删除事件落地为墓碑并清理实体、断线自动重连并经 Manifest +
+//! 重推对齐。学员回传（发送）是 M2（P1）内容。
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -20,7 +18,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use classroom_net::{
-    encode_frame, read_frame, spawn_discovery, Beacon, FileHeader, Frame, Hello, HelloReply,
+    encode_frame, read_frame, spawn_discovery_with_addr, Beacon, FileHeader, Frame, Hello,
+    HelloReply,
 };
 use classroom_protocol::{Event, EventKind, MergeDecision, Role, ShareItem, PROTOCOL_VERSION};
 use classroom_store::{sha256_file, Store};
@@ -31,8 +30,11 @@ pub struct AgentConfig {
     pub nickname: String,
     /// 房间 PIN（接口修订 #5②：计划遗漏，join 需携带）。
     pub pin: Option<String>,
-    /// 手动教师机地址（RK-04 备用连接方式）；None 时仅监听发现通知。
+    /// 手动教师机地址（RK-04 备用连接方式，优先级最高）；None 时自动发现。
     pub manual_addr: Option<SocketAddr>,
+    /// 期望房间码（E9）：自动发现时仅连接匹配房间的信标；None 则连接
+    /// 首个发现（单房间课堂）。来源 svc.json 的 room_code（安装时配置）。
+    pub room_filter: Option<String>,
     /// 数据根目录。
     pub data_root: PathBuf,
 }
@@ -40,9 +42,9 @@ pub struct AgentConfig {
 /// 学员端通知事件。
 #[derive(Debug)]
 pub enum AgentEvent {
-    /// 发现的教师机信标（M1 仅通知，不自动连接）。
+    /// 发现的教师机信标（GUI 弹窗展示房间码，B1）。
     Discovered(Vec<Beacon>),
-    /// 已加入房间（manual 连接时为 `tcp://` 地址描述）。
+    /// 已加入房间（`tcp://地址` 描述，manual 与自动发现两种来源一致）。
     Joined(String),
     /// 连接断开（随后自动重连）。
     Disconnected,
@@ -68,30 +70,92 @@ fn to_hex(bytes: &[u8]) -> String {
 /// 运行学员端：连接 → 会话 → 断线退避重连（1s 起、×2、封顶 5s）。
 /// join 被拒（错 PIN / 重名 / 版本不匹配）是致命错误，直接返回 Err；
 /// 连接失败与 IO 断线均为可重连状态。
+///
+/// 连接目标来源：`manual_addr` 优先（RK-04 备用路径）；否则 **自动发现**
+/// （E9，PRD 2.4「学生 1 步设昵称」/ 3.1「自动发现并连接」）——
+/// 后台 discovery 泵持续把最新信标的 `(peer.ip, tcp_port)` 写入 watch，
+/// 连接循环每次重连都取最新目标（教师机换 IP/端口后自然跟上）。
 pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> anyhow::Result<()> {
     let mut store = Store::open(&cfg.data_root)?;
-    let Some(addr) = cfg.manual_addr else {
-        // M1：无手动地址——仅监听发现并透传（自动连接 M2/T-10，见模块文档）
-        let (beacon_tx, mut beacon_rx) = mpsc::channel(16);
-        spawn_discovery(beacon_tx);
-        let mut seen: Vec<Beacon> = Vec::new();
-        while let Some(b) = beacon_rx.recv().await {
-            if !seen
-                .iter()
-                .any(|x| x.room == b.room && x.tcp_port == b.tcp_port && x.host_name == b.host_name)
-            {
-                seen.push(b);
-            }
-            let _ = notify.send(AgentEvent::Discovered(seen.clone())).await;
-        }
-        return Ok(());
-    };
+    if let Some(addr) = cfg.manual_addr {
+        return connect_loop(&cfg, &mut store, addr, &notify).await;
+    }
+
+    // 自动发现：watch 保存最新连接目标；None = 尚未发现任何可用教师机
+    let (target_tx, mut target_rx) = tokio::sync::watch::channel::<Option<SocketAddr>>(None);
+    tokio::spawn(discovery_pump(
+        cfg.room_filter.clone(),
+        target_tx,
+        notify.clone(),
+    ));
+    tracing::info!("未配置 manual_addr，进入自动发现模式");
 
     let mut backoff = Duration::from_secs(1);
     loop {
-        agent_session(&cfg, &mut store, addr, &notify).await?;
+        // 等待发现目标（未发现时阻塞，不消耗 CPU）
+        let target = loop {
+            if let Some(t) = *target_rx.borrow() {
+                break t;
+            }
+            if target_rx.changed().await.is_err() {
+                anyhow::bail!("discovery 任务已退出");
+            }
+        };
+        connect_loop(&cfg, &mut store, target, &notify).await?;
+        // connect_loop 仅在致命错误时返回；正常路径不会走到这里
+        backoff = (backoff * 2).min(Duration::from_secs(5));
+        tokio::time::sleep(backoff).await;
+    }
+}
+
+/// 后台发现泵：监听 beacon，更新最新连接目标并向 GUI 推送发现列表。
+async fn discovery_pump(
+    room_filter: Option<String>,
+    target_tx: tokio::sync::watch::Sender<Option<SocketAddr>>,
+    notify: mpsc::Sender<AgentEvent>,
+) {
+    let mut seen: Vec<Beacon> = Vec::new();
+    loop {
+        let (addr_tx, mut addr_rx) = mpsc::channel::<(SocketAddr, Beacon)>(16);
+        let handle = spawn_discovery_with_addr(addr_tx);
+        while let Some((peer, beacon)) = addr_rx.recv().await {
+            let matches_room = room_filter
+                .as_deref()
+                .map(|want| want == beacon.room)
+                .unwrap_or(true);
+            if !seen.iter().any(|x| {
+                x.room == beacon.room
+                    && x.tcp_port == beacon.tcp_port
+                    && x.host_name == beacon.host_name
+            }) {
+                seen.push(beacon.clone());
+                let _ = notify.send(AgentEvent::Discovered(seen.clone())).await;
+            }
+            if matches_room {
+                // 连接目标 = 信标来源 IP + 教师 TCP 端口（T-4 遗留补齐）
+                let target = SocketAddr::new(peer.ip(), beacon.tcp_port);
+                let _ = target_tx.send(Some(target));
+            }
+        }
+        // discovery 任务结束（端口绑定失败/接收错误）：休息后重试监听
+        handle.abort();
+        tracing::warn!("discovery 中断，2s 后重试监听");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// 连接循环：会话 → 断线退避重连（连接失败视为可重连，不返回）。
+async fn connect_loop(
+    cfg: &AgentConfig,
+    store: &mut Store,
+    addr: SocketAddr,
+    notify: &mpsc::Sender<AgentEvent>,
+) -> anyhow::Result<()> {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        agent_session(cfg, store, addr, notify).await?;
         let _ = notify.send(AgentEvent::Disconnected).await;
-        tracing::info!(retry_in = ?backoff, "与教师机断开，稍后自动重连");
+        tracing::info!(retry_in = ?backoff, %addr, "与教师机断开，稍后自动重连");
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
     }

@@ -57,6 +57,17 @@ async fn start_host_at_inner(
     pin: Option<String>,
     data_root: Option<std::path::PathBuf>,
 ) -> TestHost {
+    start_host_room(port, pin, data_root, "XK-204").await
+}
+
+/// 指定房间码起 host（E9 自动发现用例用唯一房间，避免并行测试进程间
+/// 的广播串扰）。
+async fn start_host_room(
+    port: u16,
+    pin: Option<String>,
+    data_root: Option<std::path::PathBuf>,
+    room: &str,
+) -> TestHost {
     let (root, guard) = match data_root {
         Some(r) => (r, None),
         None => {
@@ -65,7 +76,7 @@ async fn start_host_at_inner(
         }
     };
     let cfg = HostConfig {
-        room_code: "XK-204".into(),
+        room_code: room.into(),
         pin,
         data_root: root.clone(),
         tcp_port: port,
@@ -100,6 +111,7 @@ async fn start_agent(
         nickname: nickname.into(),
         pin,
         manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
         data_root: root.to_path_buf(),
     };
     tokio::spawn(classroom_agent::run_agent(cfg, tx));
@@ -315,6 +327,7 @@ async fn join_rejection_is_fatal() {
         nickname: "alice".into(),
         pin: Some("0000".into()),
         manual_addr: Some(format!("127.0.0.1:{}", host.port).parse().unwrap()),
+        room_filter: None,
         data_root: agent_dir.path().to_path_buf(),
     };
     let handle = tokio::spawn(classroom_agent::run_agent(cfg, tx));
@@ -416,6 +429,7 @@ async fn live_agent_answers_probe_and_keeps_receiving() {
         nickname: "alice".into(),
         pin: None,
         manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
         data_root: dir2.path().to_path_buf(),
     };
     let handle = tokio::spawn(classroom_agent::run_agent(cfg2, tx2));
@@ -445,6 +459,72 @@ async fn live_agent_answers_probe_and_keeps_receiving() {
     assert_eq!(item.owner_id, "teacher");
 }
 
+/// E9（PRD 2.4「学生 1 步设昵称」/ 3.1「自动发现并连接」/ TC-01）：
+/// `manual_addr = None` 时经 beacon 自动发现并加入，随后正常接收广播。
+/// 测试以「向真实 discovery 端口注入 beacon」模拟教师机广播（避开受限
+/// 广播在 CI 的不可靠性），完整覆盖 UDP 收包解析 → 目标推导 → TCP join
+/// → 会话接收全链路；房间码用唯一值 + `room_filter` 防并行测试串扰。
+#[tokio::test]
+async fn auto_discovers_and_connects_without_manual_addr() {
+    let room = format!("AUTO-{}", uuid::Uuid::new_v4().simple());
+    let host = start_host_room(free_port(), None, None, &room).await;
+    let host_port = host.port;
+    let agent_dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(128);
+    let cfg = AgentConfig {
+        nickname: "auto".into(),
+        pin: None,
+        manual_addr: None,
+        room_filter: Some(room.clone()),
+        data_root: agent_dir.path().to_path_buf(),
+    };
+    tokio::spawn(classroom_agent::run_agent(cfg, tx));
+
+    // 注入教师机 beacon：指向 host 的真实 tcp_port，每 200ms 一次（覆盖
+    // discovery 绑定完成前的窗口）
+    let beacon = classroom_net::Beacon {
+        protocol_version: classroom_protocol::PROTOCOL_VERSION,
+        room: room.clone(),
+        tcp_port: host_port,
+        pin_required: false,
+        host_name: "auto-test".into(),
+    };
+    let payload = serde_json::to_vec(&beacon).unwrap();
+    let injector = tokio::spawn(async move {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst: std::net::SocketAddr = format!("127.0.0.1:{}", classroom_net::DISCOVERY_PORT)
+            .parse()
+            .unwrap();
+        loop {
+            let _ = sock.send_to(&payload, dst).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    // 自动发现 → 自动 join
+    next_matching(&mut rx, |e| {
+        matches!(e, AgentEvent::Joined(_)).then_some(())
+    })
+    .await;
+
+    // 全链路：教师广播 → agent 落盘 → Received
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "自动发现".into(),
+            body: "已连上".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut rx, |e| match e {
+        AgentEvent::Received(i) if i.title == "自动发现" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.owner_id, "teacher");
+    assert_eq!(item.audience, classroom_protocol::Audience::All);
+    injector.abort();
+}
+
 /// 杀掉 agent「进程」后昵称立即可被新 agent 使用（qa §3.8）。
 #[tokio::test]
 async fn killed_agent_frees_nickname() {
@@ -456,6 +536,7 @@ async fn killed_agent_frees_nickname() {
         nickname: "alice".into(),
         pin: None,
         manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
         data_root: dir1.path().to_path_buf(),
     };
     let h1 = tokio::spawn(classroom_agent::run_agent(cfg1, tx1));

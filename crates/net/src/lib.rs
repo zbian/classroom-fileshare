@@ -7,7 +7,7 @@ pub mod beacon;
 pub mod frame;
 pub mod session;
 
-pub use beacon::{spawn_beacon, spawn_discovery, Beacon};
+pub use beacon::{spawn_beacon, spawn_discovery, spawn_discovery_with_addr, Beacon};
 pub use frame::{
     encode_frame, read_frame, FileAck, FileChunk, FileEnd, FileHeader, Frame, Hello, HelloErr,
     HelloReply, MAX_FRAME_SIZE,
