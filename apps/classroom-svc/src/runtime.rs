@@ -271,12 +271,16 @@ pub fn make_ipc_handler(
             //「try_send 后一律 Ok」造成静默失败（PRD 5.4）。
             // host 侧执行结果（如文件占用改名失败）仍为异步日志——完整
             // 回执通道随 #114（S5 ack）统一，PR 已记录。
-            if new_name.trim().is_empty() {
+            // 评审修正：预检与 host 执行使用**同一净化结果**（`../x` → `x`），
+            // 否则带路径成分的名字会绕过同名校验、到 host 才失败（静默）。
+            let clean_name = if new_name.trim().is_empty() {
                 return Err("名称不能为空".into());
-            }
-            if classroom_protocol::sanitize_file_name(&new_name).is_err() {
-                return Err("名称非法（不能包含路径分隔符或保留字符）".into());
-            }
+            } else {
+                match classroom_protocol::sanitize_file_name(&new_name) {
+                    Ok(n) if !n.is_empty() => n,
+                    _ => return Err("名称非法（不能包含路径分隔符或保留字符）".into()),
+                }
+            };
             {
                 let guard = store.lock().unwrap();
                 let Some(target) = guard.get(&id).map_err(|e| e.to_string())? else {
@@ -285,7 +289,7 @@ pub fn make_ipc_handler(
                 if target.deleted {
                     return Err("条目不存在或已删除".into());
                 }
-                // 同名冲突预检（同 owner + audience + title，排除自身）
+                // 同名冲突预检（同 owner + audience + title，排除自身；用净化名）
                 let same_scope = guard
                     .list(ListFilter {
                         owner: Some(target.owner_id.clone()),
@@ -295,16 +299,19 @@ pub fn make_ipc_handler(
                     .map_err(|e| e.to_string())?;
                 if let Some(existing) = same_scope
                     .iter()
-                    .find(|i| i.title == new_name && !i.deleted)
+                    .find(|i| i.title == clean_name && !i.deleted)
                 {
                     if existing.id != target.id {
-                        return Err(format!("名称「{new_name}」已存在，请换一个"));
+                        return Err(format!("名称「{clean_name}」已存在，请换一个"));
                     }
                 }
             }
             dispatch_teacher(
                 &host_cmd,
-                HostCommand::Rename { id, new_name },
+                HostCommand::Rename {
+                    id,
+                    new_name: clean_name,
+                },
                 "学员重命名在 M2 未提供",
             )
         }
@@ -906,7 +913,17 @@ mod tests {
         })
         .is_err());
 
-        // ③ 成功 → Ok 且投递 HostCommand::Rename
+        // ③ 带路径成分的名称按**净化后**结果比对（评审修正）：`../占用名`
+        //    净化成「占用名」→ 预检命中冲突（而非到 host 才静默失败）
+        match handler(GuiRequest::RenameItem {
+            id: a.id.clone(),
+            new_name: "../占用名".into(),
+        }) {
+            Err(msg) => assert!(msg.contains("已存在"), "净化后冲突应预检命中: {msg}"),
+            Ok(other) => panic!("净化后冲突不得返回 Ok: {other:?}"),
+        }
+
+        // ④ 成功 → Ok 且投递 HostCommand::Rename（new_name 为净化名）
         match handler(GuiRequest::RenameItem {
             id: a.id.clone(),
             new_name: "新名".into(),
@@ -922,7 +939,7 @@ mod tests {
             other => panic!("期望 HostCommand::Rename，实际 {other:?}"),
         }
 
-        // ④ 学员端：重命名未在 M2 提供（明确拒绝）
+        // ⑤ 学员端：重命名未在 M2 提供（明确拒绝）
         let dir2 = tempfile::tempdir().unwrap();
         let store2 = Arc::new(Mutex::new(Store::open(dir2.path()).unwrap()));
         let student = make_ipc_handler(
