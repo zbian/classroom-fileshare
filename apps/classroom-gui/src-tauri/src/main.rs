@@ -203,6 +203,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new(config))
         .manage(IpcBridge::new())
         .setup(move |app| {
