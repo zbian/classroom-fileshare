@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
-use classroom_host::{HostCommand, HostConfig, HostEvent};
+use classroom_host::{HostCommand, HostConfig, HostEvent, HostWarningKind};
 use classroom_net::{encode_frame, read_frame, FileHeader, Frame, Hello, HelloErr, HelloReply};
 use classroom_protocol::{ItemKind, Role, MAX_FILE_SIZE, PROTOCOL_VERSION};
 use classroom_store::{ListFilter, Store};
@@ -61,6 +61,11 @@ struct Host {
 }
 
 async fn start_host(pin: Option<String>) -> Host {
+    start_host_with_retry(pin, 1).await
+}
+
+/// 带占用重试初始退避（秒）的 host 启动；测试用 0 = 立即重试。
+async fn start_host_with_retry(pin: Option<String>, retry_secs: i64) -> Host {
     let guard = tempfile::tempdir().unwrap();
     let data_root = guard.path().to_path_buf();
     let cfg = HostConfig {
@@ -68,6 +73,7 @@ async fn start_host(pin: Option<String>) -> Host {
         pin,
         data_root: data_root.clone(),
         tcp_port: 0,
+        retry_initial_backoff_secs: retry_secs,
     };
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, mut ev_rx) = mpsc::channel(128);
@@ -440,6 +446,7 @@ async fn non_teacher_event_ignored_and_manifest_excludes_it() {
             version: 1,
             deleted: false,
             sync_state: classroom_protocol::SyncState::Synced,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
@@ -616,6 +623,7 @@ fn crafted_event(owner: &str, audience: classroom_protocol::Audience) -> classro
             version: 1,
             deleted: false,
             sync_state: classroom_protocol::SyncState::Synced,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
@@ -776,6 +784,7 @@ async fn student_upload(
             version: 1,
             deleted: false,
             sync_state: SyncState::PendingSync,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
@@ -1048,6 +1057,7 @@ async fn student_upload_over_limit_rejected_streaming() {
             version: 1,
             deleted: false,
             sync_state: SyncState::PendingSync,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
@@ -1414,4 +1424,145 @@ async fn student_uplink_file_reaches_teacher() {
     assert_eq!(sha256_hex(&body), expected_sha, "落盘字节与源文件哈希一致");
     task.abort();
     let _ = dir;
+}
+// ---------- M2 #103：占用退避重试（host 调度器，真实文件占用） ----------
+
+/// 以**独占**句柄持有文件（Windows `share_mode(0)`）：模拟「被其他程序占用」，
+/// 对目标与 `.bak` 的 rename 都会失败。
+#[cfg(windows)]
+fn hold_exclusive(path: &std::path::Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .expect("独占占用句柄")
+}
+
+#[cfg(not(windows))]
+fn hold_exclusive(path: &std::path::Path) -> std::fs::File {
+    std::fs::File::open(path).expect("占用句柄")
+}
+
+/// 造「v1 已发送 → 占用目标 → 同名 v2 触发 RetryQueued」的公共前缀。
+async fn enqueue_busy_overwrite(
+    host: &mut Host,
+    src: &std::path::Path,
+) -> (
+    classroom_protocol::ShareItem,
+    std::fs::File,
+    std::path::PathBuf,
+) {
+    let dir_a = src.join("a");
+    let dir_b = src.join("b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let f1 = dir_a.join("课件.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "课件.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(v1.sync_state, classroom_protocol::SyncState::Synced);
+    let store = Store::open(&host.data_root).unwrap();
+    let final_path = store.file_body(&v1).unwrap();
+    let hold = hold_exclusive(&final_path);
+
+    let f2 = dir_b.join("课件.pdf"); // 同名 → 同 scope → 覆盖
+    std::fs::write(&f2, b"v2").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f2] })
+        .await
+        .unwrap();
+    let queued = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i)
+            if i.title == "课件.pdf"
+                && i.sync_state == classroom_protocol::SyncState::RetryLocked =>
+        {
+            Some(i)
+        }
+        _ => None,
+    })
+    .await;
+    (queued, hold, final_path)
+}
+
+/// #103 用例 6（TC-07 收口）：占用 → `RetryLocked`（列表可见，不阻塞其他
+/// 共享）→ 释放占用后**自动**重试成功：内容最新、`.bak` 1 份、`Synced`、
+/// 计数归零。
+#[tokio::test]
+async fn busy_target_retries_automatically() {
+    let mut host = start_host_with_retry(None, 0).await;
+    let src = tempfile::tempdir().unwrap();
+    let (queued, hold, final_path) = enqueue_busy_overwrite(&mut host, src.path()).await;
+    assert_eq!(queued.retry_count, 0, "首次入队计数为 0");
+
+    // 释放占用 → 调度器（200ms tick，退避 0）自动重试
+    drop(hold);
+    let synced = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i)
+            if i.title == "课件.pdf"
+                && i.sync_state == classroom_protocol::SyncState::Synced
+                && i.version == queued.version =>
+        {
+            Some(i)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(synced.retry_count, 0, "成功后计数归零");
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"v2", "内容为最新版");
+    let mut bak = final_path.as_os_str().to_os_string();
+    bak.push(".bak");
+    let bak = std::path::PathBuf::from(bak);
+    assert!(bak.exists(), "旧版备份存在");
+    assert_eq!(std::fs::read(&bak).unwrap(), b"v1");
+    // 队列已清空
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(store.retry_snapshot().is_empty(), "成功后移出队列");
+}
+
+/// #103 用例 7：始终占用 → 重试 **≤5 次** 后耗尽：`HostEvent::Warning`
+/// （RetryExhausted）+ 条目 `Failed`（GUI 显示「已用尽」），不无限重试。
+#[tokio::test]
+async fn retry_exhausted_emits_warning() {
+    let mut host = start_host_with_retry(None, 0).await;
+    let src = tempfile::tempdir().unwrap();
+    let (queued, hold, _final_path) = enqueue_busy_overwrite(&mut host, src.path()).await;
+
+    // 占用不放 → 等待告警（5 次 × 200ms tick，远小于 5s 超时）
+    let warned = next_matching(&mut host.events, |e| match e {
+        HostEvent::Warning {
+            kind: HostWarningKind::RetryExhausted,
+            ..
+        } => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(warned, ());
+    let store = Store::open(&host.data_root).unwrap();
+    let after = store.get(&queued.id).unwrap().expect("条目保留（Failed）");
+    assert_eq!(after.sync_state, classroom_protocol::SyncState::Failed);
+    assert_eq!(
+        after.retry_count,
+        classroom_store::RETRY_MAX_ATTEMPTS,
+        "耗尽后计数保持上限"
+    );
+    assert!(store.retry_snapshot().is_empty(), "耗尽后移出队列");
+    drop(hold);
+    // 再等一段时间确认**不会**继续重试（无新 Warning / 无新广播）
+    let extra = tokio::time::timeout(
+        Duration::from_millis(500),
+        next_matching(&mut host.events, |e| match e {
+            HostEvent::Warning { .. } => Some(()),
+            _ => None,
+        }),
+    )
+    .await;
+    assert!(extra.is_err(), "耗尽后不应无限重试/重复告警");
 }

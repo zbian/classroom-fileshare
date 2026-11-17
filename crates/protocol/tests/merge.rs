@@ -24,6 +24,7 @@ fn mk_item(owner: &str, audience: Audience, title: &str, version: u64) -> ShareI
         version,
         deleted: false,
         sync_state: SyncState::Synced,
+        retry_count: 0,
     }
 }
 

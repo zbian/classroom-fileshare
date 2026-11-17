@@ -80,6 +80,8 @@ async fn start_host_room(
         pin,
         data_root: root.clone(),
         tcp_port: port,
+        // M2 #103：占用重试初始退避（测试用 0 = 立即重试，不拖慢用例）
+        retry_initial_backoff_secs: 0,
     };
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, mut ev_rx) = mpsc::channel(128);

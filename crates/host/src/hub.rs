@@ -23,7 +23,7 @@ use classroom_protocol::{
 use classroom_store::{sha256_file, ListFilter, PutOutcome, Store};
 
 use crate::room::Admitter;
-use crate::{HostCommand, HostEvent, HostStatus, StudentInfo};
+use crate::{HostCommand, HostEvent, HostStatus, HostWarningKind, StudentInfo};
 
 /// 教师端固定的 owner_id。
 /// **保留昵称**（M2 S3，issue #89 / 设计文档 §3.4）：这是教师作用域的保留
@@ -56,6 +56,8 @@ pub(crate) struct Hub {
     /// End 分块流承载（与教师广播的 Event+文件帧模型对称）；内容到位后才
     /// 入库，避免「元数据先落库、内容永远不来」的半成品条目。
     uploads: Mutex<HashMap<String, Event>>,
+    /// 占用重试初始退避（秒，M2 #103；由 HostConfig 注入，测试可缩短）。
+    retry_initial_backoff_secs: i64,
     port: AtomicU16,
 }
 
@@ -77,6 +79,8 @@ fn latest_item(out: PutOutcome) -> ShareItem {
     match out {
         PutOutcome::Created(item) => item,
         PutOutcome::Overwritten { latest, .. } => latest,
+        // M2 #103：占用 → RetryLocked 条目（内容尚未安装，不广播）
+        PutOutcome::RetryQueued { item, .. } => item,
     }
 }
 
@@ -107,6 +111,7 @@ impl Hub {
         room_code: String,
         admitter: Admitter,
         notify: mpsc::Sender<HostEvent>,
+        retry_initial_backoff_secs: i64,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: Mutex::new(store),
@@ -115,6 +120,7 @@ impl Hub {
             notify,
             conns: Mutex::new(HashMap::new()),
             uploads: Mutex::new(HashMap::new()),
+            retry_initial_backoff_secs,
             port: AtomicU16::new(0),
         })
     }
@@ -320,6 +326,19 @@ impl Hub {
             &sha,
             now,
         )?;
+        // M2 #103：目标被占用 → 条目 RetryLocked 入退避重试队列。内容此刻
+        // **尚未安装**，因此不广播 Event/文件（学员端无内容可拉）；成功重试
+        // 后再广播。教师端仅收到列表刷新（GUI 显示「被占用重试 第 n/5 次」）。
+        if let PutOutcome::RetryQueued { item, .. } = out {
+            tracing::info!(
+                item_id = %item.id,
+                file = %item.title,
+                "broadcast-retry-queued"
+            );
+            let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
+            self.drain_store_warnings().await;
+            return Ok(());
+        }
         let item = latest_item(out);
         let ev = Self::make_event(EventKind::Upsert, item.clone(), now);
         let _ = self.store.lock().unwrap().record_event(&ev);
@@ -335,6 +354,97 @@ impl Hub {
         );
         let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
         Ok(())
+    }
+
+    /// 占用重试调度（M2 #103，由 run_host 的 200ms tick 调用）：
+    /// 到期望项逐条尝试；成功 → 内容已安装，广播给在线端；耗尽/中止 → 告警。
+    pub(crate) async fn retry_tick(&self) {
+        let now = unix_now();
+        let due = self.store.lock().unwrap().retry_due(now);
+        for entry in due {
+            let outcome = self.store.lock().unwrap().retry_attempt(
+                &entry.item_id,
+                now,
+                self.retry_initial_backoff_secs,
+            );
+            match outcome {
+                Ok(classroom_store::RetryOutcome::Succeeded { item_id }) => {
+                    // 内容现已安装：此时才广播（与教师正常发送同链路），
+                    // 在线端拿到完整条目与文件。
+                    // 注意：先取出 owned item（store 锁不跨 await，future 才 Send）
+                    let item = self.store.lock().unwrap().get(&item_id).ok().flatten();
+                    if let Some(item) = item {
+                        let ev = Self::make_event(EventKind::Upsert, item.clone(), unix_now());
+                        let _ = self.store.lock().unwrap().record_event(&ev);
+                        self.broadcast_event(&ev).await;
+                        self.broadcast_file(&item).await;
+                        // E4（#14 TC-02 计时锚点）
+                        tracing::info!(
+                            item_id = %item.id,
+                            file = %item.title,
+                            size = item.size,
+                            audience = "all",
+                            "broadcast"
+                        );
+                        let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
+                    }
+                }
+                Ok(classroom_store::RetryOutcome::Exhausted { item_id }) => {
+                    tracing::warn!(item_id = %item_id, "占用重试耗尽（5 次）");
+                    let _ = self
+                        .notify
+                        .send(HostEvent::Warning {
+                            kind: HostWarningKind::RetryExhausted,
+                            item_id,
+                            detail: "目标文件被占用，重试 5 次仍未成功，条目已置失败".into(),
+                        })
+                        .await;
+                }
+                Ok(classroom_store::RetryOutcome::Aborted { item_id, reason }) => {
+                    let _ = self
+                        .notify
+                        .send(HostEvent::Warning {
+                            kind: HostWarningKind::RetryExhausted,
+                            item_id,
+                            detail: format!("重试中止: {reason}"),
+                        })
+                        .await;
+                }
+                Ok(classroom_store::RetryOutcome::StillBusy {
+                    item_id,
+                    attempts,
+                    next_at,
+                }) => {
+                    tracing::info!(item_id = %item_id, attempts, next_at, "占用重试退避");
+                }
+                Err(e) => tracing::warn!(error = %e, "重试执行失败"),
+            }
+        }
+        self.drain_store_warnings().await;
+    }
+
+    /// 存储层告警（备份失败等）→ `HostEvent::Warning`（M2 #103，PRD 5.7）。
+    async fn drain_store_warnings(&self) {
+        let warnings = self.store.lock().unwrap().take_warnings();
+        for w in warnings {
+            match w {
+                classroom_store::StoreWarning::BackupFailed {
+                    item_id,
+                    title,
+                    detail,
+                } => {
+                    tracing::warn!(item_id = %item_id, title = %title, "备份失败（不回滚新版本）");
+                    let _ = self
+                        .notify
+                        .send(HostEvent::Warning {
+                            kind: HostWarningKind::BackupFailed,
+                            item_id,
+                            detail,
+                        })
+                        .await;
+                }
+            }
+        }
     }
 
     async fn delete_item(&self, id: &str) {

@@ -141,6 +141,27 @@ pub enum SvcNotify {
     },
     /// 发现的教师机列表（修订 #4 新增，B1 弹窗展示房间码）。
     Discovered(Vec<Beacon>),
+    /// 同步异常告警（M2 #103，PRD 5.7 / EX-06）：GUI 的 `SyncIssuesBanner`
+    /// 聚合展示（重试耗尽、备份失败、磁盘告警等）。
+    Warning {
+        /// 告警类型（可扩展）。
+        kind: WarningKind,
+        /// 关联条目 id（无条目级关联时为空串）。
+        item_id: String,
+        /// 人类可读细节（GUI 直接展示）。
+        detail: String,
+    },
+}
+
+/// 同步告警类型（M2 #103，可扩展）。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WarningKind {
+    /// 旧版本备份（`.bak`）写入失败——新版本已成功落盘，不回滚（PRD 5.7）。
+    BackupFailed,
+    /// 占用退避重试次数耗尽，条目转 `Failed`（PRD EX-06）。
+    RetryExhausted,
+    /// 磁盘空间不足（预留：写入空间检查）。
+    DiskFull,
 }
 
 /// 服务运行状态（GUI 视角三态；修订 #6④）。

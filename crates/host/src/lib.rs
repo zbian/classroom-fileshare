@@ -33,6 +33,9 @@ pub struct HostConfig {
     pub data_root: PathBuf,
     /// TCP 监听端口；0 = 自动分配，指定端口被占用时自动更换并上报（EX-11）。
     pub tcp_port: u16,
+    /// 占用重试的初始退避（秒，M2 #103；后续按 2^n 递增）。
+    /// 默认 1s；测试注入更短值以缩短用例时长。
+    pub retry_initial_backoff_secs: i64,
 }
 
 /// 在线学员信息。
@@ -76,6 +79,25 @@ pub enum HostEvent {
     },
     /// 在线列表变化。
     Status(HostStatus),
+    /// 同步异常告警（M2 #103，PRD 5.7 / EX-06）——svc 映射为
+    /// `SvcNotify::Warning` 推送 GUI。
+    Warning {
+        /// 告警类型。
+        kind: HostWarningKind,
+        /// 关联条目 id（无关联时为空串）。
+        item_id: String,
+        /// 人类可读细节。
+        detail: String,
+    },
+}
+
+/// 同步告警类型（M2 #103，可扩展）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostWarningKind {
+    /// 旧版本 `.bak` 备份失败（新版本已落盘，不回滚，PRD 5.7）。
+    BackupFailed,
+    /// 占用退避重试次数耗尽（条目转 `Failed`，PRD EX-06）。
+    RetryExhausted,
 }
 
 /// 教师操作入口（GUI/IPC → host；接口扩展 #4：计划无操作通道，测试与
@@ -116,6 +138,7 @@ pub async fn run_host(
         cfg.room_code.clone(),
         Admitter::new(cfg.pin.clone()),
         notify.clone(),
+        cfg.retry_initial_backoff_secs,
     );
     let handler: Arc<dyn SessionHandler> = hub.clone();
 
@@ -143,6 +166,18 @@ pub async fn run_host(
     notify.send(HostEvent::Started(hub.status())).await.ok();
     tracing::info!(room = %cfg.room_code, port, "教师端启动");
 
+    // M2 #103：占用退避重试调度器（200ms 检查一次，退避窗口由 store 的
+    // next_at 控制；不阻塞命令处理与其他共享）
+    let retry_hub = hub.clone();
+    let retry_task = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            retry_hub.retry_tick().await;
+        }
+    });
+
     while let Some(command) = cmd.recv().await {
         if matches!(command, HostCommand::Shutdown) {
             break;
@@ -150,6 +185,8 @@ pub async fn run_host(
         hub.handle(&command).await;
     }
     beacon.abort();
+    // 优雅停机：终止重试调度器与会话（学员端立即感知断线），释放监听端口
+    retry_task.abort();
     // 优雅停机：终止全部会话（学员端立即感知断线）并释放监听端口
     server_handle.shutdown();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_task).await;

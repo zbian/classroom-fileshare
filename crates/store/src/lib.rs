@@ -7,6 +7,9 @@
 //! 另加 Windows 保留设备名与风险扩展名拦截（PRD 9.4 / 5.3）。
 
 pub mod files;
+pub mod retry;
+
+pub use retry::{RetryEntry, RetryOutcome, RETRY_MAX_ATTEMPTS};
 
 use std::path::{Component, Path, PathBuf};
 
@@ -77,6 +80,31 @@ pub enum PutOutcome {
         latest: ShareItem,
         /// 被覆盖前的 version。
         old_version: u64,
+    },
+    /// 目标被占用：条目已置 `RetryLocked` 并入退避重试队列（M2 #103，EX-06）。
+    ///
+    /// 注意：内容此刻**尚未安装**（目标文件旧版仍在），因此该条目**不得**
+    /// 广播给其他端；成功重试后由 host 广播。`backed_up=false` 表示旧版
+    /// `.bak` 备份也失败（PRD 5.7：不回滚新版本，仅告警）。
+    RetryQueued {
+        /// 条目（`sync_state = RetryLocked`，`retry_count = 0`）。
+        item: ShareItem,
+        /// 旧版本备份是否成功。
+        backed_up: bool,
+    },
+}
+
+/// 存储层告警（M2 #103，PRD 5.7）：由调用方 drain 后转 `SvcNotify::Warning`。
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoreWarning {
+    /// 备份（`.bak`）写入失败——新版本已成功覆盖，不回滚（PRD 5.7）。
+    BackupFailed {
+        /// 条目 id。
+        item_id: String,
+        /// 标题/文件名。
+        title: String,
+        /// 细节。
+        detail: String,
     },
 }
 
@@ -195,6 +223,9 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ShareItem> {
         version: row.get(11)?,
         deleted: row.get::<_, i64>(12)? != 0,
         sync_state,
+        // M2 #103：DB 不存 retry_count（重试队列在 JSON 持久化层）；
+        // store 返回条目时由队列状态覆盖（见 `Store::with_retry_state`）
+        retry_count: 0,
     })
 }
 
@@ -227,6 +258,11 @@ fn scope_hash(owner: &str, audience: &Audience, title: &str) -> String {
 pub struct Store {
     conn: Connection,
     root: PathBuf,
+    /// 占用退避重试队列（M2 #103）：内存态 + `data_root/retry_queue.json`
+    /// 持久化（原子写）；`open` 时载入（损坏 → 空队列 + warn）。
+    retry_queue: std::sync::Mutex<Vec<RetryEntry>>,
+    /// 待上报的存储告警（备份失败等，PRD 5.7）；调用方 `take_warnings` 取走。
+    warnings: std::sync::Mutex<Vec<StoreWarning>>,
 }
 
 /// BUSY/LOCKED 类瞬时错误判定（open 重试依据）。
@@ -286,6 +322,8 @@ impl Store {
         Ok(Self {
             conn,
             root: root.to_path_buf(),
+            retry_queue: std::sync::Mutex::new(retry::load_queue(root)),
+            warnings: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -399,6 +437,7 @@ impl Store {
                 version: 1,
                 deleted: false,
                 sync_state: SyncState::Synced,
+                retry_count: 0,
             },
             Some(prev) => ShareItem {
                 title: title.to_string(),
@@ -409,6 +448,7 @@ impl Store {
                 version: prev.version + 1,
                 deleted: false,
                 sync_state: SyncState::Synced,
+                retry_count: 0,
                 ..prev.clone()
             },
         };
@@ -466,10 +506,56 @@ impl Store {
                 actual,
             });
         }
+        // M2 #103（PRD 5.7）：备份失败**不回滚**已成功的新版本，仅记告警；
+        // 目标仍被占用 → 内容持久到重试目录 + 条目 RetryLocked 入队。
+        let mut backed_up = true;
         if final_path.exists() {
-            std::fs::rename(&final_path, &bak_path)?;
+            if let Err(e) = std::fs::rename(&final_path, &bak_path) {
+                // 备份失败：继续覆盖（新版本落盘），旧版无 .bak
+                backed_up = false;
+                tracing::warn!(title = %name, error = %e, "备份 .bak 失败（不回滚新版本，记告警）");
+            }
         }
-        std::fs::rename(&part_path, &final_path)?;
+        match std::fs::rename(&part_path, &final_path) {
+            Ok(()) => {}
+            Err(e) if retry::is_target_busy(&e) => {
+                // 目标被占用：入退避重试队列（内容持久化到 data_root/retry/）
+                let item = self.enqueue_retry(
+                    owner,
+                    role,
+                    audience,
+                    &name,
+                    &part_path,
+                    &actual,
+                    old.as_ref(),
+                    now,
+                    backed_up,
+                )?;
+                return Ok(PutOutcome::RetryQueued { item, backed_up });
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&part_path);
+                if !backed_up {
+                    // 备份已失败且安装也失败：旧版已改名为 .bak（存在），回滚
+                    if bak_path.exists() && !final_path.exists() {
+                        let _ = std::fs::rename(&bak_path, &final_path);
+                    }
+                }
+                return Err(e.into());
+            }
+        }
+        if !backed_up {
+            // 安装成功但旧版备份失败：记告警（PRD 5.7）
+            let id_hint = old
+                .as_ref()
+                .map(|p| p.id.clone())
+                .unwrap_or_else(|| "pending".to_string());
+            self.push_warning(StoreWarning::BackupFailed {
+                item_id: id_hint,
+                title: name.clone(),
+                detail: "旧版本 .bak 备份失败（新版本已成功落盘，未回滚）".to_string(),
+            });
+        }
 
         let size = std::fs::metadata(&final_path)?.len();
         let item = match &old {
@@ -488,6 +574,7 @@ impl Store {
                 version: 1,
                 deleted: false,
                 sync_state: SyncState::Synced,
+                retry_count: 0,
             },
             Some(prev) => ShareItem {
                 title: name.clone(),
@@ -498,12 +585,257 @@ impl Store {
                 version: prev.version + 1,
                 deleted: false,
                 sync_state: SyncState::Synced,
+                retry_count: 0,
                 ..prev.clone()
             },
         };
         self.upsert_item(&item)?;
         tracing::debug!(item_id = %item.id, version = item.version, "file put");
         Ok(outcome(old, item))
+    }
+
+    // ---------- M2 #103：占用退避重试队列（PRD 5.7 / 7.3 / EX-06） ----------
+
+    /// 占用失败入队：内容持久到 `data_root/retry/<id>.part`（不放 %TEMP%，
+    /// 重启后仍可重试），条目置 `RetryLocked`，队列原子落盘。
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_retry(
+        &self,
+        owner: &str,
+        role: Role,
+        audience: Audience,
+        name: &str,
+        part_path: &Path,
+        sha256: &str,
+        old: Option<&ShareItem>,
+        now: i64,
+        backed_up: bool,
+    ) -> Result<ShareItem> {
+        let (id, version, created_at) = match old {
+            None => (Uuid::new_v4().to_string(), 1, now),
+            Some(prev) => (prev.id.clone(), prev.version + 1, prev.created_at),
+        };
+        // 内容持久化（跨卷 copy 安全；成功/耗尽后清理）
+        let dir = retry::retry_dir(&self.root);
+        std::fs::create_dir_all(&dir)?;
+        let dest = dir.join(format!("{id}.part"));
+        std::fs::copy(part_path, &dest)?;
+        let _ = std::fs::remove_file(part_path);
+        let final_path = self.repo().join(owner).join(name);
+        let item = ShareItem {
+            id: id.clone(),
+            kind: ItemKind::File,
+            owner_id: owner.to_string(),
+            owner_role: role,
+            audience,
+            title: name.to_string(),
+            size: std::fs::metadata(&dest)?.len(),
+            sha256: Some(sha256.to_string()),
+            rel_path: Some(self.rel_of(&final_path)),
+            created_at,
+            updated_at: now,
+            version,
+            deleted: false,
+            sync_state: SyncState::RetryLocked,
+            retry_count: 0,
+        };
+        self.upsert_item(&item)?;
+        {
+            let mut queue = self.retry_queue.lock().unwrap();
+            // 同一条目不重复入队（重复 put / 并发兜底）
+            if !queue.iter().any(|e| e.item_id == item.id) {
+                queue.push(RetryEntry {
+                    item_id: item.id.clone(),
+                    rel_part: format!("retry/{id}.part"),
+                    attempts: 0,
+                    next_at: now, // 立即可试；退避由调用方（host 调度器）计算
+                    file_name: name.to_string(),
+                    owner_id: owner.to_string(),
+                    sha256: sha256.to_string(),
+                    created_at: now,
+                });
+            }
+            if let Err(e) = retry::save_queue(&self.root, &queue) {
+                tracing::warn!(error = %e, "重试队列落盘失败（内存态继续）");
+            }
+        }
+        if !backed_up {
+            self.push_warning(StoreWarning::BackupFailed {
+                item_id: item.id.clone(),
+                title: name.to_string(),
+                detail: "旧版本备份失败（目标被占用）".to_string(),
+            });
+        }
+        tracing::info!(item_id = %item.id, "目标被占用：条目进入退避重试队列");
+        Ok(item)
+    }
+
+    /// 队列快照（观测：重试次数 / 下次重试时间）。
+    pub fn retry_snapshot(&self) -> Vec<RetryEntry> {
+        self.retry_queue.lock().unwrap().clone()
+    }
+
+    /// 到期待重试项（`next_at <= now`）。
+    pub fn retry_due(&self, now: i64) -> Vec<RetryEntry> {
+        self.retry_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.next_at <= now)
+            .cloned()
+            .collect()
+    }
+
+    /// 执行一次重试（占用 → 退避 +1；成功 → Synced；耗尽 → Failed）。
+    ///
+    /// `initial_backoff_secs` 由 host 配置（默认 1s，测试可注入更短值）。
+    pub fn retry_attempt(
+        &self,
+        item_id: &str,
+        now: i64,
+        initial_backoff_secs: i64,
+    ) -> Result<RetryOutcome> {
+        let entry = self
+            .retry_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.item_id == item_id)
+            .cloned();
+        let Some(entry) = entry else {
+            return Ok(RetryOutcome::Aborted {
+                item_id: item_id.to_string(),
+                reason: "队列项不存在".to_string(),
+            });
+        };
+        // 内容校验（重启后内容仍在且未被篡改）
+        let part = self.root.join(&entry.rel_part);
+        let content_ok = part.exists()
+            && sha256_file(&part)
+                .map(|h| h.eq_ignore_ascii_case(&entry.sha256))
+                .unwrap_or(false);
+        if !content_ok {
+            self.retry_remove(item_id)?;
+            self.mark_item_state(item_id, SyncState::Failed)?;
+            return Ok(RetryOutcome::Aborted {
+                item_id: item_id.to_string(),
+                reason: "重试内容缺失或哈希不符".to_string(),
+            });
+        }
+        let owner_dir = self.repo().join(&entry.owner_id);
+        std::fs::create_dir_all(&owner_dir)?;
+        let final_path = owner_dir.join(&entry.file_name);
+        let bak_path = owner_dir.join(format!("{}.bak", entry.file_name));
+        let mut backed_up = true;
+        if final_path.exists() {
+            if let Err(e) = std::fs::rename(&final_path, &bak_path) {
+                backed_up = false;
+                tracing::warn!(title = %entry.file_name, error = %e, "重试时备份失败（不回滚）");
+            }
+        }
+        match std::fs::rename(&part, &final_path) {
+            Ok(()) => {
+                self.retry_remove(item_id)?;
+                self.mark_item_state(item_id, SyncState::Synced)?;
+                if !backed_up {
+                    self.push_warning(StoreWarning::BackupFailed {
+                        item_id: item_id.to_string(),
+                        title: entry.file_name.clone(),
+                        detail: "重试成功后旧版本备份失败".to_string(),
+                    });
+                }
+                tracing::info!(item_id = %item_id, "占用重试成功");
+                Ok(RetryOutcome::Succeeded {
+                    item_id: item_id.to_string(),
+                })
+            }
+            Err(e) if retry::is_target_busy(&e) => {
+                let attempts = entry.attempts + 1;
+                if attempts >= retry::RETRY_MAX_ATTEMPTS {
+                    self.retry_remove(item_id)?;
+                    self.mark_item_state(item_id, SyncState::Failed)?;
+                    tracing::warn!(item_id = %item_id, attempts, "占用重试耗尽，条目转 Failed");
+                    Ok(RetryOutcome::Exhausted {
+                        item_id: item_id.to_string(),
+                    })
+                } else {
+                    let next_at = now + retry::backoff_secs(attempts, initial_backoff_secs);
+                    self.retry_update_attempt(item_id, attempts, next_at)?;
+                    Ok(RetryOutcome::StillBusy {
+                        item_id: item_id.to_string(),
+                        attempts,
+                        next_at,
+                    })
+                }
+            }
+            Err(e) => {
+                self.retry_remove(item_id)?;
+                self.mark_item_state(item_id, SyncState::Failed)?;
+                Ok(RetryOutcome::Aborted {
+                    item_id: item_id.to_string(),
+                    reason: e.to_string(),
+                })
+            }
+        }
+    }
+
+    /// 取走待上报的存储告警（备份失败等）——调用方转 `SvcNotify::Warning`。
+    pub fn take_warnings(&self) -> Vec<StoreWarning> {
+        std::mem::take(&mut *self.warnings.lock().unwrap())
+    }
+
+    fn push_warning(&self, w: StoreWarning) {
+        self.warnings.lock().unwrap().push(w);
+    }
+
+    /// 队列移除 + 清理持久内容 + 落盘。
+    fn retry_remove(&self, item_id: &str) -> Result<()> {
+        let mut queue = self.retry_queue.lock().unwrap();
+        if let Some(pos) = queue.iter().position(|e| e.item_id == item_id) {
+            let entry = queue.remove(pos);
+            let part = self.root.join(&entry.rel_part);
+            let _ = std::fs::remove_file(part);
+            if let Err(e) = retry::save_queue(&self.root, &queue) {
+                tracing::warn!(error = %e, "重试队列落盘失败");
+            }
+        }
+        Ok(())
+    }
+
+    fn retry_update_attempt(&self, item_id: &str, attempts: u32, next_at: i64) -> Result<()> {
+        let mut queue = self.retry_queue.lock().unwrap();
+        if let Some(e) = queue.iter_mut().find(|e| e.item_id == item_id) {
+            e.attempts = attempts;
+            e.next_at = next_at;
+        }
+        if let Err(err) = retry::save_queue(&self.root, &queue) {
+            tracing::warn!(error = %err, "重试队列落盘失败");
+        }
+        Ok(())
+    }
+
+    fn mark_item_state(&self, item_id: &str, state: SyncState) -> Result<()> {
+        self.conn.execute(
+            "UPDATE share_items SET sync_state = ?1 WHERE id = ?2",
+            params![sync_state_name(&state), item_id],
+        )?;
+        Ok(())
+    }
+
+    /// 返回条目时叠加重试状态（`retry_count` / `sync_state`）。
+    ///
+    /// DB 不存 retry_count（重试队列在 JSON 层）。队列项存在 →
+    /// `RetryLocked` + 当前 attempts；`Failed` 且不在队列 → `retry_count`
+    /// 取上限（GUI 显示「已用尽」）。
+    fn with_retry_state(&self, mut item: ShareItem) -> ShareItem {
+        let queue = self.retry_queue.lock().unwrap();
+        if let Some(e) = queue.iter().find(|e| e.item_id == item.id) {
+            item.retry_count = e.attempts;
+            item.sync_state = SyncState::RetryLocked;
+        } else if item.sync_state == SyncState::Failed {
+            item.retry_count = retry::RETRY_MAX_ATTEMPTS;
+        }
+        item
     }
 
     /// 按条件列出条目。
@@ -534,7 +866,11 @@ impl Store {
         let rows = stmt
             .query_map(params_from_iter(args), row_to_item)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        // M2 #103：叠加重试状态（RetryLocked / retry_count），GUI 据此显示「第 n/5 次」
+        Ok(rows
+            .into_iter()
+            .map(|item| self.with_retry_state(item))
+            .collect())
     }
 
     /// 按 id 查询。
@@ -542,7 +878,7 @@ impl Store {
         let sql = format!("SELECT {ITEM_COLS} FROM share_items WHERE id = ?1");
         let mut stmt = self.conn.prepare(&sql)?;
         match stmt.query_row(params![id], row_to_item) {
-            Ok(item) => Ok(Some(item)),
+            Ok(item) => Ok(Some(self.with_retry_state(item))),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -569,6 +905,8 @@ impl Store {
 
     /// 软删除：写墓碑（deleted=1、DeleteDeferred），不动文件实体。
     pub fn soft_delete(&self, id: &str, now: i64) -> Result<ShareItem> {
+        // M2 #103：删除条目即取消其占位重试（不再重试已删除内容）
+        self.retry_remove(id)?;
         let n = self.conn.execute(
             "UPDATE share_items SET deleted = 1, sync_state = 'DeleteDeferred', updated_at = ?1 \
              WHERE id = ?2 AND deleted = 0",
@@ -587,6 +925,8 @@ impl Store {
     /// （`event_log`）**不清理**——正是它保证重复 delete 事件被按 event_id
     /// 去重（PRD 3.6）。
     pub fn hard_delete(&self, id: &str) -> Result<()> {
+        // M2 #103：彻底删除同时取消占位重试
+        self.retry_remove(id)?;
         if let Some(item) = self.get(id)? {
             if let Ok(body) = self.file_body(&item) {
                 if body.exists() {

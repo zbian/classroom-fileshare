@@ -80,6 +80,13 @@ pub struct ShareItem {
     pub deleted: bool,
     /// 同步状态。
     pub sync_state: SyncState,
+    /// 占用退避重试次数（M2 #103，PRD EX-06）。
+    ///
+    /// 语义：0 = 从未重试；入队后每次退避重试递增；**成功后归零**
+    /// （`Synced`）；达到上限（5）后置 `Failed` 并**保持 5** 供 GUI 显示
+    /// 「已用尽」。旧库行无此列 → `#[serde(default)]` / store 层默认 0。
+    #[serde(default)]
+    pub retry_count: u32,
 }
 
 impl ShareItem {
