@@ -1,0 +1,14 @@
+=== TC-08 复验（main 926b582 / #112 新锚点 + O-A 修复）===
+REPLY status role=Teacher room=XK-204 online=8 nickname= pending=0 state=Running
+REPLY ok
+8 台落盘: 8/8
+item=d14e2096-c797-408b-bc26-990e50770da0
+教师端删前磁盘存在: True
+REPLY ok
+=== 新日志锚点（delete / delete-ack / delete-request）===
+2026-11-17T16:17:33.775999Z  INFO delete-request item_id=d14e2096-c797-408b-bc26-990e50770da0
+2026-11-17T16:17:33.782812Z  INFO delete item_id=d14e2096-c797-408b-bc26-990e50770da0 owner_role=Teacher
+=== O-A 修复确认：教师端实体应已清除（final+.bak）===
+文件存在=False bak存在=False
+repo 现有文件: 0
+在线 8 台文件已清: Microsoft.PowerShell.Commands.GenericMeasureInfo.Sum / 8

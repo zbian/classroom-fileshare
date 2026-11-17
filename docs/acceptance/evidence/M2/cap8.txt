@@ -1,0 +1,15 @@
+=== 8 agent 容量确认（main 89bf9c3 二进制）===
+REPLY status role=Teacher room=XK-204 online=8 nickname= pending=0 state=Running
+日志确认已加入: 0 / 8
+内存: svc=9.8MB  agents合计=58.8MB
+可用内存: 30238MB
+svc.log 学员加入计数: 8 / 8
+cap01.log 存在=True 已加入=True
+cap02.log 存在=True 已加入=True
+cap03.log 存在=True 已加入=True
+cap04.log 存在=True 已加入=True
+cap05.log 存在=True 已加入=True
+cap06.log 存在=True 已加入=True
+cap07.log 存在=True 已加入=True
+cap08.log 存在=True 已加入=True
+已清理进程

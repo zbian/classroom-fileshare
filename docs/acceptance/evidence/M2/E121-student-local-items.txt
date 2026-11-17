@@ -1,0 +1,4 @@
+﻿== <repo>\.wt\e16-pre\evidence\M2\e16fix-014854\stu\ClassShare\data\index.db
+   ('E16在线条目', 'Student', 'alice', 'Teacher', 0)
+   ('E16离线甲', 'Student', 'alice', 'Teacher', 0)
+   ('E16离线乙', 'Student', 'alice', 'Teacher', 0)

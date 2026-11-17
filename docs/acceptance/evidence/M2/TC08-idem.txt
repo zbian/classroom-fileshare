@@ -1,0 +1,15 @@
+=== ⑥ 幂等：重复删除同一条目 3 次 ===
+第 1 次 delete: REPLY ok
+第 2 次 delete: REPLY ok
+第 3 次 delete: REPLY ok
+--- 重复删除后：默认列表 n=0？含墓碑仍 1 条（不重复）---
+默认: REPLY items n=0
+含墓碑: REPLY items n=3
+索引总行数: 3（应 4：3 墓碑 + 无活动）
+=== ⑦ dev08 上线补删（3 个条目；≤10s）===
+dev08 上线前: 文件数=1
+dev08 补删完成耗时: 1539 ms（判据 ≤10000）→ PASS
+dev08 剩余文件数=0 未删索引条数=0
+--- dev08 重试/补删日志（应无无限重试）---
+dev08 resume 日志中删除/清单相关行: 1
+2026-11-17T15:49:43.296350Z  INFO 延迟补删完成 item_id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 version=1

@@ -1,0 +1,16 @@
+{
+    "v1_hash":  "CB71726F3E4C007BD20C33D55EBDE7EDC4069BD96FEA458CE42CDA54710DDBD1",
+    "locked_state":  "RetryLocked",
+    "locked_version":  "2",
+    "retry_part_exists":  true,
+    "retry_queue_json_exists":  true,
+    "log_backoff":  true,
+    "log_exhausted":  false,
+    "other_share_not_blocked":  true,
+    "retry_success":  true,
+    "final_item":  "ITEM id=e5c7bc22-e3b8-43cf-8bcf-fb7e24e80fb5 kind=File owner=teacher role=Teacher audience=All title=占用测试.bin size=131072 version=2 deleted=false sync=Synced rel=0",
+    "bak_exists":  true,
+    "bak_equals_v1":  true,
+    "queue_after":  "[]",
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\tc07-003928"
+}

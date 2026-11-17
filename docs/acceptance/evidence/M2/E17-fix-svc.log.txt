@@ -1,0 +1,15 @@
+2026-11-17T18:27:54.249318Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\e17b-022753\tea\ClassShare\data
+2026-11-17T18:27:54.266695Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\e17b-022753\tea\ClassShare\data\ipc.token user_sid=None
+2026-11-17T18:27:54.269765Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T18:27:54.304813Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\e17b-022753\tea\ClassShare\data
+2026-11-17T18:27:54.304869Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T18:27:54.312275Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T18:27:59.255500Z  INFO broadcast item_id=01410687-3fe6-4468-a3e9-21b42498eaa3 file=保留名.bin size=2048 audience="all"
+2026-11-17T18:27:59.685679Z  INFO broadcast item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7 file=改名对象.bin size=2048 audience="all"
+2026-11-17T18:28:00.715665Z  INFO rename-request item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7
+2026-11-17T18:28:00.727547Z  INFO rename-request item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7
+2026-11-17T18:28:00.737471Z  INFO rename-request item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7
+2026-11-17T18:28:00.741427Z  INFO rename item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7 version=2
+2026-11-17T18:28:00.744338Z  INFO rename item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7 version=2
+2026-11-17T18:28:00.749059Z  INFO rename-request item_id=25d79284-975e-4cb8-b5d4-6bbdddf73af7
+2026-11-17T18:28:00.758141Z  INFO rename-request item_id=nope

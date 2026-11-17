@@ -1,0 +1,22 @@
+2026-11-17T17:36:44.328031Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\warn2-013643\tea\ClassShare\data
+2026-11-17T17:36:44.344049Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\warn2-013643\tea\ClassShare\data\ipc.token user_sid=None
+2026-11-17T17:36:44.346244Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T17:36:44.380042Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\warn2-013643\tea\ClassShare\data
+2026-11-17T17:36:44.380138Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T17:36:44.386233Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T17:36:47.388281Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T17:36:48.476719Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T17:36:49.332064Z  INFO broadcast item_id=1769cfc8-bd10-415b-a824-659e134dd344 file=备份告警.bin size=32768 audience="all"
+2026-11-17T17:36:51.556217Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T17:36:52.370351Z  WARN 备份 .bak 失败（不回滚新版本，记告警） title=备份告警.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:52.376357Z  INFO 目标被占用：条目进入退避重试队列 item_id=1769cfc8-bd10-415b-a824-659e134dd344
+2026-11-17T17:36:52.376528Z  INFO broadcast-retry-queued item_id=1769cfc8-bd10-415b-a824-659e134dd344 file=备份告警.bin
+2026-11-17T17:36:52.376625Z  WARN 备份失败（不回滚新版本） item_id=1769cfc8-bd10-415b-a824-659e134dd344 title=备份告警.bin
+2026-11-17T17:36:52.406213Z  WARN 重试时备份失败（不回滚） title=备份告警.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:52.407846Z  INFO 占用重试退避 item_id=1769cfc8-bd10-415b-a824-659e134dd344 attempts=1 next_at=1794937014
+2026-11-17T17:36:52.572824Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T17:36:54.190596Z  WARN 重试时备份失败（不回滚） title=备份告警.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:54.193768Z  INFO 占用重试退避 item_id=1769cfc8-bd10-415b-a824-659e134dd344 attempts=2 next_at=1794937018
+2026-11-17T17:36:54.579008Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T17:36:58.200093Z  WARN 重试时备份失败（不回滚） title=备份告警.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:58.201942Z  INFO 占用重试退避 item_id=1769cfc8-bd10-415b-a824-659e134dd344 attempts=3 next_at=1794937026

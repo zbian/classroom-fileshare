@@ -1,0 +1,15 @@
+2026-11-17T17:33:37.261887Z  INFO qa-agent-probe 启动 nickname=alice addr=127.0.0.1:47821 root=<repo>\.wt\acc-m1\evidence\M2\rename-013330\studentdata
+2026-11-17T17:33:37.307540Z  INFO 已加入房间 session_id=8b0b39f9-4179-4726-bb94-fac8a5eede27
+2026-11-17T17:33:37.310272Z  INFO 会话已就绪（Joined） epoch=1
+2026-11-17T17:33:43.307141Z  INFO received item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df file=原名.bin size=4096 from=teacher
+2026-11-17T17:33:43.315916Z  INFO applied item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df version=1
+2026-11-17T17:33:43.411505Z  INFO rename item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df new_name=新名.bin version=2
+2026-11-17T17:33:53.653076Z  INFO received item_id=08046cab-ec16-4d12-bbb9-1efed3b35bfa file=冲突A.bin size=2048 from=teacher
+2026-11-17T17:33:53.658378Z  INFO applied item_id=08046cab-ec16-4d12-bbb9-1efed3b35bfa version=1
+2026-11-17T17:33:54.270111Z  INFO received item_id=ec396536-5b45-4ab2-a28e-aa7fc714e196 file=冲突B.bin size=2048 from=teacher
+2026-11-17T17:33:54.276268Z  INFO applied item_id=ec396536-5b45-4ab2-a28e-aa7fc714e196 version=1
+2026-11-17T17:33:55.312906Z  INFO received item_id=7f3ac969-cd81-4d8d-a455-92c25ec85ed6 file=标题不含关键词 size=12 from=teacher
+2026-11-17T17:33:55.319101Z  INFO applied item_id=7f3ac969-cd81-4d8d-a455-92c25ec85ed6 version=1
+2026-11-17T17:33:56.161385Z  INFO received item_id=7df3bb95-4fae-45f2-a8a8-2e46741cd7b6 file=文件不含词.bin size=27 from=teacher
+2026-11-17T17:33:56.167267Z  INFO applied item_id=7df3bb95-4fae-45f2-a8a8-2e46741cd7b6 version=1
+2026-11-17T17:33:57.034665Z  INFO 与教师机断开，稍后自动重连 retry_in=1s addr=127.0.0.1:47821

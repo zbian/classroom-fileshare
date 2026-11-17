@@ -1,0 +1,22 @@
+2026-11-17T17:35:53.034787Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\warn-013551\tea\ClassShare\data
+2026-11-17T17:35:53.052500Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\warn-013551\tea\ClassShare\data\ipc.token user_sid=None
+2026-11-17T17:35:53.055354Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T17:35:53.090171Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\warn-013551\tea\ClassShare\data
+2026-11-17T17:35:53.090217Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T17:35:53.096788Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T17:35:58.103655Z  INFO broadcast item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd file=告警测试.bin size=65536 audience="all"
+2026-11-17T17:35:59.185851Z  WARN 备份 .bak 失败（不回滚新版本，记告警） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:35:59.193177Z  INFO 目标被占用：条目进入退避重试队列 item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd
+2026-11-17T17:35:59.194022Z  INFO broadcast-retry-queued item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd file=告警测试.bin
+2026-11-17T17:35:59.194485Z  WARN 备份失败（不回滚新版本） item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd title=告警测试.bin
+2026-11-17T17:35:59.350156Z  WARN 重试时备份失败（不回滚） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:35:59.352375Z  INFO 占用重试退避 item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd attempts=1 next_at=1794936961
+2026-11-17T17:36:01.099056Z  WARN 重试时备份失败（不回滚） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:01.101802Z  INFO 占用重试退避 item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd attempts=2 next_at=1794936965
+2026-11-17T17:36:05.100081Z  WARN 重试时备份失败（不回滚） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:05.104268Z  INFO 占用重试退避 item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd attempts=3 next_at=1794936973
+2026-11-17T17:36:13.099434Z  WARN 重试时备份失败（不回滚） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:13.101765Z  INFO 占用重试退避 item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd attempts=4 next_at=1794936989
+2026-11-17T17:36:29.106868Z  WARN 重试时备份失败（不回滚） title=告警测试.bin error=另一个程序正在使用此文件，进程无法访问。 (os error 32)
+2026-11-17T17:36:29.113820Z  WARN 占用重试耗尽，条目转 Failed item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd attempts=5
+2026-11-17T17:36:29.114085Z  WARN 占用重试耗尽（5 次） item_id=c3c82d58-9dcf-4b09-a6e7-21bda272bebd

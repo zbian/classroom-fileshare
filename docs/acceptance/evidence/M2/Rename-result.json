@@ -1,0 +1,18 @@
+{
+    "initial_landed":  true,
+    "item_id":  "c63c9ee7-931d-4d06-b741-7b538d24a1df",
+    "rename_response":  "REPLY ok",
+    "sync_ms":  -1,
+    "within_2s":  false,
+    "student_disk_old_gone":  true,
+    "student_disk_new_exists":  true,
+    "teacher_title":  "ITEM id=c63c9ee7-931d-4d06-b741-7b538d24a1df kind=File owner=teacher role=Teacher audience=All title=新名.bin size=4096 version=2 deleted=false sync=Synced rel=0",
+    "teacher_old_gone":  true,
+    "conflict_response":  "REPLY ok",
+    "conflict_has_nametaken":  false,
+    "conflict_b_unchanged":  true,
+    "search_text_hit":  true,
+    "search_file_body_not_matched":  true,
+    "search_result_titles":  "REPLY items n=1 ITEM id=7f3ac969-cd81-4d8d-a455-92c25ec85ed6 kind=Text owner=teacher role=Teacher audience=All title=标题不含关键词 size=12 version=1 deleted=false sync=Synced rel=0",
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\rename-013330"
+}

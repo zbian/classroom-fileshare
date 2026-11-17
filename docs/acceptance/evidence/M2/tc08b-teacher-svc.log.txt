@@ -1,0 +1,28 @@
+2026-11-17T16:17:19.460077Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc08b\teacher\ClassShare\data
+2026-11-17T16:17:19.476311Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc08b\teacher\ClassShare\data\ipc.token user_sid=None
+2026-11-17T16:17:19.479201Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T16:17:19.517886Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc08b\teacher\ClassShare\data
+2026-11-17T16:17:19.517979Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T16:17:19.524446Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T16:17:23.632714Z  INFO 学员加入 nickname=dev01 session_id=e7c0a988-8d1e-435b-bb30-8f5dcdcf2786
+2026-11-17T16:17:23.698269Z  INFO 学员加入 nickname=dev02 session_id=c7b3eb9d-c86e-4449-9653-8fa68278fe41
+2026-11-17T16:17:23.728270Z  INFO 学员加入 nickname=dev03 session_id=f490b57e-93be-42a3-867e-39442141f8cc
+2026-11-17T16:17:23.742283Z  INFO 学员加入 nickname=dev04 session_id=01cb253a-aacb-462d-8d09-bf0b5ffcd14a
+2026-11-17T16:17:23.744360Z  INFO 学员加入 nickname=dev05 session_id=3f16095a-ff7a-4cb9-b356-3f029f9ad245
+2026-11-17T16:17:23.746109Z  INFO 学员加入 nickname=dev06 session_id=ac7eacac-3aa6-4201-9fb2-21cbbf98504d
+2026-11-17T16:17:23.763286Z  INFO 学员加入 nickname=dev08 session_id=5e2e3710-baf4-4da3-bfc0-7a0b9b04899c
+2026-11-17T16:17:23.771269Z  INFO 学员加入 nickname=dev07 session_id=528a1be4-8b53-4471-ae74-86673bda5987
+2026-11-17T16:17:33.724139Z  INFO broadcast item_id=d14e2096-c797-408b-bc26-990e50770da0 file=锚点测试.bin size=524288 audience="all"
+2026-11-17T16:17:33.775999Z  INFO delete-request item_id=d14e2096-c797-408b-bc26-990e50770da0
+2026-11-17T16:17:33.782812Z  INFO delete item_id=d14e2096-c797-408b-bc26-990e50770da0 owner_role=Teacher
+2026-11-17T16:18:28.626596Z  INFO broadcast item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec file=ack测试.bin size=262144 audience="all"
+2026-11-17T16:18:29.221991Z  INFO 学员离线 nickname=dev07
+2026-11-17T16:18:29.232628Z  INFO 学员离线 nickname=dev08
+2026-11-17T16:18:31.314462Z  INFO delete-request item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec
+2026-11-17T16:18:31.320708Z  INFO delete item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec owner_role=Teacher
+2026-11-17T16:18:33.374313Z  INFO 学员加入 nickname=dev07 session_id=3dc2b39f-2fd4-4b77-a175-82de5b75a97c
+2026-11-17T16:18:33.378601Z  INFO 学员加入 nickname=dev08 session_id=840f95a4-7556-4a6a-8647-084fda273eab
+2026-11-17T16:18:33.408126Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=840f95a4
+2026-11-17T16:18:33.411144Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=840f95a4
+2026-11-17T16:18:33.413795Z  INFO delete-ack item_id=0b327369-e9da-494b-92f7-cbe5d5e98eec from_session=3dc2b39f
+2026-11-17T16:18:33.413965Z  INFO delete-ack item_id=d14e2096-c797-408b-bc26-990e50770da0 from_session=3dc2b39f

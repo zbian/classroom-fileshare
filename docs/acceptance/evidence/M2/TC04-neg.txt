@@ -1,0 +1,40 @@
+=== 负例：身份/方向/角色三重校验（#94 加固）===
+--- bad-owner（owner_id=teacher 冒名）---
+UPLINK_RESULT err join_rejected WrongPin
+--- bad-audience（audience=All 想广播给全班）---
+UPLINK_RESULT err join_rejected WrongPin
+--- bad-role（owner_role=Teacher）---
+UPLINK_RESULT err join_rejected WrongPin
+--- 负例后 Submissions（应仍 alice=3, bob=1，无新增）---
+REPLY submissions n=2
+GROUP owner=alice count=3 latest_at=1794929194
+GROUP owner=bob count=1 latest_at=1794929194
+--- 教师端是否出现越权条目（应 0）---
+含『冒名』『越权』『角色』标题的条目数: 0
+--- host 侧拒绝日志 ---
+=== 负例重跑（修正探针参数后）===
+--- bad-owner：owner_id=teacher 冒名（应被拒，且不落库）---
+UPLINK_JOINED session=29f1e5a2-7e77-4b1e-a415-e455855d99c4
+UPLINK_RESULT ok item=qa-c408-18e8dea6b78061a8-0 sha256_ok=false
+--- bad-audience：audience=All 越权广播（应被拒）---
+UPLINK_JOINED session=4e860b1a-e16c-4d4b-966b-8cef81f35196
+UPLINK_RESULT ok item=qa-bf98-18e8dea6e9139f14-0 sha256_ok=false
+--- bad-role：owner_role=Teacher 伪装教师（应被拒）---
+UPLINK_JOINED session=8d68eefb-29dd-4b8a-8894-942322cd9ffe
+UPLINK_RESULT ok item=qa-d9b8-18e8dea71a2a3cfc-0 sha256_ok=false
+--- 负例后 Submissions（应仍 alice=3, bob=1）---
+REPLY submissions n=2
+GROUP owner=alice count=3 latest_at=1794929194
+GROUP owner=bob count=1 latest_at=1794929194
+--- 越权标题是否入库（应 0）---
+匹配越权标题条目数: 0
+--- host 拒绝日志 ---
+2026-11-17T15:27:39.131794Z  WARN 冒名事件被拒（owner_id 与会话昵称不一致） session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4 owner=teacher expected=alice event_id=evt-c408-18e8dea6b7809b78-1
+2026-11-17T15:27:39.131980Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4 item_id=qa-c408-18e8dea6b78061a8-0
+2026-11-17T15:27:39.963822Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=4e860b1a-e16c-4d4b-966b-8cef81f35196 item_id=qa-bf98-18e8dea6e9139f14-0
+2026-11-17T15:27:40.787090Z  WARN 角色不符的事件被拒（学员会话只能提交 Student 角色内容） session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe role=Teacher event_id=evt-d9b8-18e8dea71a2a6600-1
+2026-11-17T15:27:40.787263Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe item_id=qa-d9b8-18e8dea71a2a3cfc-0
+--- 负例三条拒绝原因（补全）---
+2026-11-17T15:27:39.131794Z  WARN 冒名事件被拒（owner_id 与会话昵称不一致） session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4 owner=teacher expected=alice event_id=evt-c408-18e8dea6b7809b78-1
+2026-11-17T15:27:39.963539Z  WARN 越权广播被拒（学员事件必须定向教师） session_id=4e860b1a-e16c-4d4b-966b-8cef81f35196 audience=All event_id=evt-bf98-18e8dea6e913d04c-1
+2026-11-17T15:27:40.787090Z  WARN 角色不符的事件被拒（学员会话只能提交 Student 角色内容） session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe role=Teacher event_id=evt-d9b8-18e8dea71a2a6600-1

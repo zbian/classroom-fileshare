@@ -1,0 +1,19 @@
+GUI 自动化阻塞证据（2026-11-18T00:16:37)
+
+现象：向浮动图标发送右键/双击均无响应；主窗始终 vis=False；UIA 主窗元素数 0。
+根因（WindowFromPoint 实测）：
+  点(2500,60) 命中 hwnd=595852 pid=37180 title='' class=Shell_SystemDim
+  前台窗口 = 'Windows 安全中心'（进程 PickerHost）
+  → 桌面被 Windows 安全中心模态遮罩（Shell_SystemDim）覆盖，所有鼠标点击被遮罩吞掉。
+
+来源推断：本轮多次以隔离环境启动 classroom-svc/classroom-gui（不同 exe 路径/监听端口），
+Windows 对每个新程序路径弹「防火墙/安全中心」提示并排队，多个 Shell_SystemDim 叠加。
+已尝试：WM_CLOSE、Esc、终止 PickerHost；关闭后立刻出现另一个同源遮罩（pid 变、行为同）。
+
+第二重阻塞：WebView2 CDP 不可用——
+  设 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 启动 release GUI，
+  9222 未监听（release 构建/devtools 限制），故无法用 CDP 读取 DOM。
+
+结论：TC-08 的 UI 判据当前无法在本机自动化取证；后端判据（数据面/磁盘/时延/幂等）已全部通过。
+处置建议：① 用 dev-gui 在 #108/#90 使用的 CDP 取证方式（需确认其启用参数/构建形态）；
+         ② 或等 #16B 完成后由 dev-gui 提供可自动化的 E2E 通道；③ 或 Lead 安排真机人工点验。

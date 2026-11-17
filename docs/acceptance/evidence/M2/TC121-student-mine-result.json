@@ -1,0 +1,17 @@
+{
+    "ipc_teacher_list":  "REPLY items n=3 ITEM id=58db0fe4-d627-44f1-934f-0e7a737e2a84 kind=File owner=alice role=Student audience=Teacher title=学员提交乙.txt size=9 version=1 deleted=false sync=Synced rel=0 ITEM id=7b30784c-f3c8-45bb-a18f-b371db447dc1 kind=Text owner=alice role=Student audience=Teacher title=学员提交甲 size=3 version=1 deleted=false sync=Synced rel=0 ITEM id=e9303ab8-8379-4893-bfe0-30ec17e43af9 kind=File owner=teacher role=Teacher audience=All title=教师广播.bin size=4096 version=1 deleted=false sync=Synced rel=0",
+    "tabs":  [
+                 "教师共享 (2)",
+                 "我共享的"
+             ],
+    "mine_rows":  [
+                      "文件\n学员提交乙.txt\n9 B\n02:35\n已送达\n打开更多",
+                      "文本\n学员提交甲\n3 字\n02:35\n已送达\n复制编辑"
+                  ],
+    "mine_has_own_text":  true,
+    "mine_has_own_file":  true,
+    "mine_has_teacher_item":  false,
+    "teacher_tab_rows":  "文件\n教师广播.bin\n4 KB\n02:35\n已下载",
+    "teacher_tab_has_broadcast":  true,
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\tc121-015827"
+}

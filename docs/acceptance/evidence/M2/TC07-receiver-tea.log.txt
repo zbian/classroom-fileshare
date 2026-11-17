@@ -1,0 +1,11 @@
+2026-11-17T18:23:43.556055Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\tea\ClassShare\data
+2026-11-17T18:23:43.571674Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\tea\ClassShare\data\ipc.token user_sid=None
+2026-11-17T18:23:43.573957Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T18:23:43.609836Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc07recv-022342\tea\ClassShare\data
+2026-11-17T18:23:43.609963Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T18:23:43.616087Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T18:23:48.630520Z  INFO 学员加入 nickname=alice session_id=d2155aff-ec43-446e-b940-d35d1e45453c
+2026-11-17T18:23:54.655584Z  INFO broadcast item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 file=接收占用测试.bin size=65536 audience="all"
+2026-11-17T18:23:54.874453Z  INFO broadcast item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 file=接收占用测试.bin size=65536 audience="all"
+2026-11-17T18:24:01.751779Z  INFO broadcast item_id=5d7b9af4-5eab-4d0f-9bed-6e71133ec6e7 file=接收占用测试.bin size=65536 audience="all"
+2026-11-17T18:24:23.743009Z  INFO 学员离线 nickname=alice

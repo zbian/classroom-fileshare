@@ -1,0 +1,30 @@
+=== TC-08 准备（main 7c26b37，161 passed；8 agent）===
+REPLY status role=Teacher room=XK-204 online=8 nickname= pending=0 state=Running
+REPLY ok
+8 台落盘完成: 8/8，耗时 205 ms
+教师端列表:
+REPLY items n=1
+ITEM id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 kind=File owner=teacher role=Teacher audience=All title=删除测试.bin size=1048576 version=1 deleted=false sync=Synced rel=teacher/删除测试.bin
+=== ① 2 台离线（dev07/dev08）===
+在线数（应 6）:
+REPLY status role=Teacher room=XK-204 online=6 nickname= pending=0 state=Running
+离线端仍持有文件: dev07=True dev08=True
+教师端删前磁盘: True
+=== ② 教师删除（测量：请求延迟 + 在线端消失时延）===
+DeleteItem 返回: REPLY ok  （请求耗时 18 ms，应远小于 10s=不阻塞）
+在线端（6 台磁盘）+ 教师端磁盘全部消失耗时: -1 ms（判据 ≤1000ms）
+在线端逐台磁盘: 
+--- 教师端默认列表（应 n=0）---
+REPLY items n=0
+--- 教师端含墓碑列表（应 deleted=true / DeleteDeferred）---
+REPLY items n=1
+ITEM id=736b2ead-0936-4e8c-bda6-7cd7c3feaa02 kind=File owner=teacher role=Teacher audience=All title=删除测试.bin size=1048576 version=1 deleted=true sync=DeleteDeferred rel=teacher/删除测试.bin
+--- 教师端索引 ---
+('删除测试.bin', 1, 1, 'DeleteDeferred')
+--- 在线 agent 日志中的 removed 事件 ---
+dev01 removed 日志行=1
+dev02 removed 日志行=1
+dev03 removed 日志行=1
+dev04 removed 日志行=1
+dev05 removed 日志行=1
+dev06 removed 日志行=1

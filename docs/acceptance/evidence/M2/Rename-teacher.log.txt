@@ -1,0 +1,17 @@
+2026-11-17T17:33:32.084789Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\rename-013330\tea\ClassShare\data
+2026-11-17T17:33:32.103957Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\rename-013330\tea\ClassShare\data\ipc.token user_sid=None
+2026-11-17T17:33:32.107336Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T17:33:32.148269Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\rename-013330\tea\ClassShare\data
+2026-11-17T17:33:32.148322Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T17:33:32.156624Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T17:33:37.306941Z  INFO 学员加入 nickname=alice session_id=8b0b39f9-4179-4726-bb94-fac8a5eede27
+2026-11-17T17:33:43.305047Z  INFO broadcast item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df file=原名.bin size=4096 audience="all"
+2026-11-17T17:33:43.396985Z  INFO rename-request item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df
+2026-11-17T17:33:43.401969Z  INFO rename item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df version=2
+2026-11-17T17:33:43.404866Z  INFO rename item_id=c63c9ee7-931d-4d06-b741-7b538d24a1df version=2
+2026-11-17T17:33:53.651266Z  INFO broadcast item_id=08046cab-ec16-4d12-bbb9-1efed3b35bfa file=冲突A.bin size=2048 audience="all"
+2026-11-17T17:33:54.268138Z  INFO broadcast item_id=ec396536-5b45-4ab2-a28e-aa7fc714e196 file=冲突B.bin size=2048 audience="all"
+2026-11-17T17:33:55.282444Z  INFO rename-request item_id=ec396536-5b45-4ab2-a28e-aa7fc714e196
+2026-11-17T17:33:55.283840Z  WARN 重命名失败 item_id=ec396536-5b45-4ab2-a28e-aa7fc714e196 error=名称已被占用: 冲突A.bin
+2026-11-17T17:33:55.311265Z  INFO broadcast item_id=7f3ac969-cd81-4d8d-a455-92c25ec85ed6 file=标题不含关键词 size=12 audience="all"
+2026-11-17T17:33:56.159365Z  INFO broadcast item_id=7df3bb95-4fae-45f2-a8a8-2e46741cd7b6 file=文件不含词.bin size=27 audience="all"
