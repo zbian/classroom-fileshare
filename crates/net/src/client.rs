@@ -21,14 +21,20 @@ use tokio::sync::mpsc;
 use crate::frame::{encode_frame, read_frame, Frame, Hello, HelloErr, HelloReply};
 
 /// 客户端会话回调：由角色层（agent）实现，把业务帧映射到自身状态机。
+///
+/// 接口修订 #10①（M2 #17，PRD 3.6 ack / 7.4 补删）：`on_frame` 增加发送
+/// 通道参数——客户端需要在上行方向回帧（删除补做完成的 `Ack`，与后续
+/// 回传 ack 同类）；此前只有读方向，服务端 `SessionHandler` 早已对称提供
+/// `tx`。
 #[async_trait]
 pub trait ClientHandler: Send + Sync {
     /// 收到服务端下发的业务帧（`Event` / `Manifest` / `FileHeader` /
     /// `FileChunk` / `FileEnd` / `FileAck`）——控制帧（`Ping`/`Pong`/
     /// `HelloReply`）由运行器内部处理，不会到达此处。
     ///
-    /// 返回 `Err` 视为致命错误，会话立即结束并向上抛出（调用方决定是否重连）。
-    async fn on_frame(&self, frame: Frame) -> Result<()>;
+    /// `tx` 为该会话的上行发送通道（与运行器共享同一写任务）；返回 `Err`
+    /// 视为致命错误，会话立即结束并向上抛出（调用方决定是否重连）。
+    async fn on_frame(&self, frame: Frame, tx: &mut mpsc::Sender<Frame>) -> Result<()>;
 
     /// 加入成功（在 [`Self::on_frame`] 首次回调之前调用，可据此通知上层
     /// 「已加入房间」/ 展示会话标识）。默认空实现。
@@ -94,7 +100,7 @@ pub async fn run_client_session<H: ClientHandler>(
     tracing::debug!(addr = %cfg.addr, "客户端会话已建立");
 
     let (mut reader, mut writer) = stream.into_split();
-    let (tx, mut rx) = mpsc::channel::<Frame>(64);
+    let (mut tx, mut rx) = mpsc::channel::<Frame>(64);
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if writer.write_all(&encode_frame(&frame)).await.is_err() {
@@ -173,7 +179,7 @@ pub async fn run_client_session<H: ClientHandler>(
                     }
                     // 业务面：交给角色层
                     other => {
-                        if let Err(e) = handler.on_frame(other).await {
+                        if let Err(e) = handler.on_frame(other, &mut tx).await {
                             tracing::warn!(error = %e, "客户端回调失败，结束会话");
                             drop(tx);
                             let _ = writer_task.await;

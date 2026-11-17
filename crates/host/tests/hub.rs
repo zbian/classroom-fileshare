@@ -1096,3 +1096,200 @@ async fn student_upload_over_limit_rejected_streaming() {
         "超限上传不得入库"
     );
 }
+
+// ---------- M2 #17：删除同步与延迟补删 ----------
+
+/// 真实 agent 实例（生产代码）：可 abort 模拟离线，再用**同一 data_root**
+/// 重启验证「离线期间教师删除 → 上线补删」。
+struct RealAgent {
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    events: mpsc::Receiver<classroom_agent::AgentEvent>,
+    dir: tempfile::TempDir,
+}
+
+/// 启动真实 agent 并等到 manifest 对齐完成（Synced）。
+async fn start_real_agent(port: u16, nickname: &str, dir: tempfile::TempDir) -> RealAgent {
+    let (tx, mut rx) = mpsc::channel(64);
+    let cfg = classroom_agent::AgentConfig {
+        nickname: nickname.into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
+        data_root: dir.path().to_path_buf(),
+    };
+    let task = tokio::spawn(classroom_agent::run_agent(cfg, tx));
+    loop {
+        let ev = tokio::time::timeout(TIMEOUT, rx.recv())
+            .await
+            .expect("agent 加入超时")
+            .expect("agent 事件通道关闭");
+        // 加入阶段可能伴随补删 Removed 等事件（离线补删先于 Synced 发出），
+        // 统一忽略，只等对齐完成信号 Synced。
+        if matches!(ev, classroom_agent::AgentEvent::Synced) {
+            break;
+        }
+    }
+    RealAgent {
+        task,
+        events: rx,
+        dir,
+    }
+}
+
+/// #17 用例 1（验收核心）：离线端上线后**补删**——教师删除时端离线（墓碑
+/// 落库、无接收者）；端重连经 manifest 比对完成补删（清实体 + 清索引），
+/// 并上行 Ack；**再重连一次不重复补删**（有界，不无限重试）。
+#[tokio::test]
+async fn offline_student_delete_caught_up_on_reconnect() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = start_real_agent(port, "alice", dir).await;
+
+    // 教师广播一条 → 真实 agent 落盘
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "临时通知".into(),
+            body: "会被删除".into(),
+        })
+        .await
+        .unwrap();
+    let item = loop {
+        match tokio::time::timeout(TIMEOUT, agent.events.recv())
+            .await
+            .expect("等待 Received 超时")
+            .expect("agent 事件通道关闭")
+        {
+            classroom_agent::AgentEvent::Received(i) if i.title == "临时通知" => break i,
+            _ => continue,
+        }
+    };
+    let local_rel = item.rel_path.clone().expect("文本条目应有 rel_path");
+    {
+        let store = Store::open(agent.dir.path()).unwrap();
+        assert!(store.get(&item.id).unwrap().is_some(), "在线时本地有条目");
+    }
+
+    // 学员离线（abort agent 任务，保留 data_root 模拟「关机后重开」）
+    agent.task.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 教师删除：无在线端接收 → 仅落墓碑（删除立即完成，不等待离线端）
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 重连（同一 data_root）→ manifest 含墓碑 → 补删 + 上行 Ack
+    let agent2 = start_real_agent(port, "alice", agent.dir).await;
+    let ack_item = next_matching(&mut host.events, |e| match e {
+        HostEvent::DeleteAcked { item_id, nickname } if item_id == item.id.as_str() => {
+            Some(nickname.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(ack_item, "alice", "补删完成应上行 Ack（昵称=会话身份）");
+
+    // 补删完成终态：索引清除 + 实体清理（PRD 7.4）
+    let store2 = Store::open(agent2.dir.path()).unwrap();
+    assert!(
+        store2.get(&item.id).unwrap().is_none(),
+        "补删完成索引清除（PRD 7.4）"
+    );
+    assert!(
+        store2.list(ListFilter::default()).unwrap().is_empty(),
+        "默认列表不可见"
+    );
+    assert!(
+        !agent2.dir.path().join("repo").join(&local_rel).exists(),
+        "实体文件应被补删清理"
+    );
+
+    // 有界性：再重连一次 → 本地已无该条目 → 不重复补删、不重复 Ack
+    agent2.task.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let agent3 = start_real_agent(port, "alice", agent2.dir).await;
+    let extra = tokio::time::timeout(
+        Duration::from_millis(500),
+        next_matching(&mut host.events, |e| match e {
+            HostEvent::DeleteAcked { .. } => Some(()),
+            _ => None,
+        }),
+    )
+    .await;
+    assert!(extra.is_err(), "补删只执行一次，不无限重试");
+    agent3.task.abort();
+}
+
+/// #17 用例 2：在线端删除**立即**生效——教师删除后在线学员立刻收到 delete
+/// 事件（墓碑快照），重复删除幂等（不 panic、不重复广播）。
+#[tokio::test]
+async fn online_student_delete_immediate_and_repeat_idempotent() {
+    let host = start_host(None).await;
+    let port = host.port;
+    let mut a = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "在线通知".into(),
+            body: "会被删除".into(),
+        })
+        .await
+        .unwrap();
+    let item = loop {
+        match a.next().await {
+            Frame::Event(ev) => break ev.item,
+            _ => continue,
+        }
+    };
+    // 消费正文文件帧序列
+    loop {
+        match a.next().await {
+            Frame::FileEnd(_) => break,
+            _ => continue,
+        }
+    }
+
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    let del = loop {
+        match a.next().await {
+            Frame::Event(ev) if ev.kind == classroom_protocol::EventKind::Delete => break ev,
+            _ => continue,
+        }
+    };
+    assert_eq!(del.item.id, item.id);
+    assert!(del.item.deleted, "删除事件携带墓碑快照");
+
+    // 重复删除：幂等（不报错、无第二次广播）
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), a.next())
+            .await
+            .is_err(),
+        "重复删除不应重复广播"
+    );
+    // 教师端列表默认不含墓碑
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(
+        store.list(ListFilter::default()).unwrap().is_empty(),
+        "教师端列表默认不含墓碑"
+    );
+    assert!(
+        store.get(&item.id).unwrap().is_some_and(|i| i.deleted),
+        "墓碑保留在教师端索引（供离线端补删）"
+    );
+}

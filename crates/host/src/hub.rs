@@ -26,13 +26,22 @@ use crate::room::Admitter;
 use crate::{HostCommand, HostEvent, HostStatus, StudentInfo};
 
 /// 教师端固定的 owner_id。
-///
 /// **保留昵称**（M2 S3，issue #89 / 设计文档 §3.4）：这是教师作用域的保留
 /// 值，`on_hello` 在 join 层强制拒绝该昵称（返回 `HelloErr::InvalidNickname`）
 /// ——否则学员把昵称设为 `teacher` 后伪造 `owner_id = "teacher"` 恰好能通过
 /// 「owner 与会话昵称一致」校验，从而顶替教师作用域（M1 的 A2 过滤只拦
 /// owner≠teacher，此变体可穿透）。
 pub const TEACHER_OWNER: &str = "teacher";
+
+/// 墓碑保留期（M2 #17，PRD 7.4 删除同步状态机）。
+///
+/// 语义：教师删除后墓碑在保留期内随 manifest 下发给每个上线端；离线端在
+/// 期限内上线即可补删。超期由 [`Hub::delete_item`] 惰性清理（视为「端长期
+/// 离线、放弃补删」，验收口径见 issue #17）。
+///
+/// 取值 7 天：PRD 未给数值；覆盖「周末 + 请假」级离线，同时避免墓碑无限
+/// 膨胀（M1 冻结报告 Deferral 曾记「墓碑保留策略缺失」）。
+pub const TOMBSTONE_TTL_SECS: i64 = 7 * 24 * 3600;
 
 pub(crate) struct Hub {
     /// rusqlite Connection 是 Send 非 Sync，包 Mutex 以满足 Arc<dyn SessionHandler> 的 Sync 要求；
@@ -335,9 +344,25 @@ impl Hub {
             Ok(item) => {
                 let ev = Self::make_event(EventKind::Delete, item, now);
                 let _ = self.store.lock().unwrap().record_event(&ev);
+                // 教师端删除**立即完成**（不等任何离线端，PRD 7.4）：软删 +
+                // 墓碑 + 广播；离线端上线后经 manifest 比对补删（agent 侧）。
                 self.broadcast_event(&ev).await;
+                // M2 #17：惰性清理过期墓碑（不引入常驻定时器）——墓碑在
+                // 保留期内随 manifest 下发，超期视为「端长期离线，放弃补删」
+                if let Err(e) = self
+                    .store
+                    .lock()
+                    .unwrap()
+                    .purge_tombstones(now - TOMBSTONE_TTL_SECS)
+                {
+                    tracing::warn!(error = %e, "过期墓碑清理失败");
+                }
             }
-            Err(e) => tracing::warn!(error = %e, "删除失败"),
+            Err(e) => {
+                // 重复删除：已删条目不再命中 WHERE deleted = 0 → NotFound。
+                // 幂等语义：不 panic、不重复广播（验收：重复 delete 不报错）。
+                tracing::info!(item_id = %id, error = %e, "删除未生效（条目不存在或已删除）");
+            }
         }
     }
 }
@@ -402,6 +427,43 @@ impl SessionHandler for Hub {
     }
 
     async fn on_event(&self, session_id: &str, ev: Event, _tx: &mut mpsc::Sender<Frame>) {
+        // ===== M2 #17（PRD 3.6 / 7.4）：补删确认 Ack =====
+        // 与内容事件不同：Ack 的 `item` 是被删除条目的快照（owner=teacher，
+        // 学员并非该条目所有者），因此身份以 `acked_by` 为准——只校验
+        // ① 会话已注册 ② acked_by 等于会话昵称。该分支必须先于下面的
+        // 「owner_id == 会话昵称」内容校验。
+        if ev.kind == EventKind::Ack {
+            let expected = {
+                let conns = self.conns.lock().unwrap();
+                conns.get(session_id).map(|c| c.nickname.clone())
+            };
+            let Some(expected) = expected else {
+                tracing::warn!(%session_id, "未注册会话的 Ack，丢弃");
+                return;
+            };
+            if ev.acked_by.as_deref() != Some(expected.as_str()) {
+                tracing::warn!(
+                    %session_id,
+                    acked_by = ?ev.acked_by,
+                    expected = %expected,
+                    "Ack 身份不符（acked_by 与会话昵称不一致），丢弃"
+                );
+                return;
+            }
+            tracing::info!(
+                item_id = %ev.item.id,
+                nickname = %expected,
+                "学员补删确认（Ack）"
+            );
+            let _ = self
+                .notify
+                .send(HostEvent::DeleteAcked {
+                    item_id: ev.item.id,
+                    nickname: expected,
+                })
+                .await;
+            return;
+        }
         // ===== M2 S3 会话身份绑定（接口修订 #9①，设计文档 §3.3）=====
         // 三重校验，任一失败即丢弃（不落库、不广播、不 ack）：
         // ① 会话存在（net 层未 join 守卫之上再兜一层：conns 是唯一身份源）

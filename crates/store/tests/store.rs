@@ -572,3 +572,77 @@ fn apply_remote_stale_version_ignored() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].version, 2);
 }
+
+// ---------- M2 #17：墓碑保留策略与补删终态 ----------
+
+/// #17 用例 3：墓碑保留期——保留期内不清理；超期清理时**实体与索引一并清除**；
+/// 重复清理幂等（Purge 有界，不会无限重试）。
+#[test]
+fn purge_tombstones_after_retention_clears_bodies() {
+    let (_guard, root) = root("purge");
+    let store = Store::open(&root).unwrap();
+    let tmp = write_tmp(root.parent().unwrap(), "a.txt", b"aaa");
+    let h = sha256_file(&tmp).unwrap();
+    let file_item = match store
+        .put_file_from_tmp(
+            "teacher",
+            Role::Teacher,
+            Audience::All,
+            "a.txt",
+            &tmp,
+            &h,
+            100,
+        )
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let text_item = match store
+        .put_text("teacher", Role::Teacher, Audience::All, "通知", "正文", 100)
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let file_body = store.file_body(&file_item).unwrap();
+    let text_body = store.file_body(&text_item).unwrap();
+    assert!(file_body.exists() && text_body.exists());
+
+    // 墓碑（updated_at = 100，即删除时刻）
+    store.soft_delete(&file_item.id, 100).unwrap();
+    store.soft_delete(&text_item.id, 100).unwrap();
+
+    // 保留期内（older_than == updated_at）不清理
+    assert_eq!(store.purge_tombstones(100).unwrap(), 0, "保留期内不清理");
+    // 超期（older_than=101 > updated_at=100）→ 清索引 + 清实体
+    assert_eq!(store.purge_tombstones(101).unwrap(), 2);
+    assert!(store.get(&file_item.id).unwrap().is_none());
+    assert!(store.get(&text_item.id).unwrap().is_none());
+    assert!(!file_body.exists(), "实体随墓碑清理");
+    assert!(!text_body.exists(), "实体随墓碑清理");
+    // 幂等：再次清理 0 条
+    assert_eq!(store.purge_tombstones(101).unwrap(), 0);
+}
+
+/// #17 用例 4：`hard_delete` 幂等（补删可重入）——重复删除不报错，
+/// 不存在的 id 也不报错。
+#[test]
+fn hard_delete_is_idempotent() {
+    let (_guard, root) = root("hard-del");
+    let store = Store::open(&root).unwrap();
+    let item = match store
+        .put_text("teacher", Role::Teacher, Audience::All, "通知", "正文", 100)
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("期望 Created，实际 {other:?}"),
+    };
+    let body = store.file_body(&item).unwrap();
+    store.hard_delete(&item.id).unwrap();
+    assert!(store.get(&item.id).unwrap().is_none(), "索引清除");
+    assert!(!body.exists(), "实体清除");
+    // 重复 / 不存在：幂等不报错（补删可重入）
+    store.hard_delete(&item.id).unwrap();
+    store.hard_delete("not-exist-id").unwrap();
+}
