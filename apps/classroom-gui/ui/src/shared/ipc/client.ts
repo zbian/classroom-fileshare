@@ -12,17 +12,27 @@ import type { GuiReply, ListFilter, ServiceStatus, ShareItem, SvcNotify } from '
 
 export type NotifyHandler = (n: SvcNotify) => void
 
+/** 本机角色（gui.json 口径，小写字面量；区别于 wire 协议的 Role 枚举） */
+export type LocalRole = 'teacher' | 'student' | 'unset'
+
+/** 客户端展示扩展（mock 用）：is_new = 新/未读标记（PRD 6.4，客户端态不入 wire 协议） */
+export type UiShareItem = ShareItem & { is_new?: boolean }
+
 export interface GuiClient {
-  list(filter: ListFilter): Promise<ShareItem[]>
+  list(filter: ListFilter): Promise<UiShareItem[]>
   sendText(title: string, body: string): Promise<GuiReply>
   sendFiles(paths: string[]): Promise<GuiReply>
   deleteItem(id: string): Promise<GuiReply>
   openItem(id: string): Promise<GuiReply>
+  /** 学员设置昵称（B1）；重名等业务错误以 reject(Error.message) 呈现 8.3 文案 */
+  setNickname(nickname: string, pin?: string | null): Promise<void>
   configureRoom(room: string, pin: string | null, allowDiscovery: boolean): Promise<GuiReply>
   status(): Promise<ServiceStatus>
   pauseTips(paused: boolean): Promise<GuiReply>
   /** 订阅服务通知；返回退订函数 */
   subscribe(h: NotifyHandler): () => void
+  /** mock 上下文注入：本机角色决定数据集（真实现由服务侧数据天然区分，可为空实现） */
+  setContext?(ctx: { role: LocalRole }): void
   /** dev 辅助：模拟服务异常/恢复（EX-10 验证） */
   setServiceDown?(down: boolean): void
 }
@@ -64,6 +74,44 @@ function seedItems(): ShareItem[] {
   ]
 }
 
+/** 学员端 D1（教师共享，只读）：前 2 条带「新」标记，1 条下载中 */
+function seedTeacherShares(): UiShareItem[] {
+  const base = seedItems()
+  return base.map((i, idx) => ({
+    ...i,
+    owner_role: 'Teacher',
+    is_new: idx < 2,
+    sync_state: idx === 4 ? 'PendingSync' : 'Synced',
+  }))
+}
+
+/** 学员端 D2（我共享的）：2 条已送达 + 2 条离线待发（PRD 6.8 场景） */
+function seedStudentMine(): UiShareItem[] {
+  const rows: Array<[string, 'Text' | 'File', number, number, ShareItem['sync_state']]> = [
+    ['作业.docx', 'File', 436_000, 92, 'Synced'],
+    ['第三题的疑问', 'Text', 86, 86, 'Synced'],
+    ['课堂笔记.md', 'File', 12_000, 38, 'PendingSend'],
+    ['补充问题', 'Text', 54, 33, 'PendingSend'],
+  ]
+  return rows.map(([title, kind, size, mins, st], i) => ({
+    id: `mine-${i}-${title}`,
+    kind,
+    owner_id: '小林',
+    owner_role: 'Student' as const,
+    audience: 'Teacher' as const,
+    title,
+    size,
+    created_at: now() - mins * 60_000,
+    updated_at: now() - mins * 60_000,
+    version: 1,
+    deleted: false,
+    sync_state: st,
+  }))
+}
+
+/** B1 昵称查重黑名单（mock）：教师端已存在的昵称（PRD 6.1 / 8.3 重名文案） */
+const DENY_NICKNAMES = ['小林']
+
 /** 解析 mock 的 StatusText（真实服务的文本形态接线时对齐；建议后端结构化） */
 export function parseStatusText(text: string): ServiceStatus {
   // mock 约定：service=running|down;room=XK-204;online=28
@@ -75,11 +123,14 @@ export function parseStatusText(text: string): ServiceStatus {
 
 export class MockGuiClient implements GuiClient {
   private items: ShareItem[] = seedItems()
+  private teacherShares: UiShareItem[] = seedTeacherShares()
+  private studentMine: UiShareItem[] = seedStudentMine()
   private handlers = new Set<NotifyHandler>()
   private down = false
   private room = 'XK-204'
   private online = 28
   private seq = 1
+  private role: 'teacher' | 'student' | 'unset' = 'teacher'
 
   private emit(n: SvcNotify) {
     for (const h of this.handlers) h(n)
@@ -89,15 +140,44 @@ export class MockGuiClient implements GuiClient {
     return `service=${this.down ? 'down' : 'running'};room=${this.room};online=${this.online}`
   }
 
-  list(filter: ListFilter): Promise<ShareItem[]> {
+  setContext(ctx: { role: LocalRole }): void {
+    if (ctx.role === 'teacher' || ctx.role === 'student') this.role = ctx.role
+  }
+
+  list(filter: ListFilter): Promise<UiShareItem[]> {
     if (this.down) return Promise.reject(new Error('后台服务未运行'))
-    let rows = this.items.filter((i) => !i.deleted)
+    let rows: UiShareItem[]
+    if (filter.owner === 'teacher') {
+      rows = this.teacherShares.filter((i) => !i.deleted)
+    } else if (this.role === 'student') {
+      rows = this.studentMine.filter((i) => !i.deleted)
+    } else {
+      rows = this.items.filter((i) => !i.deleted)
+    }
     if (filter.kind) rows = rows.filter((i) => i.kind === filter.kind)
     if (filter.keyword) {
       const kw = filter.keyword.trim()
       if (kw) rows = rows.filter((i) => i.title.includes(kw))
     }
     return Promise.resolve(rows)
+  }
+
+  /** B1：昵称查重（mock 黑名单）+ PIN 校验占位；错误文案按 PRD 8.3 */
+  setNickname(nickname: string, pin?: string | null): Promise<void> {
+    if (this.down) return Promise.reject(new Error('后台服务未运行'))
+    const name = nickname.trim()
+    if (!name || name.length > 20) {
+      return Promise.reject(new Error('昵称需为 1 至 20 个字符'))
+    }
+    if (DENY_NICKNAMES.includes(name)) {
+      return Promise.reject(new Error('该昵称已被使用，请换一个'))
+    }
+    if (pin != null && pin !== '' && pin !== '2048') {
+      return Promise.reject(new Error('PIN 不正确，请向教师确认'))
+    }
+    this.studentMine = this.studentMine.map((i) => ({ ...i, owner_id: name }))
+    this.online = 1
+    return Promise.resolve()
   }
 
   sendText(title: string, body: string): Promise<GuiReply> {
@@ -174,6 +254,23 @@ export class MockGuiClient implements GuiClient {
 
   subscribe(h: NotifyHandler): () => void {
     this.handlers.add(h)
+    // mock 模式补一条 Discovered（B1 房间列表来源；真实模式由服务 beacon 发现推送）
+    setTimeout(
+      () =>
+        h({
+          t: 'Discovered',
+          beacons: [
+            {
+              protocol_version: 1,
+              room: this.room,
+              tcp_port: 47821,
+              pin_required: true,
+              host_name: '教师机',
+            },
+          ],
+        }),
+      0,
+    )
     return () => this.handlers.delete(h)
   }
 
@@ -188,7 +285,7 @@ export class MockGuiClient implements GuiClient {
 //   invoke('svc_request', { request: GuiRequest }) -> GuiReply
 //   （GuiRequest/GuiReply 为 serde 外部不可辨名形态，snake_case 与 wire 一致）
 //   listen('svc://notify', SvcNotify)                            （重打标签 {t,payload}）
-// 服务未运行时 invoke reject（Error.message 为人类可读文案 → EX-10）。
+// 服务未运行时 invoke reject（Error.message 为人类可读文案 → EX-10/EX-08）。
 // ---------------------------------------------------------------------------
 
 export class RealGuiClient implements GuiClient {
@@ -199,7 +296,7 @@ export class RealGuiClient implements GuiClient {
     return invoke<GuiReply>('svc_request', { request: req })
   }
 
-  list(filter: ListFilter): Promise<ShareItem[]> {
+  list(filter: ListFilter): Promise<UiShareItem[]> {
     return this.request({ List: filter }).then((r) => (r.t === 'Items' ? r.items : []))
   }
   sendText(title: string, body: string): Promise<GuiReply> {
@@ -213,6 +310,9 @@ export class RealGuiClient implements GuiClient {
   }
   openItem(id: string): Promise<GuiReply> {
     return this.request({ OpenItem: { id } })
+  }
+  setNickname(nickname: string, pin?: string | null): Promise<void> {
+    return this.request({ SetNickname: { nickname, pin: pin ?? null } }).then(() => undefined)
   }
   configureRoom(room: string, pin: string | null, allow_discovery: boolean): Promise<GuiReply> {
     return this.request({ ConfigureRoom: { room, pin, allow_discovery } })

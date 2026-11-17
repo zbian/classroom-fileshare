@@ -14,6 +14,7 @@ mod windows;
 use classroom_ipc::GuiRequest;
 use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
+use tauri::Manager;
 
 fn main() {
     let config = GuiConfig::load();
@@ -40,9 +41,24 @@ fn main() {
                 a.strip_prefix("--demo-tips=")
                     .and_then(|v| v.parse::<u32>().ok())
             }) {
-                #[cfg(debug_assertions)]
-                eprintln!("[t11] demo-tips 启动参数命中：n={n}");
                 tips::demo_tips(app.handle(), n);
+            }
+            // 角色写入（M1 调试/部署占位：--role=teacher|student 持久化到 gui.json；
+            // 产品语义由 T13 安装器/T7 服务 Status 决定，届时替换此处入口）
+            if let Some(role) = std::env::args().find_map(|a| {
+                let r = a.strip_prefix("--role=")?;
+                if r == "teacher" || r == "student" {
+                    Some(r.to_string())
+                } else {
+                    None
+                }
+            }) {
+                if let Ok(mut cfg) = app.state::<state::AppState>().config.lock() {
+                    cfg.role = role;
+                    let snapshot = cfg.clone();
+                    drop(cfg);
+                    let _ = snapshot.save();
+                }
             }
             Ok(())
         })
@@ -58,6 +74,7 @@ fn main() {
             update_tips_height,
             tips_dismissed,
             open_main_locate,
+            set_nickname_done,
             svc_request,
             dev_demo_tips
         ])
@@ -135,6 +152,17 @@ async fn svc_request(
     ipc_client::svc_request(app, request).await
 }
 
+/// 学员首次昵称完成置位（B1 不再弹出；PRD 6.1 重启不再弹）。
+#[tauri::command]
+fn set_nickname_done(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut guard = state.config.lock().map_err(|e| e.to_string())?;
+        guard.icon.nickname_done = true;
+        guard.clone()
+    };
+    snapshot.save().map_err(|e| e.to_string())
+}
 /// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
 #[tauri::command]
 fn dev_demo_tips(app: tauri::AppHandle, n: u32) {

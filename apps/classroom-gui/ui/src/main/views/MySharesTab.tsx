@@ -5,8 +5,24 @@
 import { useMainStore } from '../store'
 import type { ShareItem, SyncState } from '../../shared/ipc/types'
 
-/** 状态 chip 映射（PRD 7.6 状态字典：文字+色块，不单靠颜色） */
-function stateChip(s: SyncState): { cls: string; label: string } {
+/** 状态 chip 映射（PRD 7.6 状态字典：文字+色块，不单靠颜色）；教师端与学员端（D2）标签不同 */
+function stateChip(s: SyncState, flavor: 'teacher' | 'student'): { cls: string; label: string } {
+  if (flavor === 'student') {
+    switch (s) {
+      case 'Synced':
+        return { cls: 'ok', label: '已送达' }
+      case 'PendingSend':
+        return { cls: 'warn', label: '待发送' }
+      case 'PendingSync':
+        return { cls: 'warn', label: '待同步' }
+      case 'DeleteDeferred':
+        return { cls: 'warn', label: '延迟删除' }
+      case 'RetryLocked':
+        return { cls: 'err', label: '被占用重试' }
+      case 'Failed':
+        return { cls: 'err', label: '失败' }
+    }
+  }
   switch (s) {
     case 'Synced':
       return { cls: 'ok', label: '已同步' }
@@ -34,11 +50,11 @@ function fmtTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function Row({ item }: { item: ShareItem }) {
+function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' }) {
   const selectedId = useMainStore((s) => s.selectedId)
   const select = useMainStore((s) => s.select)
   const client = useMainStore((s) => s.client)
-  const st = stateChip(item.sync_state)
+  const st = stateChip(item.sync_state, flavor)
   const isFile = item.kind === 'File'
   return (
     <tr
@@ -84,36 +100,46 @@ function Row({ item }: { item: ShareItem }) {
   )
 }
 
-export default function MySharesTab() {
+export default function MySharesTab({ flavor = 'teacher' }: { flavor?: 'teacher' | 'student' }) {
   const items = useMainStore((s) => s.items)
+  const pendingCount = flavor === 'student' ? items.filter((i) => i.sync_state === 'PendingSend').length : 0
 
   if (items.length === 0) {
     return (
       <div style={{ padding: '48px 0' }}>
         <div className="info" style={{ textAlign: 'center' }}>
-          暂无共享内容：点击工具栏「+ 粘贴文本」，或把文件拖到桌面浮动图标。
+          {flavor === 'student'
+            ? '暂无共享内容：点击「+ 粘贴文本」，或把文件拖到桌面浮动图标。'
+            : '暂无共享内容：点击工具栏「+ 粘贴文本」，或把文件拖到桌面浮动图标。'}
         </div>
       </div>
     )
   }
 
   return (
-    <table className="tbl">
-      <thead>
-        <tr>
-          <th style={{ width: 76 }}>类型</th>
-          <th>名称 / 内容</th>
-          <th style={{ width: 90 }}>大小</th>
-          <th style={{ width: 70 }}>时间</th>
-          <th style={{ width: 110 }}>状态</th>
-          <th style={{ width: 150 }}>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((it) => (
-          <Row key={it.id} item={it} />
-        ))}
-      </tbody>
-    </table>
+    <>
+      {pendingCount > 0 ? (
+        <div className="info warn" style={{ marginBottom: 10 }}>
+          离线待发队列：{pendingCount} 条　·　重新连上教师机后按时间戳自动补发，不会丢失。
+        </div>
+      ) : null}
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th style={{ width: 76 }}>类型</th>
+            <th>名称 / 内容</th>
+            <th style={{ width: 90 }}>大小</th>
+            <th style={{ width: 70 }}>时间</th>
+            <th style={{ width: 110 }}>状态</th>
+            {flavor === 'teacher' ? <th style={{ width: 150 }}>操作</th> : <th style={{ width: 150 }}>操作</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it) => (
+            <Row key={it.id} item={it} flavor={flavor} />
+          ))}
+        </tbody>
+      </table>
+    </>
   )
 }
