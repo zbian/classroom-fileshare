@@ -1,0 +1,61 @@
+{
+    "runs":  5,
+    "queued_ok":  5,
+    "flush_before_join":  0,
+    "received":  5,
+    "lost":  0,
+    "loss_rate":  "0%",
+    "details":  [
+                    {
+                        "run":  1,
+                        "joined":  true,
+                        "queued":  true,
+                        "queue_had_item":  true,
+                        "flush_before_join":  false,
+                        "queue_emptied":  false,
+                        "received_after_restore":  true,
+                        "lost":  false
+                    },
+                    {
+                        "run":  2,
+                        "joined":  true,
+                        "queued":  true,
+                        "queue_had_item":  true,
+                        "flush_before_join":  false,
+                        "queue_emptied":  false,
+                        "received_after_restore":  true,
+                        "lost":  false
+                    },
+                    {
+                        "run":  3,
+                        "joined":  true,
+                        "queued":  true,
+                        "queue_had_item":  true,
+                        "flush_before_join":  false,
+                        "queue_emptied":  false,
+                        "received_after_restore":  true,
+                        "lost":  false
+                    },
+                    {
+                        "run":  4,
+                        "joined":  true,
+                        "queued":  true,
+                        "queue_had_item":  true,
+                        "flush_before_join":  false,
+                        "queue_emptied":  false,
+                        "received_after_restore":  true,
+                        "lost":  false
+                    },
+                    {
+                        "run":  5,
+                        "joined":  true,
+                        "queued":  true,
+                        "queue_had_item":  true,
+                        "flush_before_join":  false,
+                        "queue_emptied":  false,
+                        "received_after_restore":  true,
+                        "lost":  false
+                    }
+                ],
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\e15rate-012735"
+}

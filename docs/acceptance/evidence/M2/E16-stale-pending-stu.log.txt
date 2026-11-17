@@ -1,0 +1,17 @@
+2026-11-17T17:30:37.737329Z  INFO 前台降级模式启动（--console） mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\e16-013032\stu\ClassShare\data
+2026-11-17T17:30:37.754405Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\e16-013032\stu\ClassShare\data\ipc.token user_sid=None
+2026-11-17T17:30:37.756944Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T17:30:37.797837Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M2\e16-013032\stu\ClassShare\data
+2026-11-17T17:30:37.797878Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T17:30:37.804662Z  INFO 已加入房间 session_id=6cff7b9b-a7aa-4ab0-b60c-5207f3c4f469
+2026-11-17T17:30:37.804834Z  INFO 会话已就绪（Joined） epoch=1
+2026-11-17T17:30:43.222274Z  INFO 与教师机断开，稍后自动重连 retry_in=1s addr=127.0.0.1:47821
+2026-11-17T17:30:43.752662Z  INFO 会话未就绪（未 Joined），已入待发队列，等待会话就绪后补发 count=1
+2026-11-17T17:30:43.762729Z  INFO 会话未就绪（未 Joined），已入待发队列，等待会话就绪后补发 count=1
+2026-11-17T17:30:44.241224Z  INFO 已加入房间 session_id=0a187671-7d95-4bfe-89fa-d5f045b77c30
+2026-11-17T17:30:44.241420Z  INFO 会话已就绪（Joined） epoch=2
+2026-11-17T17:30:44.813921Z  INFO 延迟补发送完成，待下一轮确认 op_id=3e66f6c2-d5a3-44a2-b339-7709b3cefaa6 created_at=1794936643 epoch=2
+2026-11-17T17:30:44.814332Z  INFO 延迟补发送完成，待下一轮确认 op_id=df550fff-7d48-4642-ac25-f1fc48d4886a created_at=1794936643 epoch=2
+2026-11-17T17:30:45.812451Z  INFO 待发条目已确认出队 op_id=df550fff-7d48-4642-ac25-f1fc48d4886a
+2026-11-17T17:30:45.815245Z  INFO 待发条目已确认出队 op_id=3e66f6c2-d5a3-44a2-b339-7709b3cefaa6
+2026-11-17T17:30:50.042842Z  INFO 与教师机断开，稍后自动重连 retry_in=2s addr=127.0.0.1:47821
