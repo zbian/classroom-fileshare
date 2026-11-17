@@ -1351,6 +1351,39 @@ async fn start_real_agent_with_commands(
     (cmd_tx, task, dir)
 }
 
+/// 带事件流观察的真实 agent（#18 TC-09 用：可等待 Disconnected/Joined 时序）。
+async fn start_real_agent_observed(
+    port: u16,
+    nickname: &str,
+    dir: tempfile::TempDir,
+) -> (
+    mpsc::Sender<classroom_agent::AgentCommand>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+    mpsc::Receiver<classroom_agent::AgentEvent>,
+) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<classroom_agent::AgentCommand>(8);
+    let (ev_tx, mut ev_rx) = mpsc::channel(128);
+    let cfg = classroom_agent::AgentConfig {
+        nickname: nickname.into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
+        data_root: dir.path().to_path_buf(),
+    };
+    let task = tokio::spawn(classroom_agent::run_agent_with_commands(cfg, ev_tx, cmd_rx));
+    loop {
+        let ev = tokio::time::timeout(TIMEOUT, ev_rx.recv())
+            .await
+            .expect("agent 加入超时")
+            .expect("agent 事件通道关闭");
+        if matches!(ev, classroom_agent::AgentEvent::Synced) {
+            break;
+        }
+    }
+    (cmd_tx, task, dir, ev_rx)
+}
+
 /// #104 用例 1：GUI「发送文本」→ agent 成帧上行 → 教师端入库可查。
 #[tokio::test]
 async fn student_uplink_text_reaches_teacher() {
@@ -1565,4 +1598,225 @@ async fn retry_exhausted_emits_warning() {
     )
     .await;
     assert!(extra.is_err(), "耗尽后不应无限重试/重复告警");
+}
+
+// ---------- M2 #18：离线待发队列（TC-09） ----------
+
+/// 预占一个空闲回环端口（bind 0 后释放，供 host 固定端口复用）。
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// 在固定端口 + 外部数据根启动 host（模拟教师机停机后同数据/同端口恢复）。
+async fn start_host_on(port: u16, pin: Option<String>, data_root: PathBuf) -> Host {
+    let cfg = HostConfig {
+        room_code: "XK-204".into(),
+        pin,
+        data_root: data_root.clone(),
+        tcp_port: port,
+    };
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ev_tx, mut ev_rx) = mpsc::channel(128);
+    tokio::spawn(classroom_host::run_host(cfg, cmd_rx, ev_tx));
+    let status = match next_event(&mut ev_rx).await {
+        HostEvent::Started(s) => s,
+        other => panic!("expected Started first, got {other:?}"),
+    };
+    Host {
+        // 外部数据根由调用方持有（此处的 TempDir 仅占位，不删除外部目录）
+        _guard: tempfile::tempdir().unwrap(),
+        data_root,
+        room_code: status.room_code,
+        cmd: cmd_tx,
+        events: ev_rx,
+        port: status.tcp_port,
+    }
+} // ---------- M2 #18：离线待发队列（TC-09） ----------
+
+/// #18 / TC-09：断网提交 2 条 → 恢复后 **10 秒内**教师端全部收到且
+/// **各端无重复**；待发队列持久化在 `data_root/pending/` 且补发成功后清空。
+#[tokio::test]
+async fn offline_submissions_resend_after_reconnect() {
+    let port = free_port();
+    let host_root = tempfile::tempdir().unwrap();
+    let host_data = host_root.path().to_path_buf();
+    let mut host = start_host_on(port, None, host_data.clone()).await;
+
+    // 真实 agent（带上行命令通道）
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir, mut ev_rx) = start_real_agent_observed(port, "alice", dir).await;
+
+    // 先在线发 1 条，确认链路正常
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "在线".into(),
+            body: "ok".into(),
+        })
+        .await
+        .expect("投递");
+    let _ = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "在线" => Some(i),
+        _ => None,
+    })
+    .await;
+
+    // 断网：教师机停机（agent 进入重连循环，上行不可用）；等端口完全释放
+    host.cmd.send(HostCommand::Shutdown).await.unwrap();
+    // 等 agent 确认断线（Disconnected 发出时 uplink 已清，#104 顺序修正）
+    loop {
+        let ev = tokio::time::timeout(TIMEOUT, ev_rx.recv())
+            .await
+            .expect("等待 Disconnected 超时")
+            .expect("agent 事件通道关闭");
+        if matches!(ev, classroom_agent::AgentEvent::Disconnected) {
+            break;
+        }
+    }
+
+    // 断网期间提交 2 条 → 入离线待发队列
+    for (title, body) in [("离线一", "a"), ("离线二", "b")] {
+        cmd_tx
+            .send(classroom_agent::AgentCommand::SendText {
+                title: title.into(),
+                body: body.into(),
+            })
+            .await
+            .expect("断网投递");
+    }
+    // 等命令泵落盘（PRD 9.2：队列持久化）
+    let queue_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let ops = classroom_agent::pending::load(dir.path());
+        if ops.len() == 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < queue_deadline,
+            "断网提交应落盘到待发队列，实际 {} 条（diag: task_finished={} queue_file={} dir_exists={}）",
+            ops.len(),
+            task.is_finished(),
+            dir.path().join("pending/queue.json").exists(),
+            dir.path().exists()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // 恢复：同端口同数据根重启教师机 → agent 自动重连 → 按操作时间补发
+    let mut _host2 = start_host_on(port, None, host_data.clone()).await;
+    assert_eq!(
+        _host2.port, port,
+        "重启必须复用固定端口（否则 agent 连不上）"
+    );
+    let mut joined_after_restart = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        // 同时消费 agent 事件（观察重连时序）
+        if let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(20), ev_rx.recv()).await {
+            if matches!(ev, classroom_agent::AgentEvent::Joined(_)) {
+                joined_after_restart = true;
+            }
+        }
+        let store = Store::open(&host_data).unwrap();
+        let all = store.list(ListFilter::default()).unwrap();
+        let offline: Vec<_> = all.iter().filter(|i| i.title.starts_with("离线")).collect();
+        if offline.len() >= 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "TC-09：恢复后 10s 内教师端应收到全部补发，当前: {:?}（diag: joined={} pending={:?}）",
+            all.iter().map(|i| i.title.clone()).collect::<Vec<_>>(),
+            joined_after_restart,
+            classroom_agent::pending::load(dir.path())
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // 各端无重复：教师端条目 title 唯一
+    let store = Store::open(&host_data).unwrap();
+    let all = store.list(ListFilter::default()).unwrap();
+    let mut titles: Vec<String> = all.iter().map(|i| i.title.clone()).collect();
+    assert!(
+        all.iter().filter(|i| i.title.starts_with("离线")).count() == 2,
+        "恰好 2 条离线提交: {:?}",
+        all.iter().map(|i| i.title.clone()).collect::<Vec<_>>()
+    );
+    titles.sort();
+    titles.dedup();
+    assert_eq!(titles.len(), 3, "在线 1 条 + 离线 2 条，无重复条目");
+
+    // 补发成功 → 待发队列清空（内容文件也清理）
+    let ops = classroom_agent::pending::load(dir.path());
+    assert!(ops.is_empty(), "补发成功后队列清空，实际: {ops:?}");
+    task.abort();
+}
+
+/// #18：**断电不丢**——agent 重启（同 data_root）后队列仍在，重连补发完成。
+#[tokio::test]
+async fn pending_queue_survives_agent_restart() {
+    let port = free_port();
+    let host_root = tempfile::tempdir().unwrap();
+    let host_data = host_root.path().to_path_buf();
+    let host = start_host_on(port, None, host_data.clone()).await;
+
+    // agent 连上后断网，提交 1 条入队
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    drop(host); // 停 host（模拟教师机不可达）
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "断电补发".into(),
+            body: "内容".into(),
+        })
+        .await
+        .expect("投递");
+    let queue_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !classroom_agent::pending::load(dir.path()).is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < queue_deadline,
+            "断网提交应落盘"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // 「断电」：abort agent 进程（内存全丢），保留 data_root
+    task.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        classroom_agent::pending::load(dir.path()).len(),
+        1,
+        "agent 重启后队列仍在（断电不丢）"
+    );
+
+    // 重启 agent（同 data_root）→ 教师机恢复 → 补发
+    let mut host2 = start_host_on(port, None, host_data.clone()).await;
+    let (_cmd_tx2, task2, dir2) = start_real_agent_with_commands(port, "alice", dir).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let store = Store::open(&host_data).unwrap();
+        let hit = store
+            .list(ListFilter::default())
+            .unwrap()
+            .iter()
+            .any(|i| i.title == "断电补发");
+        if hit {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "重启后 10s 内应补发完成"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        classroom_agent::pending::load(dir2.path()).is_empty(),
+        "补发成功后队列清空"
+    );
+    task2.abort();
+    let _ = &mut host2;
 }

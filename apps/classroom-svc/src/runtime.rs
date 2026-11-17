@@ -353,10 +353,11 @@ fn dispatch_send(
     let Some(cmd) = agent_cmd else {
         return Err("当前角色不支持发送".into());
     };
-    if !connected.load(std::sync::atomic::Ordering::SeqCst) {
-        // 待发队列（离线补发）归 #18；本 issue 只保证「不静默丢弃」
-        return Err("未连接教师机，暂时无法发送（恢复连接后可重试）".into());
-    }
+    // M2 #18（PRD 6.8）：未连接教师机时**不再报错**——命令交给 agent 入
+    // 离线待发队列（持久化到 data_root，断电不丢），重连后按操作时间自动
+    // 补发；GUI 通过 StatusSnapshot.pending_count 与待发状态通知感知。
+    // 仅当 agent 核心/命令队列不可用时报错（不是静默丢弃）。
+    let _ = connected; // 连接状态由 agent 侧判定（未连接 → 入队）
     let command = match send {
         AgentSend::Text { title, body } => classroom_agent::AgentCommand::SendText { title, body },
         AgentSend::Files { paths } => classroom_agent::AgentCommand::SendFiles { paths },
@@ -437,6 +438,20 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
         CoreEvent::Agent(AgentEvent::Synced) => {
             vec![SvcNotify::StatusChanged("已与教师机对齐".into())]
         }
+        // M2 #18：离线待发队列状态（GUI 状态条「待发送 N 条」）
+        CoreEvent::Agent(AgentEvent::PendingOpsChanged { count, .. }) => {
+            vec![SvcNotify::StatusChanged(format!(
+                "待发送 {count} 条（连接恢复后自动补发）"
+            ))]
+        }
+        // M2 #18：缓存阈值提示（PRD 6.8/9.2：提示清理，不自动删除）
+        CoreEvent::Agent(AgentEvent::PendingCacheFull { bytes, limit }) => {
+            vec![SvcNotify::StatusChanged(format!(
+                "本地待发缓存 {} MB 超过上限 {} MB，请清理（未同步内容不会自动删除）",
+                bytes / (1024 * 1024),
+                limit / (1024 * 1024)
+            ))]
+        }
         // 评审随包项 3：EX-08「教师机离线只读缓存」信号通路（T-10 前端
         // 消费 StatusChanged 展示离线横幅与待发提示）
         CoreEvent::Agent(AgentEvent::Disconnected) => {
@@ -459,6 +474,10 @@ fn apply_status(board: &StatusBoard, ev: &CoreEvent) {
         }
         CoreEvent::Agent(AgentEvent::Joined(room)) => {
             board.update(|snap| snap.room = room.clone());
+        }
+        // M2 #18：待发队列长度实化（StatusSnapshot.pending_count）
+        CoreEvent::Agent(AgentEvent::PendingOpsChanged { count, .. }) => {
+            board.update(|snap| snap.pending_count = *count);
         }
         _ => {}
     }
@@ -742,15 +761,24 @@ mod tests {
         let connected = Arc::new(AtomicBool::new(false));
         let handler = make_ipc_handler(None, Some(cmd_tx), connected.clone(), store, status);
 
-        // 未连接教师机 → 明确错误（GUI 提示；离线队列归 #18）
+        // M2 #18（PRD 6.8）：未连接**不再报错**——命令交给 agent 入离线
+        // 待发队列（持久化），重连后自动补发；此处断言「不静默丢弃」：
+        // 命令确实投递到了 agent 命令通道（agent 侧负责入队/发送）
         match handler(GuiRequest::SendText {
             title: "作业".into(),
             body: "老师好".into(),
         }) {
-            Err(msg) => assert!(msg.contains("未连接"), "未连接应给出明确错误: {msg}"),
-            other => panic!("期望未连接错误，实际 {other:?}"),
+            Ok(GuiReply::Ok) => {}
+            other => panic!("未连接时应入队并返回 Ok，实际 {other:?}"),
         }
-        // 标记已连接 → 投递命令（agent 侧命令泵负责成帧与发送）
+        match cmd_rx.try_recv() {
+            Ok(AgentCommand::SendText { title, body }) => {
+                assert_eq!(title, "作业");
+                assert_eq!(body, "老师好");
+            }
+            other => panic!("期望 AgentCommand::SendText，实际 {other:?}"),
+        }
+        // 已连接：路由不变（连接判定在 agent 侧）
         connected.store(true, Ordering::SeqCst);
         match handler(GuiRequest::SendText {
             title: "作业".into(),
