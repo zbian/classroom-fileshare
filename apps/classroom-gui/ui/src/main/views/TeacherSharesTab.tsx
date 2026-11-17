@@ -16,6 +16,9 @@ function stateChip(s: SyncState, isNew: boolean): { cls: string; label: string }
   switch (s) {
     case 'Synced':
       return { cls: 'ok', label: '已下载' }
+    // PRD 7.4：教师已删除、本机待补删 → 用户可见文案「待删除」
+    case 'DeleteDeferred':
+      return { cls: 'warn', label: '待删除' }
     case 'PendingSync':
       return { cls: 'warn', label: '下载中' }
     default:

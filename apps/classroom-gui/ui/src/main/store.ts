@@ -285,7 +285,10 @@ export const useMainStore = create<MainStore>((set, get) => ({
     try {
       await get().client.deleteItem(id)
       set({ dialog: { ...get().dialog, deleteConfirm: null }, selectedId: null })
-      get().showToast('已删除，正在同步到教师端')
+      // PRD 5.8 同步进度：逐台 N/M 需后端提供离线端/完成端计数（#103），
+      // 此处仅用真实字段 online_count，不臆造进度。
+      const online = get().status?.online ?? 0
+      get().showToast(`已删除：在线 ${online} 台学员端已同步移除；离线端上线后自动删除`)
       await get().refresh()
     } catch (e) {
       get().showToast(e instanceof Error ? e.message : '删除失败')

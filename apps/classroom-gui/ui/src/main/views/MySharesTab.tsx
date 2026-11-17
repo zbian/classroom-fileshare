@@ -8,6 +8,7 @@
 import { useMainStore } from '../store'
 import { filterItems, isFilterActive } from '../listFilter'
 import VirtualList from '../components/VirtualList'
+import { isItemLocked, LOCKED_HINT } from '../lockedState'
 import SyncIssuesBanner from '../components/SyncIssuesBanner'
 import { COLS_MY_SHARES as COLS, ROW_HEIGHT } from './columns'
 import type { ShareItem, SyncState } from '../../shared/ipc/types'
@@ -23,8 +24,9 @@ function stateChip(s: SyncState, flavor: 'teacher' | 'student'): { cls: string; 
         return { cls: 'warn', label: '待发送' }
       case 'PendingSync':
         return { cls: 'warn', label: '待同步' }
+      // PRD 7.4：教师已删除、本机副本待补删 → 用户可见文案「待删除」
       case 'DeleteDeferred':
-        return { cls: 'warn', label: '延迟删除' }
+        return { cls: 'warn', label: '待删除' }
       case 'RetryLocked':
         return { cls: 'err', label: '被占用重试' }
       case 'Failed':
@@ -64,6 +66,9 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
   const client = useMainStore((s) => s.client)
   const st = stateChip(item.sync_state, flavor)
   const isFile = item.kind === 'File'
+  // PRD 7.4：待删除条目（deleted 墓碑 / DeleteDeferred）不可打开、不可复制
+  // （判定与提示文案收口在 shared 模块，工具栏入口复用同一判定）
+  const locked = isItemLocked(item)
   return (
     <div
       className={`grow${selectedId === item.id ? ' selected' : ''}`}
@@ -80,7 +85,17 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
         <span className={`chip ${st.cls}`}>{st.label}</span>
       </span>
       <span className="ops">
-        {isFile ? (
+        {locked ? (
+          // PRD 7.4「待删除」：打开/复制入口一律禁用（保留位置，样式置灰）
+          <>
+            <span className="disabled" title={LOCKED_HINT} aria-disabled="true">
+              打开
+            </span>
+            <span className="disabled" title={LOCKED_HINT} aria-disabled="true">
+              复制
+            </span>
+          </>
+        ) : isFile ? (
           <>
             <span
               onClick={(e) => {

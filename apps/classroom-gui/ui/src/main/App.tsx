@@ -6,6 +6,7 @@
 import { useEffect } from 'react'
 import './main.css'
 import { useMainStore, type TabKey } from './store'
+import { isItemLocked, LOCKED_HINT } from './lockedState'
 import MySharesTab from './views/MySharesTab'
 import TeacherSharesTab from './views/TeacherSharesTab'
 import SubmissionsTab from './views/SubmissionsTab'
@@ -131,6 +132,8 @@ function Toolbar() {
   const openDialog = useMainStore((s) => s.openDialog)
   const selectedId = useMainStore((s) => s.selectedId)
   const selected = useMainStore((s) => s.items.find((i) => i.id === s.selectedId))
+  // PRD 7.4：待删除条目不可打开/复制（行内与工具栏共用同一判定，review #111）
+  const selectedLocked = isItemLocked(selected)
   const client = useMainStore((s) => s.client)
   const showToast = useMainStore((s) => s.showToast)
   // #16：学生提交只读工具栏所需
@@ -192,17 +195,25 @@ function Toolbar() {
         <span className="spacer" />
         <button
           className="btn"
-          disabled={selected?.kind !== 'Text'}
-          title={selected?.kind === 'Text' ? '复制选中文本全文' : '先选中一条文本'}
+          disabled={selected?.kind !== 'Text' || selectedLocked}
+          title={
+            selectedLocked
+              ? LOCKED_HINT
+              : selected?.kind === 'Text'
+                ? '复制选中文本全文'
+                : '先选中一条文本'
+          }
           onClick={() => showToast('已复制到剪贴板（T12 接剪贴板写入）')}
         >
           复制选中文本
         </button>
         <button
           className="btn"
-          disabled={selected?.kind !== 'File'}
-          title={selected?.kind === 'File' ? '用系统默认程序打开' : '先选中一个文件'}
-          onClick={() => selected && void client.openItem(selected.id)}
+          disabled={selected?.kind !== 'File' || selectedLocked}
+          title={
+            selectedLocked ? LOCKED_HINT : selected?.kind === 'File' ? '用系统默认程序打开' : '先选中一个文件'
+          }
+          onClick={() => selected && !selectedLocked && void client.openItem(selected.id)}
         >
           打开选中文件
         </button>
@@ -237,7 +248,7 @@ function Toolbar() {
       </button>
       <button
         className="btn dg"
-        disabled={!selectedId || role === 'student'}
+        disabled={!selectedId || role === 'student' || selectedLocked}
         title={
           role === 'student'
             ? 'M2（FR-S-05 学员删除同步）'
