@@ -30,10 +30,19 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Resolve-Binary([string]$Path, [string]$FallbackName) {
-    if ($Path) { return (Resolve-Path $Path).Path }
-    $candidate = Join-Path $PSScriptRoot $FallbackName
-    if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
-    throw "未找到 $FallbackName，请经参数指定路径"
+    if ($Path) { return (Resolve-Path -LiteralPath $Path).Path }
+    # M1 验收 O-4：脚本不在二进制同目录时（如从仓库根/验收目录调用），
+    # 除脚本同级外再搜标准构建输出目录，并在失败信息里给出显式参数指引。
+    $candidates = @(
+        (Join-Path $PSScriptRoot $FallbackName),
+        (Join-Path $PSScriptRoot "..\target\release\$FallbackName"),
+        (Join-Path $PSScriptRoot "..\target\debug\$FallbackName")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return (Resolve-Path -LiteralPath $candidate).Path }
+    }
+    $tried = $candidates -join '; '
+    throw "未找到 $FallbackName。已查找：$tried。若二进制不在此处，请显式指定 -SvcExe <path>（服务）/ -GuiExe <path>（GUI）；生产构建请先执行 scripts\build-gui.ps1。"
 }
 
 function Write-SvcConfig([string]$Dir, [hashtable]$Config) {
@@ -44,7 +53,7 @@ function Write-SvcConfig([string]$Dir, [hashtable]$Config) {
 }
 
 $svcExe = Resolve-Binary $SvcExe 'classroom-svc.exe'
-$guiExe = if ($GuiExe) { (Resolve-Path $GuiExe).Path } else { $null }
+$guiExe = if ($GuiExe) { (Resolve-Path -LiteralPath $GuiExe).Path } else { $null }
 
 # PR #69 发现 1（PRD 2.4「学生 1 步设昵称」）：学员模式未显式传 -Room 时
 # 写空字符串 → svc 侧 room_filter=None → 自动连接首个发现（单教室学生
