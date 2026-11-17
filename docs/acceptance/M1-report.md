@@ -4,14 +4,15 @@
 | --- | --- |
 | 报告 | M1 验收报告（部分验收：单机可做项 + 多 agent 代理） |
 | 执行人 | qa-acceptance |
-| 日期 | 2026-11-17 |
-| 基线 | `main @ aee4e43`（含 **E9 e134b76**、E4/E6 锚点、E7 令牌 ACL、T-13 服务） |
+| 日期 | 2026-11-17（初版）/ 2026-11-17 修订（rc.2 补测） |
+| 基线 | **`main @ 46470fe`（v0.1.0-rc.2）**，含 E9 自动发现、**E10 100 MB 上限**、O-1 构建防呆、O-3/O-4 |
 | 环境 | 单机（用户确认仅 1 台可用）；Windows 11 专业版 26100；**非管理员**；PowerShell 5.1；WebView2 157.0.4341.60 |
-| 依据 | [PRD](../../../final_draft.md) 第 11 章 / 2.4 指标；[验收方案 v1.3.6](../M1-acceptance-plan.md)；[冻结报告](../../reports/M1-freeze.md) |
-| 结论 | **5 项通过 / 1 项部分通过（管理员路径延后）/ 1 项延后（需双机）**，未发现阻断级产品缺陷 |
-| 证据 | `docs/acceptance/evidence/M1/single-machine/`（命令输出、日志、截图） |
+| 依据 | [PRD](../../../final_draft.md) 第 11 章 / 2.4 指标；[验收方案 v1.3.7](../M1-acceptance-plan.md)；[冻结报告](../../reports/M1-freeze.md) |
+| 结论 | **未见阻断缺陷，但发现 P0 缺口（E10：100 MB 上限未生效）——已修复并验证闭环**；6 项通过 / 1 项部分通过 / 若干项延后 |
+| 证据 | `docs/acceptance/evidence/M1/single-machine/`（命令输出、日志、截图）；rc.2 补测证据前缀 `C-*` |
 
-> 本报告只声明**单机可验范围**内的结论。凡需 2 台以上真机或管理员权限的判据，一律标注「延后」，不以单机结果替代。基线 aee4e43 上的实测项与旧基线（6e778c0）上的探索项分别标注。
+> 本报告只声明**单机可验范围**内的结论。凡需 2 台以上真机或管理员权限的判据，一律标注「延后」，不以单机结果替代。
+> 修订说明：rc.1 报告结论为「未发现阻断级产品缺陷」；rc.2 补测确认存在 P0 缺口 **E10**（单文件 100 MB 上限未生效），已在 `7eea251` 修复并由本报告 §3.11 验证闭环。该缺口属**验收侧负例覆盖不足**（初版未测超限文件），已同步补测。
 
 ---
 
@@ -28,6 +29,9 @@
 | **TC-13 前半** | 卸载清理 | **部分通过** | **降级路径通过**（HKCU Run 双项安装/清理、数据保留）；**管理员路径（服务注册/防火墙/PROGRAMDATA）延后** |
 | **E7 取证** | 令牌双授予/ACL | **通过（降级模式）** | ACL 仅 SYSTEM/Administrators/当前用户 (R,W)，**无继承项、无 Users**；64 hex；服务模式延后 |
 | **E3** | 重名探测（静默死亡/强杀） | **通过（单机进程级）** | 静默死亡 3 s 驱逐、强杀 0.18 s 释放、活连接拒绝且旧端不被驱逐 |
+| **E10** | 100 MB 上限 / 风险类型（rc.2 补测） | **通过（修复闭环）** | 120 MB 拒绝（EX-04 逐字）、100 MB 边界接受、`.exe/.bat/.lnk` 拒绝、拒绝后小文件正常发；见 §3.11 |
+| **O-1 补测** | 冷启动图标 ≤3 s | **通过** | 冷启动 439–646 ms（4 次）≤3 s |
+| **TC-03 补测** | 空剪贴板置灰 / 不清空剪贴板 | **通过** | 空剪贴板时「粘贴并共享」`IsEnabled=False` 且显示 EX-03 文案；有文本时 `True`；读取后剪贴板仍为原文 |
 
 ## 2 执行环境与构建口径（重要）
 
@@ -37,10 +41,10 @@
 | 用户 SID | `S-1-5-21-2068859581-1204002046-625995256-1001` |
 | 数据根 | 降级模式 `%LOCALAPPDATA%\ClassShare\data`（服务模式 `%PROGRAMDATA%` 需管理员） |
 | 服务二进制 | `cargo build --release -p classroom-svc` → `classroom-svc.exe` |
-| GUI 二进制 | `pnpm --dir apps/classroom-gui/ui build` + `cargo build --release -p classroom-gui **--features tauri/custom-protocol**` |
+| GUI 二进制 | **`.\scripts\build-gui.ps1`**（内部 `pnpm build` + `cargo build --release -p classroom-gui --features custom-protocol`，含产物自检）——**禁止裸 `cargo build --release`**，见 O-1 |
 | QA 探针 | `qa-tools/ipc-cli`（真实命名管道 + 令牌握手客户端）、`qa-tools/agent-probe`（真实 agent 进程），**QA 本地工具，不入上游** |
 
-> ★**构建口径发现（非产品缺陷，但会误导验收）**：GUI 若用裸 `cargo build --release -p classroom-gui`（**不加** `tauri/custom-protocol`），release 产物走 dev URL 而前端不加载 → `icon_ready` 不触发 → **图标窗口始终不可见**（实测 `vis=False`，WebView2 子进程已创建）。加特性后图标正常显示。建议：冻结报告/README 写明 GUI 构建命令，或加 CI 守卫。
+> ★**O-1（已升格为强制口径）**：GUI 若用裸 `cargo build --release -p classroom-gui`（不加 `custom-protocol` feature），release 产物仍为 tauri dev 模式 → 前端不内嵌 → 连 devUrl → **图标窗口始终不可见**（实测 `vis=False`，WebView2 子进程已创建，极易误判产品缺陷）。**生产/验收一律用 `.\scripts\build-gui.ps1`**；`build.rs` 会输出构建警告、`main.rs` 会在误用时弹 MessageBox 提示。根因见 [`docs/notes/m1-o1-gui-build.md`](../../notes/m1-o1-gui-build.md)。
 
 ## 3 分用例结果
 
@@ -178,17 +182,65 @@ C:\Users\Bian\AppData\Local\ClassShare\data\ipc.token NT AUTHORITY\SYSTEM:(R,W)
 
 见 §3.1；`auto01` 在无 manual_addr、无房间码过滤下发现并加入本机教师，符 PRD 2.4「学生 1 步」。**双机真实广播链路延后**。
 
+### 3.11 rc.2 补测（基线 `46470fe`）
+
+证据前缀 `C-*`（`C-E10.txt`、`C-TC01-coldstart.txt`、`C-TC03-clip.txt`、`C-TC06.txt`、`C-TC12.txt`、`C-list-race.txt`）
+
+#### 3.11.1 E10：100 MB 上限与风险类型（P0 缺口修复验证）—— 通过
+
+| 场景 | 实测 | 判定 |
+| --- | --- | --- |
+| 120 MB（125829120 B） | 拒绝：svc.log `WARN 教师文件广播失败 … error=**单文件不能超过 100 MB（125829120 字节）**`（EX-04 逐字） | ✅ |
+| 恰好 100 MB（104857600 B） | **接受**并广播（`broadcast … file=exact100.bin size=104857600`），索引 `('exact100.bin', 104857600, 1, 0)` | ✅ 边界不误杀 |
+| `x.exe` / `x.bat` / `x.lnk` | 三者均拒绝：`error=**高风险文件类型: x.exe / x.bat / x.lnk**`（EX-05 语义） | ✅ |
+| 拒绝后立即发小文件 | `小文件.txt` 成功入库并广播（磁盘 2 字节、索引在列） | ✅ 不污染后续发送 |
+| 最终列表 | 仅 `exact100.bin` + `小文件.txt` 两条（被拒项未入库） | ✅ |
+
+> EX-05 文案差异记录：实现为「高风险文件类型: <文件名>」，PRD 8.3 文案表为「该类型不允许共享」——语义等价、信息更具体；不判缺陷，建议 M2 统一文案口径时对齐。
+
+#### 3.11.2 O-1 补测：冷启动图标可见时延 —— 通过
+
+判据 FR-G-01「冷启动后 3 秒内出现图标」。
+
+| 轮次 | 图标可见耗时 |
+| --- | --- |
+| 第 1 次（首次） | **646 ms** |
+| 第 2 次 | 439 ms |
+| 第 3 次 | 438 ms |
+| 第 4 次 | 467 ms |
+
+→ 全部 ≤3000 ms，**PASS**。测量方式：启动进程后以 40 ms 间隔轮询枚举该进程的 `课堂共享` 窗口（宽度 ≤200 判为图标窗）直至 `IsWindowVisible`。
+
+#### 3.11.3 TC-03 补测：空剪贴板置灰 / 发送不清空剪贴板 —— 通过
+
+判据 FR-G-03 / EX-03（单机可验，经真实右键菜单 + UIA 读取菜单项启用态）：
+
+| 场景 | 实测 |
+| --- | --- |
+| 空剪贴板（`Set-Clipboard $null`） | 右键菜单展开 304 px；「粘贴并共享」`IsEnabled=**False**`，且菜单项文案为 **「粘贴并共享 剪贴板中没有可共享的文本或文件」**（EX-03 逐字） |
+| 剪贴板有文本 | 「粘贴并共享」`IsEnabled=**True**` |
+| 菜单读取剪贴板后 | 剪贴板内容**仍为原文**（`True`）——读取不修改剪贴板（FR-G-03「不得修改其内容」） |
+
+#### 3.11.4 TC-06 / TC-12 在 rc.2 基线复验 —— 通过（无回归）
+
+- **TC-06**：两次同名发送 → 列表 `version=2` 单条；主哈希 = V2 `92F3D8B1…A498`；`.bak` = V1 `6BDD1E92…8167`；`.bak` 数 = 1。
+- **TC-12**：GUI 由 `scripts/build-gui.ps1` 产物启动 → 真实右键「退出课堂共享」→ GUI 进程消失、残留 GUI 数 0、服务仍 Running（IPC Status 正常）、仓库文件数退出前后一致（10）。
+
+#### 3.11.5 观察：List 的最终一致性（新增 O-6）
+
+`SendFiles` 返回 `ok` 后**紧随**的一次 `List` 可能暂不包含该条目（连续 8 轮 `send→list` 实测出现 2 次计数滞后，随后自动一致；见 `C-list-race.txt`）。属**最终一致**表现，不影响 TC-06 判据（验收按合理等待取证）。建议：GUI 发送后以服务端通知（SvcNotify）驱动刷新，而非立即重列表。
+
 ## 4 缺陷与观察项
-
-| 编号 | 级别 | 内容 | 处置建议 |
+| 编号 | 级别 | 内容 | 处置 |
 | --- | --- | --- | --- |
-| O-1 | 观察（构建口径） | GUI 需 `--features tauri/custom-protocol`，否则图标不显示 | 写入构建文档/CI 守卫；**非产品缺陷** |
-| O-2 | 观察（可观测性） | `broadcast` 锚点在推送完成后记录，`Δ=applied−broadcast` 为下界，可出现负值，无法直接测 PRD 2.4 分发时延 | M2/M3 补 `send_received` 锚点 |
-| O-3 | 轻微 | `uninstall.ps1` 在右键项不存在时向 stderr 打印 reg.exe 原生错误 | 改为静默/过滤 |
-| O-4 | 观察（文档） | `install.ps1` 非脚本同目录场景需显式 `-SvcExe` | 文档注明或放宽查找路径 |
+| **E10** | **P0 缺口（已修复闭环）** | 单文件 100 MB 上限修复前未生效（PRD 5.3/9.4/EX-04）；QA 初版验收未覆盖该负例 | 已由 `7eea251` 修复，本报告 §3.11.1 验证闭环 |
+| O-1 | **口径要求（已升格为强制）** | GUI 生产构建必须用 `scripts/build-gui.ps1`（或显式 `--features custom-protocol`），**禁止裸 `cargo build --release`**——否则前端不内嵌、图标永不显示，极易被误判为产品缺陷 | 已入库：`build-gui.ps1` + `build.rs` 警告 + `main.rs` MessageBox 防呆；方案 §3.4 已写入强制口径，详见 [`docs/notes/m1-o1-gui-build.md`](../../notes/m1-o1-gui-build.md) |
+| O-2 | 观察（可观测性） | `broadcast` 锚点在**推送完成后**记录，`Δ=applied−broadcast` 为下界（可负），无法直接测 PRD 2.4 分发时延；本报告改用「请求发起→applied」保守上界 | M2/M3 补 `send_received` 锚点 |
+| O-3 | 轻微（已修） | `uninstall.ps1` 在右键项不存在时向 stderr 打印 reg.exe 原生错误 | `46470fe` 已修（PowerShell 原生 cmdlet + 静默） |
+| O-4 | 轻微（已修） | `install.ps1` 非脚本同目录需显式 `-SvcExe` | `46470fe` 已修（增加 `..\target\release|debug` 候选 + 失败指引） |
 | O-5 | 观察（代理局限） | 同机第二个自动发现 agent 无法绑定 UDP 47820 | 属一机一学员设计，非缺陷 |
-
-**未发现阻断级产品缺陷。**
+| O-6 | 轻微（新增） | `SendFiles` 返回 ok 后紧随的 `List` 可能暂不含该条目（最终一致） | 建议 GUI 以 SvcNotify 驱动刷新；不影响判据 |
+| O-7 | 观察（范围） | 右键菜单「设置」项为置灰不可用 | 设置面板 F1 不在 PRD 12 章 P0 清单内，属 M1 范围外，非缺陷 |
 
 ## 5 延后项与风险（交 Lead 决定放行口径）
 
@@ -198,19 +250,19 @@ C:\Users\Bian\AppData\Local\ClassShare\data\ipc.token NT AUTHORITY\SYSTEM:(R,W)
 | TC-13 管理员路径 | 非管理员 | 服务注册/SCM 重启/防火墙/`%PROGRAMDATA%` 未验证 |
 | E7 服务模式双授予 | 非管理员 | 服务模式令牌仅 LocalSystem 或双授予需真机核验 |
 | TC-01 真实双机发现 | 单机 | 跨机 UDP 广播链路（交换机/防火墙）未验证 |
+| TC-01「重启 GUI 不再弹昵称」 | 学员客户端需教师端配合入班（双机） | 已**代码级确认**条件为 `role==='student' && !nickname_done`，`nickname_done` 持久化于 `gui.json`（`set_nickname_done`）；运行期复验待双机 |
 | TC-02 30 台 p95 | 单机 | 已批准口径：留 M3 |
-| TC-03/TC-02 的 tips UI 时延 | 无学员 GUI 自动化 | FR-G-02「tips ≤1 s」未验证 |
+| TC-03/TC-02 的 tips UI 时延 | 无学员端 GUI 自动化 | FR-G-02「tips ≤1 s」未验证 |
 | TC-12 在服务模式下的服务存活 | 降级模式验证 | 服务模式 SCM 托管下的存活未验证 |
 
-**放行建议**：按已批准 §5.2 口径，可出 **`v0.1.0-rc.1`（预发布）**，但须在 release note 明确：TC-11、TC-13 管理员路径、TC-01 双机发现、TC-02 30 台压测、tips UI 时延均为**延后项**，正式 `v0.1.0` 待双机 + 管理员真机验收。
+**放行建议**：按已批准 §5.2 口径，可出 **`v0.1.0-rc.2`（预发布）**；正式 `v0.1.0` 待双机 + 管理员真机验收（TC-11、TC-13 管理员路径、E7 服务模式、TC-01 真实双机发现、TC-02 30 台压测、tips UI 时延）。release note 须列明上述延后项与 **E10 修复说明**。
 
 ## 6 复现方式
 
 ```powershell
-# 1) 构建（注意 GUI 特性）
+# 1) 构建（GUI 必须走正式脚本，见 O-1）
 cargo build --release -p classroom-svc
-pnpm --dir apps/classroom-gui/ui build
-cargo build --release -p classroom-gui --features tauri/custom-protocol
+.\scripts\build-gui.ps1
 
 # 2) 降级安装（无管理员）
 .\scripts\install.ps1 -Mode teacher -Room XK-204 -SvcExe <svc.exe> -GuiExe <gui.exe>
