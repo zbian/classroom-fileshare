@@ -1,0 +1,35 @@
+=== 基线（main 89bf9c3 / #94）===
+REPLY status role=Teacher room=XK-204 online=2 nickname= pending=0 state=Running
+Submissions:
+REPLY submissions n=0
+List:
+REPLY items n=0
+=== TC-04 学员上行（alice 文本 + 2 文件；bob 1 文件）===
+UPLINK_JOINED session=ddd498e1-e39a-4c02-8352-01aed4650023
+UPLINK_RESULT ok item=qa-c7a0-18e8de976cc828d0-0 sha256_ok=true
+UPLINK_JOINED session=f6c8a28a-22c1-4cf8-97e2-637c8c8f75bf
+UPLINK_RESULT ok item=qa-9fcc-18e8de979299b498-0 sha256_ok=true
+UPLINK_JOINED session=e0d034ab-a073-41e5-8923-33c34a4b0057
+UPLINK_RESULT ok item=qa-a290-18e8de97ac95cb5c-0 sha256_ok=true
+UPLINK_JOINED session=b5a5be52-19b5-4eed-be23-a531a5f50d6d
+UPLINK_RESULT ok item=qa-dcf8-18e8de97c6a826e8-0 sha256_ok=true
+--- 教师端 Submissions（预期 alice=3, bob=1）---
+REPLY submissions n=2
+GROUP owner=alice count=3 latest_at=1794929194
+GROUP owner=bob count=1 latest_at=1794929194
+--- 教师端 List（预期 4 条，owner_role=Student, audience=Teacher）---
+REPLY items n=4
+ITEM id=3941b894-3205-4f84-bb2f-3d564760f0fe kind=File owner=bob role=Student audience=Teacher title=bob作业.txt size=16 version=1 deleted=false sync=Synced rel=bob/bob作业.txt
+ITEM id=6edbbaa0-201d-4b1f-818b-698a2318da35 kind=File owner=alice role=Student audience=Teacher title=alice作业1.txt size=22 version=1 deleted=false sync=Synced rel=alice/alice作业1.txt
+ITEM id=a688840b-0511-456b-8452-036222c2d6a9 kind=File owner=alice role=Student audience=Teacher title=alice作业2.txt size=39 version=1 deleted=false sync=Synced rel=alice/alice作业2.txt
+ITEM id=4aef8533-e2db-442b-a952-7ac9216f4003 kind=Text owner=alice role=Student audience=Teacher title=课堂通知-回传 size=128 version=1 deleted=false sync=Synced rel=alice/texts/t6dbf12463174.txt
+--- 按昵称过滤（alice / bob）---
+REPLY items n=3
+ITEM id=6edbbaa0-201d-4b1f-818b-698a2318da35 kind=File owner=alice role=Student audience=Teacher title=alice作业1.txt size=22 version=1 deleted=false sync=Synced rel=alice/alice作业1.txt
+ITEM id=a688840b-0511-456b-8452-036222c2d6a9 kind=File owner=alice role=Student audience=Teacher title=alice作业2.txt size=39 version=1 deleted=false sync=Synced rel=alice/alice作业2.txt
+ITEM id=4aef8533-e2db-442b-a952-7ac9216f4003 kind=Text owner=alice role=Student audience=Teacher title=课堂通知-回传 size=128 version=1 deleted=false sync=Synced rel=alice/texts/t6dbf12463174.txt
+REPLY items n=1
+ITEM id=3941b894-3205-4f84-bb2f-3d564760f0fe kind=File owner=bob role=Student audience=Teacher title=bob作业.txt size=16 version=1 deleted=false sync=Synced rel=bob/bob作业.txt
+--- 其他学员端是否被污染（预期文件数 0/0）---
+stu01 repo 文件数=0  stu02 repo 文件数=0
+stu01/stu02 的 agent 日志中是否出现 alice/bob 内容: 0 条（预期 0）

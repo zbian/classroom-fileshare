@@ -1,0 +1,44 @@
+2026-11-17T15:25:55.101311Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc04\teacher\ClassShare\data
+2026-11-17T15:25:55.118865Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M2\tc04\teacher\ClassShare\data\ipc.token user_sid=None
+2026-11-17T15:25:55.119073Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T15:25:55.151799Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M2\tc04\teacher\ClassShare\data
+2026-11-17T15:25:55.151878Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T15:25:55.158396Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T15:25:59.179416Z  INFO 学员加入 nickname=stu01 session_id=0e8f88c6-5752-4775-804a-53b534596257
+2026-11-17T15:25:59.182985Z  INFO 学员加入 nickname=stu02 session_id=66418674-3261-4f29-a074-b79743d4513b
+2026-11-17T15:26:33.453217Z  INFO 学员加入 nickname=alice session_id=ddd498e1-e39a-4c02-8352-01aed4650023
+2026-11-17T15:26:33.453724Z  INFO 学员提交已登记，等待内容帧 session_id=ddd498e1-e39a-4c02-8352-01aed4650023 owner=alice item_id=qa-c7a0-18e8de976cc828d0-0 kind=Text
+2026-11-17T15:26:33.463781Z  INFO 学员提交入库 owner=alice item_id=4aef8533-e2db-442b-a952-7ac9216f4003 title=课堂通知-回传 version=1
+2026-11-17T15:26:33.464177Z  INFO 学员离线 nickname=alice
+2026-11-17T15:26:34.087634Z  INFO 学员加入 nickname=alice session_id=f6c8a28a-22c1-4cf8-97e2-637c8c8f75bf
+2026-11-17T15:26:34.088176Z  INFO 学员提交已登记，等待内容帧 session_id=f6c8a28a-22c1-4cf8-97e2-637c8c8f75bf owner=alice item_id=qa-9fcc-18e8de979299b498-0 kind=File
+2026-11-17T15:26:34.097062Z  INFO 学员提交入库 owner=alice item_id=6edbbaa0-201d-4b1f-818b-698a2318da35 title=alice作业1.txt version=1
+2026-11-17T15:26:34.097462Z  INFO 学员离线 nickname=alice
+2026-11-17T15:26:34.523654Z  INFO 学员加入 nickname=alice session_id=e0d034ab-a073-41e5-8923-33c34a4b0057
+2026-11-17T15:26:34.524116Z  INFO 学员提交已登记，等待内容帧 session_id=e0d034ab-a073-41e5-8923-33c34a4b0057 owner=alice item_id=qa-a290-18e8de97ac95cb5c-0 kind=File
+2026-11-17T15:26:34.534323Z  INFO 学员提交入库 owner=alice item_id=a688840b-0511-456b-8452-036222c2d6a9 title=alice作业2.txt version=1
+2026-11-17T15:26:34.534683Z  INFO 学员离线 nickname=alice
+2026-11-17T15:26:34.959957Z  INFO 学员加入 nickname=bob session_id=b5a5be52-19b5-4eed-be23-a531a5f50d6d
+2026-11-17T15:26:34.961537Z  INFO 学员提交已登记，等待内容帧 session_id=b5a5be52-19b5-4eed-be23-a531a5f50d6d owner=bob item_id=qa-dcf8-18e8de97c6a826e8-0 kind=File
+2026-11-17T15:26:34.971217Z  INFO 学员提交入库 owner=bob item_id=3941b894-3205-4f84-bb2f-3d564760f0fe title=bob作业.txt version=1
+2026-11-17T15:26:34.971619Z  INFO 学员离线 nickname=bob
+2026-11-17T15:27:39.131396Z  INFO 学员加入 nickname=alice session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4
+2026-11-17T15:27:39.131794Z  WARN 冒名事件被拒（owner_id 与会话昵称不一致） session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4 owner=teacher expected=alice event_id=evt-c408-18e8dea6b7809b78-1
+2026-11-17T15:27:39.131980Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=29f1e5a2-7e77-4b1e-a415-e455855d99c4 item_id=qa-c408-18e8dea6b78061a8-0
+2026-11-17T15:27:39.132150Z  INFO 学员离线 nickname=alice
+2026-11-17T15:27:39.961717Z  INFO 学员加入 nickname=alice session_id=4e860b1a-e16c-4d4b-966b-8cef81f35196
+2026-11-17T15:27:39.963539Z  WARN 越权广播被拒（学员事件必须定向教师） session_id=4e860b1a-e16c-4d4b-966b-8cef81f35196 audience=All event_id=evt-bf98-18e8dea6e913d04c-1
+2026-11-17T15:27:39.963822Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=4e860b1a-e16c-4d4b-966b-8cef81f35196 item_id=qa-bf98-18e8dea6e9139f14-0
+2026-11-17T15:27:39.964230Z  INFO 学员离线 nickname=alice
+2026-11-17T15:27:40.785627Z  INFO 学员加入 nickname=alice session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe
+2026-11-17T15:27:40.787090Z  WARN 角色不符的事件被拒（学员会话只能提交 Student 角色内容） session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe role=Teacher event_id=evt-d9b8-18e8dea71a2a6600-1
+2026-11-17T15:27:40.787263Z  WARN 内容帧缺少对应的已登记事件（或 item_id 不符），拒绝 session_id=8d68eefb-29dd-4b8a-8894-942322cd9ffe item_id=qa-d9b8-18e8dea71a2a3cfc-0
+2026-11-17T15:27:40.787497Z  INFO 学员离线 nickname=alice
+2026-11-17T15:28:03.812776Z  INFO 学员加入 nickname=carol session_id=3373b736-2e5f-4413-9e00-a0e385d84c90
+2026-11-17T15:28:03.813450Z  INFO 学员提交已登记，等待内容帧 session_id=3373b736-2e5f-4413-9e00-a0e385d84c90 owner=carol item_id=qa-ded8-18e8deac76a4f724-0 kind=Text
+2026-11-17T15:28:03.823901Z  INFO 学员提交入库 owner=carol item_id=7ec99f78-2617-4a00-8bd3-071dde420652 title=carol 通知 version=1
+2026-11-17T15:28:03.824474Z  INFO 学员离线 nickname=carol
+2026-11-17T15:28:04.361725Z  INFO 学员加入 nickname=carol session_id=738120bf-618e-4946-9967-5589b2c43613
+2026-11-17T15:28:04.362847Z  INFO 学员提交已登记，等待内容帧 session_id=738120bf-618e-4946-9967-5589b2c43613 owner=carol item_id=qa-ca70-18e8deac97637904-0 kind=File
+2026-11-17T15:28:04.375961Z  INFO 学员提交入库 owner=carol item_id=a11a0c04-2a17-4ab8-a781-2d32be62f87d title=carol作业.txt version=1
+2026-11-17T15:28:04.376438Z  INFO 学员离线 nickname=carol

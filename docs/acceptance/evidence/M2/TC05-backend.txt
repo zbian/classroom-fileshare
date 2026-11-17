@@ -1,0 +1,25 @@
+=== TC-05 分组数据面：carol 提交 2 条（1 文本 + 1 文件）===
+UPLINK_JOINED session=3373b736-2e5f-4413-9e00-a0e385d84c90
+UPLINK_RESULT ok item=qa-ded8-18e8deac76a4f724-0 sha256_ok=true
+UPLINK_JOINED session=738120bf-618e-4946-9967-5589b2c43613
+UPLINK_RESULT ok item=qa-ca70-18e8deac97637904-0 sha256_ok=true
+--- Submissions（预期 alice=3, bob=1, carol=2；总数 6）---
+REPLY submissions n=3
+GROUP owner=carol count=2 latest_at=1794929284
+GROUP owner=alice count=3 latest_at=1794929194
+GROUP owner=bob count=1 latest_at=1794929194
+--- 逐个昵称过滤（切换昵称只显示该生）---
+owner=alice :
+REPLY items n=3
+ITEM id=6edbbaa0-201d-4b1f-818b-698a2318da35 kind=File owner=alice role=Student audience=Teacher title=alice作业1.txt size=22 version=1 deleted=false sync=Synced rel=alice/alice作业1.txt
+ITEM id=a688840b-0511-456b-8452-036222c2d6a9 kind=File owner=alice role=Student audience=Teacher title=alice作业2.txt size=39 version=1 deleted=false sync=Synced rel=alice/alice作业2.txt
+ITEM id=4aef8533-e2db-442b-a952-7ac9216f4003 kind=Text owner=alice role=Student audience=Teacher title=课堂通知-回传 size=128 version=1 deleted=false sync=Synced rel=alice/texts/t6dbf12463174.txt
+owner=bob :
+REPLY items n=1
+ITEM id=3941b894-3205-4f84-bb2f-3d564760f0fe kind=File owner=bob role=Student audience=Teacher title=bob作业.txt size=16 version=1 deleted=false sync=Synced rel=bob/bob作业.txt
+owner=carol :
+REPLY items n=2
+ITEM id=a11a0c04-2a17-4ab8-a781-2d32be62f87d kind=File owner=carol role=Student audience=Teacher title=carol作业.txt size=18 version=1 deleted=false sync=Synced rel=carol/carol作业.txt
+ITEM id=7ec99f78-2617-4a00-8bd3-071dde420652 kind=Text owner=carol role=Student audience=Teacher title=carol 通知 size=10 version=1 deleted=false sync=Synced rel=carol/texts/t8077462ea02b.txt
+--- 其他学员端仍 0 污染 ---
+stu01 repo=0  stu02 repo=0
