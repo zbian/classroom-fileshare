@@ -46,13 +46,17 @@ T-8 置顶图标(#29) · T-11 tips(#33) · T-9 教师界面+RealGuiClient(#53) �
 | 门 | 命令 | 结果 |
 | --- | --- | --- |
 | fmt | `cargo fmt --all --check` | exit 0 |
-| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0（含 GUI src-tauri，无交叉破坏） |
-| test | `cargo test --workspace` | exit 0：25 binaries / **108 passed / 0 failed / 0 panicked** |
-| PS BOM（全仓 5 个 ps1） | 手动核验 + CI 守卫（scripts+apps） | 5/5 BOM=True、PS 5.1 语法 0 错误 |
+| clippy（debug） | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0（含 GUI src-tauri，无交叉破坏） |
+| clippy（release） | `cargo clippy --release -p classroom-gui --features custom-protocol -- -D warnings` | exit 0（debug 看不到 `cfg(not(debug_assertions))` 分支；CI 独立作业 `gui-release-clippy` 守卫） |
+| test | `cargo test --workspace` | exit 0：25 binaries / **114 passed / 0 failed / 0 panicked** |
+| GUI 生产构建 | `scripts/build-gui.ps1`（pnpm build → **release clippy** → `cargo build --release --features custom-protocol`） | exit 0（O-1 构建口径防呆；生产构建入口自带 release clippy 守卫） |
+| PS BOM（全仓 5 个 ps1） | 手动核验 + CI 守卫（全仓受版本控制 `.ps1`，`git ls-files`） | 5/5 BOM=True、PS 5.1 语法 0 错误 |
 
-108 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）· agent 9（接收/重连/墓碑/E3 探测回路/**E9 自动发现**）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 11（配置/清理/运行时/服务/room_filter 四态）· gui(src-tauri) 12（窗口/ipc client）
+114 用例分布：protocol 25（幂等合并）· store 15（覆盖/bak/穿越/保留名）**+2（E10 大小上限）**+1（并发+WAL）· net 14（帧/会话/停机）· host 9（房间广播/存活探测/manifest）**+2（E10 端到端拒绝）**· agent 9（接收/重连/墓碑/E3 探测回路/E9 自动发现）· ipc 12（双工/令牌 ACL EqualSid 语义断言）· svc 11（配置/清理/运行时/服务/room_filter 四态）· gui(src-tauri) 14（窗口/ipc client/O-1 构建模式判定 2 项）
 
-CI 作业：rust（fmt/clippy/test）+ web（pnpm build）+ PowerShell BOM 守卫
+> 数字口径：冻结基线 108 → 本终版 114 = **+4（E10）** + **+2（O-1 GUI 构建模式单测，#77）**。
+
+CI 作业：rust（fmt/clippy/test + PS BOM 守卫）+ web（pnpm build）+ **gui-release-clippy**（release profile 盲区守卫）
 
 ## 3 安全与可靠性收口（M1 期间发现并修复）
 
@@ -67,6 +71,7 @@ CI 作业：rust（fmt/clippy/test）+ web（pnpm build）+ PowerShell BOM 守�
 | 注册表 `%*` 外层引号致多选塌缩 | reviewer-2（PR #66） | 裸 `%*` + CommandLineToArgvW 三形态证据 |
 | PS 脚本 BOM 回归 | reviewer-2（PR #66 终审） | 补 BOM + **CI 守卫根治** |
 | **beacon 自动连接缺失（学员须手填 IP）** | **reviewer-2（全仓巡检）** | **E9 补齐：discovery 泵 + room_filter 房间隔离 + 锁定首个目标；学员不传 -Room 也能入班** |
+| **100MB 单文件上限从未实现（超限文件全量读内存扩散）** | **reviewer（验收报告评审，E10/#76）** | **store `fs::copy` 前 O(1) 拒绝 + host 发送前快速失败 + 端到端用例（含边界 100MB 通过 / 拒绝后链路正常）；流式推送记 M2** |
 
 ## 4 已知 Deferral（17 项，均已有归属）
 
