@@ -1,4 +1,4 @@
-﻿# M1（P0 最小闭环）验收执行方案 —— TC-01 / 02 / 03 / 06 / 11 / 12
+# M1（P0 最小闭环）验收执行方案 —— TC-01 / 02 / 03 / 06 / 11 / 12
 
 | 项目 | 内容 |
 | --- | --- |
@@ -6,7 +6,7 @@
 | 作者 | qa-acceptance |
 | 日期 | 2026-11-13 |
 | 依据 | [PRD V1.0](../../../final_draft.md) 第 2.4 / 4 / 5 / 6 / 9 / 11 章；[M1 实施计划](../plans/2026-11-13-m1-p0.md)（Task 14）；[协作流程](../DEVELOPMENT.md) |
-| 状态 | v1.3.9（E3/E4/E5/E6/E10/E11/E12 已闭环（E12 真实安装路径复验 6/6）；**E13 待修复**；基线 main 75d0d7c / 141 tests） |
+| 状态 | v1.3.8（E3/E4/E5/E6/E10/E11 已闭环；**E12 阻塞 v0.1.0 修复中**（§3.8）；tips 判据已由 rc.3 补测 ①–⑤ 验证（报告 §3.12）） |
 | 跟踪 | issue **#15**（M1 验收执行，本方案的任务 issue）；T-13 取证参数回写要求见 issue **#14** 验收标准 |
 | 产物 | 执行后产出 `docs/acceptance/M1-report.md` + `docs/acceptance/evidence/M1/` 证据目录（跟踪 issue #15） |
 
@@ -133,8 +133,8 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | **E9** | **学员端无 beacon 自动发现/自动连接**（agent 原仅支持 `manual_addr` 直连）：违反 PRD 2.4「学生 1 步（设昵称）」与 3.1「学员端自动发现并展示可加入的教师机」，属 P0 缺口（reviewer 全检发现） | **已修复并合入 main（e134b76 / PR #69）**，采用**方案 b**：`svc.json.room_code=""` → `room_filter=None` → **自动连接首个发现的教师机**；学员安装**不再需要 `-Room`**（多教室场景才传且须与教师一致，install 摘要行提示）；`manual_addr` 降为 RK-04 备用 | ① 未传 `-Room` 安装的学员机能自动发现并加入（单教室 1 步入班）；② 多教室/多教师场景传 `-Room` 后只连房间码匹配者；③ 无教师可发现时不崩溃、可重连 | **已修复 + 已合入（e134b76）**；QA 单机以 agent 自动发现链路复核（§3.9.4），**双机真实广播链路仍延后** |
 | **E10** | **P0 缺口：单文件 100 MB 上限未生效**——修复前超限文件未被拒绝（PRD 5.3/9.4、EX-04「单文件不能超过 100 MB」形同虚设；QA 在 rc.1 前的验收中未覆盖该负例，属验收侧漏项，后由 reviewer 补检发现） | **已修复并合入 main（7eea251 / PR #78）**：store 与 host 双层落地上限 + 端到端拒绝；同批 PR #77 完成 O-1 构建防呆与 O-3/O-4 | ① 120 MB → 拒绝且文案为 EX-04 逐字「单文件不能超过 100 MB」；② 恰好 100 MB → **接受**（边界不误杀）；③ `.exe`/`.bat`/`.lnk` → 拒绝（EX-05 语义）；④ 拒绝后立即发小文件**成功**（不污染后续发送） | **已闭环（QA rc.2 补测通过，见报告 §3.11）** |
 | **E11** | **P0 缺口：tips 生产路径未接线**——`push_tip` 在 release **无调用者**（唯一调用方 `demo_tips` 为 `cfg(debug)`），`ipc_client` emit `svc://notify` 而 `TipsStack` 监听 `svc://share-received` → **release 产物中 FR-G-02 永不触发「收到但从不提醒」** | **已修复并合入 main（1fea3d1 / #82）**：`SvcNotify::ShareReceived → tips::push_tip`，含同源双通知去重（`should_push_tip`）与本人条目不自弹（`owner_role == self_role` 排除） | ① 教师广播 → 学员 GUI tips 可见且**到达→可见 ≤1 s**；② UIA 三要素（名称/来源/类型）；③ 15 s 自动消失；④ 连发 5 条 → 最多 3 条 + 「还有 N 条」；⑤ 暂停提醒抑制显示但数据入库；⑥ 本人条目不自弹、同源重复通知不重复弹 | **已闭环（QA rc.3 补测 ①–⑤ 全通过，到达→可见 27 ms、消失 14.96 s，见报告 §3.12）** |
-| **E12** | **P0 阻塞：按 install.ps1 安装的学员机 GUI 连不上本机服务**——① `install.ps1` 注册 GUI 自启不传 `--role` 且从不写 `gui.json`，GUI `role` 默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败**不重试**；③ `--role=` 写盘在 `start_bridge` 之后 | **issue #83 → 已修复并合入 main（518d9b1 / #86）**：角色五级优先级（`--role` > `svc.json` mode 权威源 > `gui.json` > 双管道探测 > 默认）+ install 写 GUI 角色 + `start_bridge` 退避重连 1s/2s/5s | ① 真实 `install.ps1 -Mode student` 安装 → GUI 自动连 `classshare-svc-student`；② 状态/列表无 EX-10；③ 广播 → tips 正常；④ 先 GUI 后服务能自动重连；⑤ teacher 对称；⑥ 安装者≠登录用户（role 来源 SvcJson） | **已闭环：QA 按真实安装路径（隔离 LOCALAPPDATA/APPDATA）复验 6/6 通过**，见报告 §3.13 |
-| **E13** | 一般：**GUI 每次启动把自身 exe 当作待共享文件**——`file_args()` 未跳过 `argv[0]`（exe 是文件），走真实发送链路；实测多轮共 12 条 `教师文件广播失败 … classroom-gui.exe 高风险文件类型`。目前仅被 EX-05 拦下，若类型限制变化会外发程序本体 | 待 Lead 开 issue（建议 `file_args` 加 `.skip(1)` + 单测） | — | **待修复（最新 main 75d0d7c 仍存在）**，见报告 §3.14 |
+| **E12** | **P0 阻塞：按 install.ps1 安装的学员机 GUI 连不上本机服务**——① `install.ps1` 注册 GUI 自启**不传 `--role` 且从不写 `gui.json`**，GUI `role` 默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败**不重试**（`ensure_client` 惰性重连仅在有 UI 请求时触发）→ 常驻图标时通知流永不建立；③ `--role=` 写盘在 `start_bridge` 之后（时序竞争） | **issue #83（Lead 裁定阻塞 v0.1.0，dev-gui 修复中）**：install.ps1 写 GUI 角色（或 HKCU Run 加 `--role`）+ `start_bridge` 退避重连 + `--role` 时序前置 | ① 真实 `install.ps1 -Mode student` 安装 → GUI 自启后**自动连 `classshare-svc-student`**（日志 `服务管道已连接（role=Student）`）；② 状态/列表正常（无 EX-10「服务未运行」）；③ 教师广播 → tips 正常；④ 服务晚于 GUI 启动时，GUI 能自动重连（无需用户操作）；⑤ teacher 模式对称正确 | **修复中（阻塞 v0.1.0）**；rc.4 后由 QA 用真实安装路径复验 |
+| **E13** | 一般：**GUI 每次启动把自身 exe 当作待共享文件**——`file_args()` 未跳过 `argv[0]`（exe 是文件），走真实发送链路；实测多轮共 12 条 `教师文件广播失败 … classroom-gui.exe 高风险文件类型`。目前仅被 EX-05 拦下，若类型限制变化会外发程序本体 | **已开 issue #93**（修复中，PR 随后；建议 `file_args` 加 `.skip(1)` + 单测） | — | **待修复（最新 main 仍存在）**，见报告 §3.14 |
 
 ### 3.8.1 QA 静态复核记录
 | 检查点 | 结论 |
