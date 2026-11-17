@@ -358,10 +358,14 @@ fn snap_and_persist(app: &AppHandle) -> tauri::Result<()> {
 
 fn handle_drag_drop(app: &AppHandle, dd: &DragDropEvent) {
     match dd {
-        DragDropEvent::Enter { .. } => set_drop_state(app, true),
-        DragDropEvent::Leave => set_drop_state(app, false),
+        // A4 投放态：进入即放大并携带「拖入文件/目录数量」，前端据此展示反馈
+        DragDropEvent::Enter { paths, .. } => {
+            let (files, dirs) = count_paths(paths);
+            set_drop_state(app, true, Some((files, dirs)));
+        }
+        DragDropEvent::Leave => set_drop_state(app, false, None),
         DragDropEvent::Drop { paths, .. } => {
-            set_drop_state(app, false);
+            set_drop_state(app, false, None);
             // T12：接入 SendFiles 真链路；目录过滤并提示（EX：目录暂不支持共享）
             let mut files = Vec::new();
             let mut dirs = 0u32;
@@ -402,10 +406,37 @@ fn handle_drag_drop(app: &AppHandle, dd: &DragDropEvent) {
     }
 }
 
-fn set_drop_state(app: &AppHandle, active: bool) {
+/// 拖入内容数量统计（文件 / 目录），供投放态反馈展示（A4）
+fn count_paths(paths: &[std::path::PathBuf]) -> (usize, usize) {
+    let mut files = 0;
+    let mut dirs = 0;
+    for p in paths {
+        if p.is_dir() {
+            dirs += 1;
+        } else {
+            files += 1;
+        }
+    }
+    (files, dirs)
+}
+
+/// 仅调试用：直接进入/退出投放态并下发数量（供 A4 视觉验证/QA 截图；
+/// release 下不编译，命令注册处有 cfg 处理）。
+#[cfg(debug_assertions)]
+pub fn dev_drop_preview(app: &AppHandle, active: bool, files: usize, dirs: usize) {
+    set_drop_state(app, active, Some((files, dirs)));
+}
+fn set_drop_state(app: &AppHandle, active: bool, counts: Option<(usize, usize)>) {
     let state = app.state::<AppState>();
     if state.drop_active.swap(active, Ordering::SeqCst) == active {
-        return; // 已处于目标态，避免 Over 事件反复触发
+        // 尺寸态未变：仍下发一次数量（Over 事件可能在进入后带更精确的列表）
+        if active {
+            if let Some((files, dirs)) = counts {
+                let payload = serde_json::json!({ "active": true, "files": files, "dirs": dirs });
+                let _ = app.emit_to(ICON_LABEL, "gui://icon-drag", payload);
+            }
+        }
+        return; // 避免 Over 事件反复触发窗口尺寸动画
     }
     let Some(win) = app.get_webview_window(ICON_LABEL) else {
         return;
@@ -433,7 +464,12 @@ fn set_drop_state(app: &AppHandle, active: bool) {
         LogicalSize::new(ICON_SIZE, ICON_SIZE)
     };
     if win.set_size(target).is_ok() {
-        let payload = if active { "enter" } else { "leave" };
+        let payload = match counts {
+            Some((files, dirs)) if active => {
+                serde_json::json!({ "active": true, "files": files, "dirs": dirs })
+            }
+            _ => serde_json::json!({ "active": active, "files": 0, "dirs": 0 }),
+        };
         let _ = app.emit_to(ICON_LABEL, "gui://icon-drag", payload);
     }
 }

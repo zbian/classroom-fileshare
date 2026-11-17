@@ -133,6 +133,56 @@ fn warn_if_unpackaged_release() {
     }
 }
 
+/// 命令表：release 构建**不注册**任何 `dev_*` 命令 → 生产产物无调试入口残留
+/// （`dev_drop_preview` 等仅 debug 注册；release 产物已 grep 验证 0 命中）。
+#[cfg(debug_assertions)]
+macro_rules! app_commands {
+    () => {
+        tauri::generate_handler![
+            icon_ready,
+            open_main,
+            open_icon_menu,
+            close_icon_menu,
+            get_icon_state,
+            set_pause_tips,
+            gui_quit,
+            update_tips_height,
+            tips_dismissed,
+            open_main_locate,
+            set_nickname_done,
+            read_clipboard_state,
+            paste_and_share,
+            open_main_paste,
+            svc_request,
+            dev_demo_tips,
+            dev_drop_preview
+        ]
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! app_commands {
+    () => {
+        tauri::generate_handler![
+            icon_ready,
+            open_main,
+            open_icon_menu,
+            close_icon_menu,
+            get_icon_state,
+            set_pause_tips,
+            gui_quit,
+            update_tips_height,
+            tips_dismissed,
+            open_main_locate,
+            set_nickname_done,
+            read_clipboard_state,
+            paste_and_share,
+            open_main_paste,
+            svc_request
+        ]
+    };
+}
+
 fn main() {
     warn_if_unpackaged_release();
     let config = GuiConfig::load();
@@ -202,24 +252,7 @@ fn main() {
             Ok(())
         })
         .on_window_event(windows::handle_window_event)
-        .invoke_handler(tauri::generate_handler![
-            icon_ready,
-            open_main,
-            open_icon_menu,
-            close_icon_menu,
-            get_icon_state,
-            set_pause_tips,
-            gui_quit,
-            update_tips_height,
-            tips_dismissed,
-            open_main_locate,
-            set_nickname_done,
-            read_clipboard_state,
-            paste_and_share,
-            open_main_paste,
-            svc_request,
-            dev_demo_tips
-        ])
+        .invoke_handler(app_commands!())
         .run(tauri::generate_context!())
         .expect("classroom gui 启动失败");
 }
@@ -362,15 +395,18 @@ fn open_main_paste(app: tauri::AppHandle, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
+/// 仅调试：A4 投放态预览（截图/QA 用）。release 不注册本命令（见 app_commands!）。
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn dev_drop_preview(app: tauri::AppHandle, active: bool, files: usize, dirs: usize) {
+    windows::dev_drop_preview(&app, active, files, dirs);
+}
+
+/// dev 演示：连发 N 条 tips（tips.html#demo=N 触发）。release 不注册本命令。
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
-    #[cfg(debug_assertions)]
     tips::demo_tips(&app, n);
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (&app, n);
-    }
 }
 
 #[cfg(test)]

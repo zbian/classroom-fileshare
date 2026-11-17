@@ -8,6 +8,7 @@
 import { useMainStore } from '../store'
 import { filterItems, isFilterActive } from '../listFilter'
 import VirtualList from '../components/VirtualList'
+import SyncIssuesBanner from '../components/SyncIssuesBanner'
 import { COLS_MY_SHARES as COLS, ROW_HEIGHT } from './columns'
 import type { ShareItem, SyncState } from '../../shared/ipc/types'
 
@@ -139,6 +140,7 @@ export default function MySharesTab({ flavor = 'teacher' }: { flavor?: 'teacher'
           离线待发队列：{pendingCount} 条　·　重新连上教师机后按时间戳自动补发，不会丢失。
         </div>
       ) : null}
+      <SyncIssuesBanner />
       <div className="list-meta">
         {filtering ? `筛选后 ${visible.length} / ${items.length} 条` : `共 ${items.length} 条`}
       </div>
