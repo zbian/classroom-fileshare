@@ -2899,3 +2899,286 @@ async fn recv_retry_uses_latest_content_on_repeated_overwrite() {
     );
     task.abort();
 }
+
+// ---------- M2 #114（S5）：ack 聚合与删除进度收敛 ----------
+
+/// 等 host 收到指定 (done,total) 的删除进度事件。
+async fn next_delete_progress(
+    events: &mut mpsc::Receiver<HostEvent>,
+    want: (u32, u32),
+    timeout: Duration,
+) -> (u32, u32) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+            Ok(Some(HostEvent::DeleteProgress { done, total, .. })) if (done, total) == want => {
+                return (done, total);
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => panic!("host 事件通道关闭"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待删除进度 {want:?} 超时"
+        );
+    }
+}
+
+/// #114 用例 1：在线端收到 delete 并应用后**上行 Ack** → host 聚合 1/1 →
+/// 全部确认后 `sync_state` 收敛 `Deleted`（PRD 7.4 / 5.8）。
+#[tokio::test]
+async fn online_delete_ack_aggregates_and_converges() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "待删除".into(),
+            body: "x".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "待删除" => Some(i),
+        _ => None,
+    })
+    .await;
+    // 等 agent 收到并落盘（避免 ack 早于删除帧）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while agent_store(&agent_root).get(&item.id).unwrap().is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "agent 未收到条目");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    // 在线端 ack → 进度 1/1
+    let progress = next_delete_progress(&mut host.events, (1, 1), Duration::from_secs(5)).await;
+    assert_eq!(progress, (1, 1));
+
+    // 收敛：sync_state = Deleted（终态）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = Store::open(&host.data_root).unwrap().get(&item.id).unwrap();
+        if let Some(got) = got {
+            if got.sync_state == classroom_protocol::SyncState::Deleted {
+                break;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "全部 ack 后应收敛 Deleted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
+}
+
+/// #114 用例 2：多在线学员 → 进度按 ack 逐个增长（1/2 → 2/2）→ 收敛。
+#[tokio::test]
+async fn delete_progress_counts_all_online_students() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir_a = tempfile::tempdir().unwrap();
+    let (_tx_a, task_a, dir_a) = start_real_agent_with_commands(port, "alice", dir_a).await;
+    let dir_b = tempfile::tempdir().unwrap();
+    let (_tx_b, task_b, dir_b) = start_real_agent_with_commands(port, "bob", dir_b).await;
+    let root_a = dir_a.path().to_path_buf();
+    let root_b = dir_b.path().to_path_buf();
+
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "双端删除".into(),
+            body: "x".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "双端删除" => Some(i),
+        _ => None,
+    })
+    .await;
+    // 两个 agent 都落盘后再删
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let a = agent_store(&root_a).get(&item.id).unwrap();
+        let b = agent_store(&root_b).get(&item.id).unwrap();
+        if a.is_some() && b.is_some() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "agent 未全部收到");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    // 两个 ack → 依次 1/2、2/2（顺序不保证，收齐两个即可）
+    let mut seen = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while seen.len() < 2 {
+        match tokio::time::timeout(Duration::from_millis(200), host.events.recv()).await {
+            Ok(Some(HostEvent::DeleteProgress { done, total, .. })) => {
+                assert_eq!(total, 2, "target=删除时刻在线数");
+                seen.push(done);
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => panic!("host 事件通道关闭"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "未收齐 2 个学员 ack"
+        );
+    }
+    seen.sort();
+    assert_eq!(seen, vec![1, 2], "进度按 ack 逐个增长");
+    // 收敛
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = Store::open(&host.data_root).unwrap().get(&item.id).unwrap();
+        if let Some(got) = got {
+            if got.sync_state == classroom_protocol::SyncState::Deleted {
+                break;
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "2/2 后应收敛");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task_a.abort();
+    task_b.abort();
+}
+
+/// #114 用例 3：**重复 Ack 幂等**——同一 Ack 事件重放两次不重复计数
+/// （配合 `record_event`，顺带处理 #17 已知小项）。
+#[tokio::test]
+async fn duplicate_delete_ack_is_idempotent() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let mut alice = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "幂等删除".into(),
+            body: "x".into(),
+        })
+        .await
+        .unwrap();
+    // MiniAgent 消费 Event 与文件帧
+    let item = loop {
+        match alice.next().await {
+            Frame::Event(ev) if ev.kind == classroom_protocol::EventKind::Upsert => break ev.item,
+            _ => continue,
+        }
+    };
+    loop {
+        match alice.next().await {
+            Frame::FileEnd(_) => break,
+            _ => continue,
+        }
+    }
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    // 消费 delete 帧
+    loop {
+        match alice.next().await {
+            Frame::Event(ev) if ev.kind == classroom_protocol::EventKind::Delete => break,
+            _ => continue,
+        }
+    }
+    // 手动发同一 Ack 两次
+    let ack = classroom_protocol::Event {
+        event_id: format!("ack-{}-{}", item.id, item.version),
+        kind: classroom_protocol::EventKind::Ack,
+        item: item.clone(),
+        new_name: None,
+        acked_by: Some("alice".into()),
+        ts: 12345,
+    };
+    let frame = encode_frame(&Frame::Event(ack));
+    for _ in 0..2 {
+        alice
+            .writer
+            .lock()
+            .await
+            .write_all(&frame)
+            .await
+            .expect("写 Ack");
+    }
+    // 第一次 ack → 1/1
+    let _ = next_delete_progress(&mut host.events, (1, 1), Duration::from_secs(5)).await;
+    // 300ms 内不得出现第二份进度（重复 ack 被去重；DeleteAcked 也不重复）
+    let mut extra_progress = 0;
+    let mut extra_acked = 0;
+    let until = tokio::time::Instant::now() + Duration::from_millis(300);
+    while tokio::time::Instant::now() < until {
+        match tokio::time::timeout(Duration::from_millis(100), host.events.recv()).await {
+            Ok(Some(HostEvent::DeleteProgress { .. })) => extra_progress += 1,
+            Ok(Some(HostEvent::DeleteAcked { .. })) => extra_acked += 1,
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert_eq!(extra_progress, 0, "重复 Ack 不得重复计数/发进度");
+    assert_eq!(extra_acked, 0, "重复 Ack 不得重复触发 DeleteAcked");
+}
+
+/// #114 用例 4：删除时**无在线端**（target=0）→ 不收敛（保持 `DeleteDeferred`，
+/// 等离线端上线补删；PRD 7.4 墓碑语义）。
+#[tokio::test]
+async fn delete_without_online_target_does_not_converge() {
+    let mut host = start_host(None).await;
+    let _port = host.port;
+    // 教师发文本（无在线学员）
+    host.cmd
+        .send(HostCommand::SendText {
+            title: "独自删除".into(),
+            body: "x".into(),
+        })
+        .await
+        .unwrap();
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "独自删除" => Some(i),
+        _ => None,
+    })
+    .await;
+    host.cmd
+        .send(HostCommand::Delete {
+            id: item.id.clone(),
+        })
+        .await
+        .unwrap();
+    // 300ms 内无 DeleteProgress（target=0 不发进度）且状态保持 DeleteDeferred
+    let mut saw_progress = false;
+    let until = tokio::time::Instant::now() + Duration::from_millis(300);
+    while tokio::time::Instant::now() < until {
+        match tokio::time::timeout(Duration::from_millis(100), host.events.recv()).await {
+            Ok(Some(HostEvent::DeleteProgress { .. })) => saw_progress = true,
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert!(!saw_progress, "无在线端时不应发删除进度");
+    let got = Store::open(&host.data_root)
+        .unwrap()
+        .get(&item.id)
+        .unwrap()
+        .expect("墓碑保留");
+    assert_eq!(
+        got.sync_state,
+        classroom_protocol::SyncState::DeleteDeferred,
+        "无在线端不收敛（等离线端补删）"
+    );
+}

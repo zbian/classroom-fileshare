@@ -172,7 +172,12 @@ mod tests {
                 pin_required: true,
                 host_name: "PC".into(),
             }])),
-            // M2 #103：同步异常告警契约（GUI SyncIssuesBanner 接入）
+            // M2 #114：删除进度契约（GUI 显示「N/M 台已删除」）
+            IpcMessage::Notify(SvcNotify::DeleteProgress {
+                item_id: "item-1".into(),
+                done: 1,
+                total: 2,
+            }), // M2 #103：同步异常告警契约（GUI SyncIssuesBanner 接入）
             IpcMessage::Notify(SvcNotify::Warning {
                 kind: WarningKind::RetryExhausted,
                 item_id: "item-1".into(),

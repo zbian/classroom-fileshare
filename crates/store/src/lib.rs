@@ -175,6 +175,7 @@ fn sync_state_name(s: &SyncState) -> &'static str {
         SyncState::DeleteDeferred => "DeleteDeferred",
         SyncState::RetryLocked => "RetryLocked",
         SyncState::Failed => "Failed",
+        SyncState::Deleted => "Deleted",
     }
 }
 
@@ -209,6 +210,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ShareItem> {
         "DeleteDeferred" => SyncState::DeleteDeferred,
         "RetryLocked" => SyncState::RetryLocked,
         "Failed" => SyncState::Failed,
+        "Deleted" => SyncState::Deleted,
         v => return Err(bad_enum("sync_state", v)),
     };
     Ok(ShareItem {

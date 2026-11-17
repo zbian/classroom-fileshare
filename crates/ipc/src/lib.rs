@@ -147,6 +147,19 @@ pub enum SvcNotify {
         /// 百分比。
         pct: u8,
     },
+    /// 删除进度（M2 #114 S5 ack 聚合）：GUI 显示「N/M 台已删除」（PRD 5.8）。
+    ///
+    /// 序列化形态：`{"DeleteProgress": {"item_id": "...", "done": 1, "total": 2}}`
+    /// （结构体变体 → 前端读 `n.DeleteProgress.done`）。
+    DeleteProgress {
+        /// 条目 id。
+        item_id: String,
+        /// 已确认端数（展示时建议 `done.min(total)`——离线端上线补删的 ack
+        /// 可能使原始计数超出 target）。
+        done: u32,
+        /// 目标端数（删除时刻在线端数）。
+        total: u32,
+    },
     /// 发现的教师机列表（修订 #4 新增，B1 弹窗展示房间码）。
     Discovered(Vec<Beacon>),
     /// 同步异常告警（M2 #103，PRD 5.7 / EX-06）：GUI 的 `SyncIssuesBanner`

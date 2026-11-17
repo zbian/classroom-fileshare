@@ -79,6 +79,15 @@ pub enum HostEvent {
     },
     /// 在线列表变化。
     Status(HostStatus),
+    /// 删除进度（M2 #114 S5 ack 聚合）：GUI 显示「N/M 台已删除」（PRD 5.8）。
+    DeleteProgress {
+        /// 条目 id。
+        item_id: String,
+        /// 已确认端数。
+        done: u32,
+        /// 目标端数（删除时刻在线端数）。
+        total: u32,
+    },
     /// 同步异常告警（M2 #103，PRD 5.7 / EX-06）——svc 映射为
     /// `SvcNotify::Warning` 推送 GUI。
     Warning {

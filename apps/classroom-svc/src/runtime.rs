@@ -483,6 +483,19 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
                 detail: detail.clone(),
             }]
         }
+        // M2 #114（S5）：删除进度（ack 聚合）→ 专用 notify 变体（GUI banner
+        // 直接消费；`done.min(total)` 防止离线端补删 ack 超出 target）
+        CoreEvent::Host(HostEvent::DeleteProgress {
+            item_id,
+            done,
+            total,
+        }) => {
+            vec![SvcNotify::DeleteProgress {
+                item_id: item_id.clone(),
+                done: (*done).min(*total),
+                total: *total,
+            }]
+        }
         CoreEvent::Agent(AgentEvent::Removed(id)) => vec![SvcNotify::ItemRemoved(id.clone())],
         CoreEvent::Agent(AgentEvent::Discovered(beacons)) => {
             vec![SvcNotify::Discovered(beacons.clone())]
@@ -971,5 +984,27 @@ mod tests {
             new_name: "y".into(),
         })
         .is_err());
+    }
+    /// M2 #114：删除进度映射 → 专用 notify 变体（`done.min(total)` 展示口径）。
+    #[test]
+    fn delete_progress_maps_to_dedicated_notify() {
+        let ev = CoreEvent::Host(HostEvent::DeleteProgress {
+            item_id: "item-1".into(),
+            done: 3,
+            total: 2,
+        });
+        let out = map_notify(&ev);
+        match out.first() {
+            Some(SvcNotify::DeleteProgress {
+                item_id,
+                done,
+                total,
+            }) => {
+                assert_eq!(item_id, "item-1");
+                assert_eq!(*done, 2, "done 超出 target 时按 min 展示");
+                assert_eq!(*total, 2);
+            }
+            other => panic!("期望 SvcNotify::DeleteProgress，实际 {other:?}"),
+        }
     }
 }
