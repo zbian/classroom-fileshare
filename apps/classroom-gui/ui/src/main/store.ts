@@ -5,8 +5,17 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { getClient, type GuiClient, type LocalRole, type UiShareItem } from '../shared/ipc/client'
-import type { ListFilter, ServiceStatus, SubmissionGroup, SvcNotify } from '../shared/ipc/types'
+import type { ListFilter, ServiceStatus, SubmissionGroup, SvcNotify, WarningKind } from '../shared/ipc/types'
 import { EMPTY_FILTER, type KindFilter, type TabFilter } from './listFilter'
+
+/** #20b：GUI 侧告警展示项（来自 SvcNotify::Warning） */
+export interface SyncWarning {
+  kind: WarningKind
+  item_id: string
+  detail: string
+  /** 客户端接收序号，供去重/忽略定位 */
+  seq: number
+}
 
 export type TabKey = 'mine' | 'submissions' | 'records' | 'teacher'
 export type Role = LocalRole
@@ -45,6 +54,7 @@ interface MainStore {
   /** 选中学员的提交条目（只读展示；来源 ListFilter{audience:Teacher, owner}） */
   submissionItems: UiShareItem[]
   /** #16：本地已读水位（owner → 已读到的 latest_at）。后端无未读字段，前端本地维护 */
+  warnings: SyncWarning[]
   seenOwners: Record<string, number>
   dialog: DialogState
   pasteBody: string
@@ -73,6 +83,8 @@ interface MainStore {
   configureRoom(room: string, pin: string | null, allowDiscovery: boolean): Promise<boolean>
   setNickname(nickname: string, pin?: string | null): Promise<string | null>
   setPasteBody(b: string): void
+  /** #20b：忽略/清除当前告警展示（不改条目状态） */
+  dismissWarnings(): void
   showToast(msg: string): void
   applyNotify(n: SvcNotify): void
 }
@@ -108,6 +120,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
   groups: [],
   selectedOwner: null,
   submissionItems: [],
+  warnings: [],
   seenOwners: {},
   dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null },
   pasteBody: '',
@@ -349,6 +362,10 @@ export const useMainStore = create<MainStore>((set, get) => ({
   setPasteBody(pasteBody) {
     set({ pasteBody })
   },
+  dismissWarnings() {
+    // 仅清除展示；条目状态不变（Failed 仍由列表/行内 chip 呈现）
+    set({ warnings: [] })
+  },
   showToast(toast) {
     set({ toast })
     window.setTimeout(() => {
@@ -376,14 +393,14 @@ export const useMainStore = create<MainStore>((set, get) => ({
         // #16：同上（服务端对 upsert 会同时下发 ShareReceived 与 ItemUpdated）
         if (
           get().role === 'teacher' &&
-          n.item.audience === 'Teacher' &&
-          n.item.owner_role === 'Student'
+          n.payload.audience === 'Teacher' &&
+          n.payload.owner_role === 'Student'
         ) {
           void get().loadSubmissions()
         }
         break
       case 'ItemRemoved':
-        set((s) => ({ items: s.items.filter((i) => i.id !== n.id) }))
+        set((s) => ({ items: s.items.filter((i) => i.id !== n.payload.id) }))
         break
       case 'StatusChanged': {
         // 真实服务的通知文本不携带可解析语义（格式不受契约约束）；
@@ -397,9 +414,24 @@ export const useMainStore = create<MainStore>((set, get) => ({
       case 'TransferProgress':
         // T12 接进度条；当前不消费
         break
+      case 'Warning': {
+        // #20b：真实告警（#103）——追加展示；同一 (kind,item_id,detail) 去重，最多 50 条
+        const w = n.payload
+        set((s) => {
+          const exists = s.warnings.some(
+            (x) => x.kind === w.kind && x.item_id === w.item_id && x.detail === w.detail,
+          )
+          if (exists) return { warnings: s.warnings }
+          const seq = (s.warnings[s.warnings.length - 1]?.seq ?? 0) + 1
+          return { warnings: [...s.warnings, { ...w, seq }].slice(-50) }
+        })
+        // 告警通常伴随条目状态变化（→ RetryLocked/Failed），顺手刷新列表
+        void get().refresh()
+        break
+      }
       case 'Discovered': {
         // B1 自动发现房间列表（TC-01 步骤 4：须显示真实房间码，不得硬编码）
-        const rooms = n.beacons.map((b) => ({
+        const rooms = n.payload.beacons.map((b) => ({
           room: b.room,
           host: b.host_name,
           pinRequired: b.pin_required,

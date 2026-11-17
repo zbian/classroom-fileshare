@@ -429,6 +429,107 @@ fn retag(n: &SvcNotify) -> Value {
 mod tests {
     use super::*;
 
+    /// 契约锁（M2 #20b）：notify 的 retag 统一外壳为 t + payload 两字段。
+    /// 背景：曾有 3 处前端按变体内字段读取（item / id / beacons 直取）导致
+    /// 「学生提交通知联动 / 删除即时移除 / B1 房间发现列表」静默失效；本表驱动测试
+    /// 覆盖全部 7 个变体，锁死载荷键（这是本轮第三个 retag 相关 bug）。
+    #[test]
+    fn notify_retag_shape_table_for_all_variants() {
+        use classroom_protocol::{Audience, SyncState};
+
+        let item = ShareItem {
+            id: "i-1".into(),
+            kind: ItemKind::Text,
+            owner_id: "teacher".into(),
+            owner_role: Role::Teacher,
+            audience: Audience::All,
+            title: "通知".into(),
+            size: 2,
+            sha256: None,
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::Synced,
+            retry_count: 0,
+        };
+        let cases: Vec<(SvcNotify, &str)> = vec![
+            (SvcNotify::ShareReceived(item.clone()), "ShareReceived"),
+            (
+                SvcNotify::ItemUpdated(classroom_ipc::ItemUpdatedPayload {
+                    item: item.clone(),
+                    overwritten: true,
+                    old_version: Some(0),
+                }),
+                "ItemUpdated",
+            ),
+            (SvcNotify::ItemRemoved("i-1".into()), "ItemRemoved"),
+            (
+                SvcNotify::StatusChanged("service=running".into()),
+                "StatusChanged",
+            ),
+            (
+                SvcNotify::TransferProgress {
+                    item_id: "i-1".into(),
+                    pct: 42,
+                },
+                "TransferProgress",
+            ),
+            (
+                // Beacon 由 classroom_net 定义（GUI crate 不直接依赖）：经 wire JSON 反序列化获得
+                serde_json::from_value(json!({
+                    "Discovered": [{
+                        "protocol_version": 1,
+                        "room": "XK-204",
+                        "tcp_port": 47821,
+                        "pin_required": false,
+                        "host_name": "教师机"
+                    }]
+                }))
+                .expect("Discovered wire JSON"),
+                "Discovered",
+            ),
+            (
+                SvcNotify::Warning {
+                    kind: classroom_ipc::WarningKind::BackupFailed,
+                    item_id: "i-1".into(),
+                    detail: "备份失败".into(),
+                },
+                "Warning",
+            ),
+        ];
+        for (notify, name) in cases {
+            let v = retag(&notify);
+            assert_eq!(v["t"], name, "{name} 变体名");
+            assert!(v.get("payload").is_some(), "{name} 必须带 payload 外壳");
+            match name {
+                "ShareReceived" => assert_eq!(v["payload"]["id"], "i-1"),
+                "ItemUpdated" => assert_eq!(v["payload"]["item"]["id"], "i-1"),
+                "ItemRemoved" => assert_eq!(v["payload"]["id"], "i-1"),
+                "StatusChanged" => assert!(v["payload"].is_string()),
+                "TransferProgress" => assert_eq!(v["payload"]["pct"], 42),
+                "Discovered" => assert_eq!(v["payload"]["beacons"][0]["room"], "XK-204"),
+                "Warning" => assert_eq!(v["payload"]["kind"], "BackupFailed"),
+                other => panic!("未覆盖的变体：{other}"),
+            }
+        }
+    }
+    /// #20b：Warning 通知经 retag 后前端契约形态为 {"t":"Warning","payload":{kind,item_id,detail}}
+    /// （notify 统一 payload 外壳；store 的 case 'Warning' 读取 n.payload）
+    #[test]
+    fn warning_notify_retagged_for_frontend() {
+        let n = SvcNotify::Warning {
+            kind: classroom_ipc::WarningKind::RetryExhausted,
+            item_id: "item-1".into(),
+            detail: "占用重试耗尽（5 次）".into(),
+        };
+        let v = retag(&n);
+        assert_eq!(v["t"], "Warning");
+        assert_eq!(v["payload"]["kind"], "RetryExhausted");
+        assert_eq!(v["payload"]["item_id"], "item-1");
+        assert_eq!(v["payload"]["detail"], "占用重试耗尽（5 次）");
+    }
     /// 前端契约：unit 变体经 {"Status": null} 形态反序列化（client.ts 的 request 形态）
     #[test]
     fn gui_request_deserializes_null_map_form() {

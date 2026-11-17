@@ -283,7 +283,7 @@ export class MockGuiClient implements GuiClient {
 
   deleteItem(id: string): Promise<GuiReply> {
     this.items = this.items.filter((i) => i.id !== id)
-    this.emit({ t: 'ItemRemoved', id })
+    this.emit({ t: 'ItemRemoved', payload: { id } })
     return Promise.resolve({ t: 'Ok' })
   }
 
@@ -293,7 +293,7 @@ export class MockGuiClient implements GuiClient {
 
   configureRoom(room: string, _pin: string | null, _allowDiscovery: boolean): Promise<GuiReply> {
     this.room = room
-    this.emit({ t: 'StatusChanged', text: this.statusText() })
+    this.emit({ t: 'StatusChanged', payload: this.statusText() })
     return Promise.resolve({ t: 'Ok' })
   }
 
@@ -312,15 +312,17 @@ export class MockGuiClient implements GuiClient {
       () =>
         h({
           t: 'Discovered',
-          beacons: [
-            {
-              protocol_version: 1,
-              room: this.room,
-              tcp_port: 47821,
-              pin_required: true,
-              host_name: '教师机',
-            },
-          ],
+          payload: {
+            beacons: [
+              {
+                protocol_version: 1,
+                room: this.room,
+                tcp_port: 47821,
+                pin_required: true,
+                host_name: '教师机',
+              },
+            ],
+          },
         }),
       0,
     )
@@ -329,7 +331,7 @@ export class MockGuiClient implements GuiClient {
 
   setServiceDown(down: boolean) {
     this.down = down
-    this.emit({ t: 'StatusChanged', text: this.statusText() })
+    this.emit({ t: 'StatusChanged', payload: this.statusText() })
   }
 }
 

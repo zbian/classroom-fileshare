@@ -15,7 +15,13 @@ import type { ShareItem, SyncState } from '../../shared/ipc/types'
 
 
 /** 状态 chip 映射（PRD 7.6 状态字典：文字+色块，不单靠颜色）；教师端与学员端（D2）标签不同 */
-function stateChip(s: SyncState, flavor: 'teacher' | 'student'): { cls: string; label: string } {
+function stateChip(
+  s: SyncState,
+  flavor: 'teacher' | 'student',
+  retryCount = 0,
+): { cls: string; label: string } {
+  // #20b（#103 契约）：占用重试显示进度「第 n/5 次」；上限 5 次后服务端转 Failed
+  const retryLabel = retryCount > 0 ? `（第 ${retryCount}/5 次）` : ''
   if (flavor === 'student') {
     switch (s) {
       case 'Synced':
@@ -28,7 +34,7 @@ function stateChip(s: SyncState, flavor: 'teacher' | 'student'): { cls: string; 
       case 'DeleteDeferred':
         return { cls: 'warn', label: '待删除' }
       case 'RetryLocked':
-        return { cls: 'err', label: '被占用重试' }
+        return { cls: 'err', label: '被占用重试' + retryLabel }
       case 'Failed':
         return { cls: 'err', label: '失败' }
     }
@@ -43,7 +49,7 @@ function stateChip(s: SyncState, flavor: 'teacher' | 'student'): { cls: string; 
     case 'DeleteDeferred':
       return { cls: 'warn', label: '延迟删除' }
     case 'RetryLocked':
-      return { cls: 'err', label: '被占用重试' }
+      return { cls: 'err', label: '被占用重试' + retryLabel }
     case 'Failed':
       return { cls: 'err', label: '失败' }
   }
@@ -64,7 +70,7 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
   const selectedId = useMainStore((s) => s.selectedId)
   const select = useMainStore((s) => s.select)
   const client = useMainStore((s) => s.client)
-  const st = stateChip(item.sync_state, flavor)
+  const st = stateChip(item.sync_state, flavor, item.retry_count ?? 0)
   const isFile = item.kind === 'File'
   // PRD 7.4：待删除条目（deleted 墓碑 / DeleteDeferred）不可打开、不可复制
   // （判定与提示文案收口在 shared 模块，工具栏入口复用同一判定）
