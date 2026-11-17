@@ -286,6 +286,17 @@ export class MockGuiClient implements GuiClient {
   deleteItem(id: string): Promise<GuiReply> {
     this.items = this.items.filter((i) => i.id !== id)
     this.emit({ t: 'ItemRemoved', payload: { id } })
+    // #114：教师删除后模拟 ack 聚合进度（dev 保真；真实事件由 #137 后端
+    // SvcNotify::DeleteProgress 推送；GUI 侧按 min(done,total) 收敛展示）
+    if (this.role === 'teacher') {
+      const total = 3
+      ;[0, 2, 3].forEach((done, idx) => {
+        window.setTimeout(
+          () => this.emit({ t: 'DeleteProgress', payload: { item_id: id, done, total } }),
+          200 + idx * 350,
+        )
+      })
+    }
     return Promise.resolve({ t: 'Ok' })
   }
 
