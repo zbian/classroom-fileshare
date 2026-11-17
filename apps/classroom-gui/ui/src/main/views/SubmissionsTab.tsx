@@ -33,6 +33,12 @@ function fmtLatest(ts: number): string {
   return sameDay ? `${hh}:${mm}` : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}`
 }
 
+/** 分组 latest_at 为 **Unix 秒**（#94 契约：SubmissionGroup.latest_at），需 ×1000；
+ *  条目 updated_at 为毫秒。两者不能共用同一格式化入口（否则会渲染成 1970）。 */
+function fmtGroupTime(sec: number): string {
+  return fmtLatest(sec * 1000)
+}
+
 function SubRow({ item }: { item: ShareItem }) {
   const selectedId = useMainStore((s) => s.selectedId)
   const select = useMainStore((s) => s.select)
@@ -101,14 +107,14 @@ export default function SubmissionsTab() {
               key={g.owner_id}
               className={`sub-node${g.owner_id === selectedOwner ? ' active' : ''}${unread ? ' unread' : ''}`}
               onClick={() => void selectOwner(g.owner_id)}
-              title={`${g.owner_id}：${g.count} 条提交（最新 ${fmtLatest(g.latest_at)}）`}
+              title={`${g.owner_id}：${g.count} 条提交（最新 ${fmtGroupTime(g.latest_at)}）`}
             >
               <span className="sub-avatar" aria-hidden="true">
                 {g.owner_id.slice(0, 1)}
               </span>
               <span className="sub-name">{g.owner_id}</span>
               <span className="sub-count">{g.count}</span>
-              <span className="sub-time">{fmtLatest(g.latest_at)}</span>
+              <span className="sub-time">{fmtGroupTime(g.latest_at)}</span>
               {unread ? <span className="sub-dot" title="有新的提交" /> : null}
             </button>
           )

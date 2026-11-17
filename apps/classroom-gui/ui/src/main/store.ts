@@ -67,6 +67,8 @@ interface MainStore {
   openDialog<K extends keyof DialogState>(key: K, id?: string): void
   closeDialog(key: keyof DialogState): void
   sendText(title: string, body: string): Promise<boolean>
+  /** #16B：学员/教师选文件发送（成功 → 提示 + 列表刷新；失败 → 服务端文案直出） */
+  sendFiles(paths: string[]): Promise<boolean>
   confirmDelete(): Promise<void>
   configureRoom(room: string, pin: string | null, allowDiscovery: boolean): Promise<boolean>
   setNickname(nickname: string, pin?: string | null): Promise<string | null>
@@ -295,6 +297,20 @@ export const useMainStore = create<MainStore>((set, get) => ({
     }
   },
 
+  async sendFiles(paths) {
+    if (paths.length === 0) return false
+    try {
+      await get().client.sendFiles(paths)
+      get().showToast(get().role === 'student' ? '已发送给教师' : '已共享给全体学员')
+      await get().refresh()
+      return true
+    } catch (e) {
+      // EX-04/EX-05 等由服务端给出中文文案，直出即可（不吞错误）
+      get().showToast(e instanceof Error ? e.message : '发送失败')
+      return false
+    }
+  },
+
   async configureRoom(room, pin, allowDiscovery) {
     try {
       await get().client.configureRoom(room, pin, allowDiscovery)
@@ -367,7 +383,9 @@ export const useMainStore = create<MainStore>((set, get) => ({
         void get().refresh()
         break
       }
-      case 'ShareReceived':
+      // 说明：ShareReceived 已在上方分支处理（#16 学生提交通知联动），此处只保留
+      // TransferProgress（T12 接进度条；当前不消费）。勿重复列出 ShareReceived——
+      // 重复 case 会触发 esbuild「never be evaluated」告警（#16B 清理）。
       case 'TransferProgress':
         // T12 接进度条；当前不消费
         break

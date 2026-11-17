@@ -140,6 +140,25 @@ function Toolbar() {
   const selectedOwner = useMainStore((s) => s.selectedOwner)
   const loadSubmissions = useMainStore((s) => s.loadSubmissions)
 
+  // #16B：文件发送入口（学员=发送给教师；教师=共享给全体）。通过 Tauri dialog
+  // 插件取绝对路径后走既有 SendFiles 链路（服务端做 EX-04 大小 / EX-05 风险校验）。
+  const pickFiles = async () => {
+    if (!('__TAURI__' in window)) {
+      showToast('文件选择器仅在桌面应用中可用')
+      return
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const picked = await open({ multiple: true, title: '选择要发送的文件' })
+      const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []).filter(
+        (p): p is string => typeof p === 'string' && p.length > 0,
+      )
+      if (paths.length === 0) return
+      await useMainStore.getState().sendFiles(paths)
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '打开文件选择器失败')
+    }
+  }
   const search = (
     <span className="search-wrap">
       <input
@@ -230,15 +249,14 @@ function Toolbar() {
       {role === 'student' ? <span className="chip warn">发送对象：仅教师</span> : null}
       <button
         className="btn"
-        disabled
-        title={role === 'student' ? 'M2（FR-S-03 学员文件回传）' : 'T12 接文件选择器'}
+        title={role === 'student' ? '选择文件发送给教师（接收对象：仅教师）' : '选择文件共享给全体学员'}
+        onClick={() => void pickFiles()}
       >
         + 添加文件
       </button>
       <button
         className="btn pri"
-        disabled={role === 'student'}
-        title={role === 'student' ? 'M2（FR-S-02 学员文本回传）' : '粘贴剪贴板文本并共享'}
+        title={role === 'student' ? '粘贴文本发送给教师（接收对象：仅教师）' : '粘贴剪贴板文本并共享'}
         onClick={() => openDialog('pasteText')}
       >
         + 粘贴文本
