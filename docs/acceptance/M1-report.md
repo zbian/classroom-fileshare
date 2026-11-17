@@ -4,11 +4,10 @@
 | --- | --- |
 | 报告 | M1 验收报告（部分验收：单机可做项 + 多 agent 代理） |
 | 执行人 | qa-acceptance |
-| 日期 | 2026-11-17（初版）/ 2026-11-17 修订（rc.2 补测） |
-| 基线 | **`main @ 46470fe`（v0.1.0-rc.2）**，含 E9 自动发现、**E10 100 MB 上限**、O-1 构建防呆、O-3/O-4 |
+| 日期 | 2026-11-17（初版）/ 2026-11-17（rc.2 补测修订）/ **2026-11-17（v0.1.1 修订：E13 闭环）** |
 | 环境 | 单机（用户确认仅 1 台可用）；Windows 11 专业版 26100；**非管理员**；PowerShell 5.1；WebView2 157.0.4341.60 |
-| 基线 | **`main @ 75d0d7c`（v0.1.0-rc.4 后 / 本机 CI 门禁；含 E12 修复与 M2 S1+S2）** |
-| 结论 | **P0 缺口 3 项（E10 100 MB 上限、E11 tips 接线、E12 学员机安装路径）——均已修复；E10/E11/E12 全部验证闭环，E12 已按真实安装路径复验通过**；另新发现 E13（GUI 自共享自身 exe，待修复）；6 项通过 / 1 项部分通过 / 若干项延后 |
+| 基线 | **`main @ 75d0d7c`（v0.1.0）** / 补丁 **`v0.1.1`（E13 修复，tag @ 980dab4）** |
+| 结论 | **P0 缺口 3 项（E10 100 MB 上限、E11 tips 接线、E12 学员机安装路径）均已修复闭环**（E12 按真实安装路径复验 6/6）；**E13（GUI 自共享自身 exe）亦已修复并经双向复验闭环（v0.1.1）**；6 项通过 / 1 项部分通过 / 若干项延后 |
 | 证据 | `docs/acceptance/evidence/M1/single-machine/`（命令输出、日志、截图）；rc.2 补测证据前缀 `C-*` |
 
 > 本报告只声明**单机可验范围**内的结论。凡需 2 台以上真机或管理员权限的判据，一律标注「延后」，不以单机结果替代。
@@ -302,14 +301,20 @@ UIA 读取 tips 窗口文本（`G-TIPS-stack.txt`）：
 
 **结论：E12 闭环。** 按 `install.ps1` 正常安装的学员机 GUI 现在能自动解析角色、连对本地服务管道，状态/列表/tips 正常，且服务晚于 GUI 启动时可自动恢复通知流。
 
-### 3.14 新发现 E13（GUI 每次启动自共享自身 exe）
+### 3.14 E13（GUI 每次启动自共享自身 exe）—— 已修复闭环
 
-复验 E12 时在 teacher svc 日志发现并复现（多轮共 **12 条**）：`WARN 教师文件广播失败 path=…\classroom-gui.exe error=高风险文件类型: classroom-gui.exe`。
+**缺陷**：`apps/classroom-gui/src-tauri/src/main.rs` 的 `file_args()` 未排除 `argv[0]`，而 `argv[0]` 即 GUI 自身 exe（是文件）→ 每次启动都把**自身**当作待共享文件走真实发送链路；此前仅因 `.exe` 属风险类型被 EX-05 拦下，**防御全靠下游**（类型清单调整/产物改名即会外发程序本体）。
 
-- 根因：`apps/classroom-gui/src-tauri/src/main.rs` 的 `file_args()` 未跳过 `argv[0]`，而 `argv[0]` 即 GUI 自身 exe（是文件）→ 被当作待共享文件走真实发送链路。
-- 影响：每次 GUI 启动发起一次注定失败的共享（日志噪音/可能失败提示）；目前仅因 `.exe` 属风险类型被 EX-05 拦下，**若类型限制变化则会外发程序本体**；学员端同样会向教师发起该尝试。
-- 建议：`file_args` 加 `.skip(1)`（或排除当前 exe 路径）+ 单测「argv[0] 不视为共享文件」。
-- 状态：**已开 issue #93，修复中（PR 随后）**（最新 main `75d0d7c` 仍存在）。
+**修复（#93 / PR #99）**：改为「排除等于 `current_exe()` 的参数」（而非裸 `skip(1)`——dev 实测单实例回调传完整命令行含 `argv[0]`，`skip(1)` 会吞掉第一个真实文件）；`current_exe()` 失败时保留参数（不可判定时保留）；补 4 例单测。
+
+**QA 独立复验**（基线 `release/v0.1.1 @ 980dab4`，`scripts/build-gui.ps1` 生产构建；LOCALAPPDATA/APPDATA/**PROGRAMDATA 三者隔离**；教师 svc 真实启动、GUI 无参启动一次模拟自启且 GUI 日志均为「服务管道已连接」以确保发送链路可达）：
+
+| 对象 | `classroom-gui.exe` 出现 | 「高风险」告警 | `broadcast`（是否发起共享） | 判定 |
+| --- | --- | --- | --- | --- |
+| **修复版**（release/v0.1.1） | **0** | **0** | **0** | ✅ PASS |
+| **修复前**（rc.4 518d9b1 构建，反向对照） | **1**（复现 `WARN 教师文件广播失败 path=…\classroom-gui.exe error=高风险文件类型`） | 1 | 0 | ✅ 复现成功 |
+
+→ **E13 已修复闭环**（PR #99 / v0.1.1）：修复版启动不再自共享、无告警；反向对照证明修复前后行为差异明确。证据 `evidence/M1/e13/`。
 
 ## 4 缺陷与观察项
 
@@ -318,7 +323,7 @@ UIA 读取 tips 窗口文本（`G-TIPS-stack.txt`）：
 | **E10** | **P0 缺口（已修复闭环）** | 单文件 100 MB 上限修复前未生效（PRD 5.3/9.4/EX-04）；QA 初版验收未覆盖该负例 | 已由 `7eea251` 修复，本报告 §3.11.1 验证闭环 |
 | **E11** | **P0 缺口（已修复闭环）** | tips 生产路径未接线：`push_tip` 在 release 无调用者（唯一调用方 `demo_tips` 为 debug-only），`ipc_client` emit `svc://notify` 而 `TipsStack` 监听 `svc://share-received` → **release 产物中 FR-G-02 永不触发**（「收到但从不提醒」）。QA 初版报告写「无自动化 → 未验证」**低估了问题**（实为生产路径未接线） | 已由 `1fea3d1` 修复（`ShareReceived → push_tip` + 同源双通知去重 + 本人条目不自弹）；本报告 §3.12 补测 ①–⑤ 全部通过。措辞已在 §5 更正 |
 | **E12** | **P0 阻塞（已修复闭环）** | **按 install.ps1 正常安装的学员机 GUI 连不上本机服务**：① `install.ps1` 注册 GUI 自启不传 `--role`、且从不写 `gui.json`，GUI 角色默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败仅记录、**不重试**；③ `--role=` 写盘在 `start_bridge` 之后。实测（修复前）：`--role=student` 手工启动仍连 teacher 管道失败、45 s 无 tips。**修复（#86 / 518d9b1）**：角色五级优先级（`--role` > **`svc.json` mode（权威源，免疫安装者≠登录用户）** > `gui.json` > 双管道探测 > 默认）+ install 写 GUI 角色 + `start_bridge` 退避重连（1s/2s/5s 封顶） | 已修复；**QA 按真实安装路径复验 6/6 通过**（含安装者≠登录用户、先 GUI 后服务自动重连），见 §3.13 |
-| **E13** | 一般（待修复，最新 main 仍存在） | **GUI 每次启动把自身 exe 当作待共享文件发送**：`file_args()` 未跳过 `argv[0]`（exe 是文件）→ 走真实发送链路；实测多轮共 12 条 `教师文件广播失败 … classroom-gui.exe 高风险文件类型`。目前仅被 EX-05 拦下，若类型限制变化会外发程序本体；学员端亦会向教师发起该尝试 | 建议 `file_args` 加 `.skip(1)` + 单测；已开 **issue #93**，修复中（PR 随后） |
+| **E13** | **一般（已修复闭环）** | **GUI 每次启动把自身 exe 当作待共享文件发送**：`file_args()` 未排除 `argv[0]`；此前仅被 EX-05 拦下（防御全靠下游） | **issue #93 → PR #99 / v0.1.1**：排除等于 `current_exe()` 的参数（非裸 `skip(1)`，兼容单实例 argc 语义）+ 4 例单测 | **QA 双向复验通过**：修复版 exe 告警 **0**、broadcast **0**；修复前构建复现 1 次 WARN（§3.14） |
 | O-1 | **口径要求（已升格为强制）** | GUI 生产构建必须用 `scripts/build-gui.ps1`（或显式 `--features custom-protocol`），**禁止裸 `cargo build --release`**——否则前端不内嵌、图标永不显示，极易被误判为产品缺陷 | 已入库：`build-gui.ps1` + `build.rs` 警告 + `main.rs` MessageBox 防呆；方案 §3.4 已写入强制口径，详见 [`docs/notes/m1-o1-gui-build.md`](../../notes/m1-o1-gui-build.md) |
 | O-2 | 观察（可观测性） | `broadcast` 锚点在**推送完成后**记录，`Δ=applied−broadcast` 为下界（可负），无法直接测 PRD 2.4 分发时延；本报告改用「请求发起→applied」保守上界 | M2/M3 补 `send_received` 锚点 |
 | O-3 | 轻微（已修） | `uninstall.ps1` 在右键项不存在时向 stderr 打印 reg.exe 原生错误 | `46470fe` 已修（PowerShell 原生 cmdlet + 静默） |
