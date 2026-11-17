@@ -110,9 +110,8 @@
 - [ ] 日志按天切分、保留 7 天、设置面板有查看入口、无隐私内容（PRD 9.6）
 - [ ] 升级保留仓库与索引、执行 schema 版本迁移（PRD 9.5）
 
-## CI（T-01a）
+## CI（T-01a；2026-11-17 起改为本机 CI）
 
-- [ ] windows-latest + stable 工具链；步骤顺序 fmt --check → clippy --all-targets -D warnings → test --workspace（计划 T-01a）
-- [ ] web 作业 pnpm install→build，ui 目录存在后启用（计划 T-01a）
-- [ ] CI 绿为合并前置条件（DEVELOPMENT.md PR 流程第 3 条）
-- [ ] workflow 无密钥泄露、不要求超范围权限（安全惯例）
+- [ ] 本机 CI 门禁 `.\scripts\local-ci.ps1` **ALL PASS**（6 项：PS BOM 守卫 / fmt / clippy / test / pnpm build / GUI release clippy），汇总输出贴 PR（DEVELOPMENT.md「本机 CI（门禁）」）
+- [ ] GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，用户指令 2026-11-17）；无 GHA 相关表述残留
+- [ ] 门禁 1 含双面规则：`.ps1` 必须有 UTF-8 BOM、`.json` 数据不得带 BOM

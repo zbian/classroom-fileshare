@@ -43,7 +43,7 @@ git push -u origin feat/<issue号>-<短名>
 - 分支命名：`feat/<issue号>-<短名>`、`fix/<issue号>-<短名>`、`docs/<短名>`、`chore/<短名>`
 - **禁止直接推送 `main`**（唯一例外：项目启动初始化提交，已发生完毕）
 - 提交信息：Conventional Commits（`feat:` `fix:` `docs:` `test:` `chore:` `refactor:`），正文含 `Refs #<issue>`（完成时 `Closes #<issue>`）
-- 提交前：`cargo fmt` + `cargo clippy -D warnings` + `cargo test`（Rust）；`pnpm build`（前端）
+- 提交前：**本机 CI 门禁** `.\scripts\local-ci.ps1` 必须全绿（见下节「本机 CI（门禁）」）
 
 ## Issue 规范
 
@@ -56,9 +56,31 @@ git push -u origin feat/<issue号>-<短名>
 
 1. 开发者推送分支后创建 PR：标题 `[#<issue>] <描述>`，正文含变更说明、自测清单、GUI 变更附截图、`Closes #<issue>`
 2. `code-reviewer` 审查：approve / request changes；审查记录写入 `docs/reviews/PR-<编号>.md`
-3. CI（GitHub Actions：fmt + clippy + test + 前端 build）必须绿
+3. **本机 CI 门禁**：`.\scripts\local-ci.ps1` 必须 **ALL PASS**，并把汇总输出（每步 PASS/FAIL + 总耗时）贴进 PR 描述或评论
 4. Lead 执行 **squash merge**，保留 `Closes #<issue>` 于合并提交信息
 5. 涉及用户可见行为的 PR 合并后由 `qa-acceptance` 按 issue 验收标准复核，通过后在 issue 留言关闭验收
+
+## 本机 CI（门禁，2026-11-17 用户指令：停用 GitHub Actions）
+
+GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，git 历史可追溯），改由
+**`scripts/local-ci.ps1`** 作为门禁权威实现（与 qa 的 `docs/acceptance/local-ci.md` 同口径）。
+该脚本串联 6 道门禁，任一步失败即非 0 退出：
+
+| # | 门禁 | 说明 |
+| --- | --- | --- |
+| 1 | PS BOM 守卫 | 全仓受版本控制 `.ps1` 必须 UTF-8 BOM；`.json` 数据不得带 BOM（双面规则；PS 5.1 对无 BOM 脚本按 ANSI/GBK 误读中文，已三次踩坑） |
+| 2 | `cargo fmt --all --check` | 格式 |
+| 3 | `cargo clippy --workspace --all-targets -- -D warnings` | debug 静态检查 |
+| 4 | `cargo test --workspace` | 全量测试 |
+| 5 | `pnpm install --frozen-lockfile` + `pnpm build` | 前端三入口（icon/main/tips） |
+| 6 | `cargo clippy --release -p classroom-gui --features custom-protocol -- -D warnings` | GUI release profile 守卫（debug clippy 看不到 `cfg(not(debug_assertions))` 分支，见 #77/#79） |
+
+常用参数：`-Quick`（BOM+fmt，秒级）、`-SkipWeb`（后端全量）、`-SkipTest`（只 lint）、
+`-SkipReleaseClippy`。门禁依赖真实 `ui/dist`；缺失时脚本创建临时占位并在结束时清理。
+
+> 例外机制（M2 评估，记 #16）：门禁 1 对 `.json` 采用「一律不得带 BOM」的硬规则；
+> 若将来确有需带 BOM 的 JSON 数据（如外部工具产出），再加路径白名单并在脚本注释与
+> 本节同步说明——当前仓库 3 个受版本控制 JSON 均无 BOM。
 
 ### Review 必查清单（code-reviewer）
 
