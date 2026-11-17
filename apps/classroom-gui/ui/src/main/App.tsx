@@ -13,6 +13,7 @@ import SubmissionsTab from './views/SubmissionsTab'
 import PasteTextDialog from './dialogs/PasteTextDialog'
 import CreateRoomDialog from './dialogs/CreateRoomDialog'
 import DeleteConfirmDialog from './dialogs/DeleteConfirmDialog'
+import RenameDialog from './dialogs/RenameDialog'
 import NicknameDialog from './dialogs/NicknameDialog'
 
 function TitleBar() {
@@ -261,7 +262,20 @@ function Toolbar() {
       >
         + 粘贴文本
       </button>
-      <button className="btn" disabled title="M2（rename 事件）">
+      <button
+        className="btn"
+        disabled={!selectedId || role === 'student' || selectedLocked}
+        title={
+          role === 'student'
+            ? '学员端重命名在 M2 未提供'
+            : selectedLocked
+              ? LOCKED_HINT
+              : selectedId
+                ? '重命名选中条目（广播给学员端，2 秒内同步）'
+                : '先在列表选中一条'
+        }
+        onClick={() => selectedId && openDialog('rename', selectedId)}
+      >
         重命名
       </button>
       <button
@@ -372,6 +386,7 @@ export default function App() {
       <PasteTextDialog />
       {role !== 'student' ? <CreateRoomDialog /> : null}
       <DeleteConfirmDialog />
+      <RenameDialog />
       <NicknameDialog />
     </div>
   )

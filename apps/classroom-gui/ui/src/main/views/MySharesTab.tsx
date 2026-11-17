@@ -70,6 +70,8 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
   const selectedId = useMainStore((s) => s.selectedId)
   const select = useMainStore((s) => s.select)
   const client = useMainStore((s) => s.client)
+  // M2 #19：教师侧行内重命名入口
+  const openDialog = useMainStore((s) => s.openDialog)
   const st = stateChip(item.sync_state, flavor, item.retry_count ?? 0)
   const isFile = item.kind === 'File'
   // PRD 7.4：待删除条目（deleted 墓碑 / DeleteDeferred）不可打开、不可复制
@@ -111,18 +113,42 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
             >
               打开
             </span>
-            <span className="disabled" title="T12 接入">
-              更多
-            </span>
+            {flavor === 'teacher' ? (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openDialog('rename', item.id)
+                }}
+                title="重命名（广播给学员端，学员端 2 秒内同步）"
+              >
+                重命名
+              </span>
+            ) : (
+              <span className="disabled" title="学员端重命名在 M2 未提供">
+                更多
+              </span>
+            )}
           </>
         ) : (
           <>
             <span className="disabled" title="T12 接剪贴板">
               复制
             </span>
-            <span className="disabled" title="M2 重命名/编辑">
-              编辑
-            </span>
+            {flavor === 'teacher' ? (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openDialog('rename', item.id)
+                }}
+                title="重命名（广播给学员端，学员端 2 秒内同步）"
+              >
+                重命名
+              </span>
+            ) : (
+              <span className="disabled" title="M2 重命名/编辑（学员端重命名未提供）">
+                编辑
+              </span>
+            )}
           </>
         )}
       </span>
