@@ -6,6 +6,7 @@ import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { getClient, type GuiClient, type LocalRole, type UiShareItem } from '../shared/ipc/client'
 import type { ListFilter, ServiceStatus, SvcNotify } from '../shared/ipc/types'
+import { EMPTY_FILTER, type KindFilter, type TabFilter } from './listFilter'
 
 export type TabKey = 'mine' | 'submissions' | 'records' | 'teacher'
 export type Role = LocalRole
@@ -29,8 +30,12 @@ interface MainStore {
   serviceDown: boolean
   activeTab: TabKey
   selectedId: string | null
+  /// 当前 Tab 的搜索关键字（镜像 tabFilters[activeTab]）
   keyword: string
-  kindFilter: 'all' | 'Text' | 'File'
+  /// 当前 Tab 的类型筛选（镜像 tabFilters[activeTab]）
+  kindFilter: KindFilter
+  /// 按 Tab 独立保存的筛选状态（切换 Tab 保留各自筛选，issue #90）
+  tabFilters: Record<TabKey, TabFilter>
   /** 已查看条目（D1「新」标记消除，客户端态） */
   seenIds: string[]
   dialog: DialogState
@@ -57,12 +62,9 @@ interface MainStore {
 }
 
 /** 学员当前 Tab 对应的列表过滤 */
-function studentFilter(tab: TabKey, keyword: string, kind: 'all' | 'Text' | 'File'): ListFilter {
-  return {
-    owner: tab === 'teacher' ? 'teacher' : null,
-    keyword: keyword || null,
-    kind: kind === 'all' ? null : kind,
-  }
+function studentFilter(tab: TabKey): ListFilter {
+  // 学员数据范围由 Tab 决定（教师共享 / 我共享的）；搜索与类型筛选在客户端完成
+  return { owner: tab === 'teacher' ? 'teacher' : null }
 }
 
 export const useMainStore = create<MainStore>((set, get) => ({
@@ -77,6 +79,12 @@ export const useMainStore = create<MainStore>((set, get) => ({
   selectedId: null,
   keyword: '',
   kindFilter: 'all',
+  tabFilters: {
+    mine: { ...EMPTY_FILTER },
+    teacher: { ...EMPTY_FILTER },
+    submissions: { ...EMPTY_FILTER },
+    records: { ...EMPTY_FILTER },
+  },
   seenIds: [],
   dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null },
   pasteBody: '',
@@ -111,15 +119,12 @@ export const useMainStore = create<MainStore>((set, get) => ({
   },
 
   async refresh() {
-    const { client, keyword, kindFilter, role, activeTab } = get()
+    const { client, role, activeTab } = get()
+    // 一次拉全量，搜索/类型筛选在客户端完成（即时、无 IPC 抖动；issue #90）
     const filter: ListFilter =
       role === 'student'
-        ? { ...studentFilter(activeTab, keyword, kindFilter), include_deleted: false }
-        : {
-            keyword: keyword || null,
-            kind: kindFilter === 'all' ? null : kindFilter,
-            include_deleted: false, // wire 契约：bool 无 serde default，必须显式携带
-          }
+        ? { ...studentFilter(activeTab), include_deleted: false }
+        : { include_deleted: false } // wire 契约：bool 无 serde default，必须显式携带
     try {
       const [items, status] = await Promise.all([client.list(filter), client.status()])
       set({ items, status, serviceDown: !status.running })
@@ -134,7 +139,9 @@ export const useMainStore = create<MainStore>((set, get) => ({
   },
 
   setActiveTab(activeTab) {
-    set({ activeTab, selectedId: null })
+    // 恢复该 Tab 自己的筛选（issue #90：筛选状态按 Tab 独立）
+    const filter = get().tabFilters[activeTab]
+    set({ activeTab, selectedId: null, keyword: filter.keyword, kindFilter: filter.kind })
     void get().refresh()
   },
   select(selectedId) {
@@ -145,12 +152,19 @@ export const useMainStore = create<MainStore>((set, get) => ({
     if (!get().seenIds.includes(id)) set({ seenIds: [...get().seenIds, id] })
   },
   setKeyword(keyword) {
-    set({ keyword })
-    void get().refresh()
+    const activeTab = get().activeTab
+    set({
+      keyword,
+      tabFilters: { ...get().tabFilters, [activeTab]: { ...get().tabFilters[activeTab], keyword } },
+    })
+    // 客户端过滤：不重新拉取（避免逐字符 IPC；issue #90）
   },
   setKindFilter(kindFilter) {
-    set({ kindFilter })
-    void get().refresh()
+    const activeTab = get().activeTab
+    set({
+      kindFilter,
+      tabFilters: { ...get().tabFilters, [activeTab]: { ...get().tabFilters[activeTab], kind: kindFilter } },
+    })
   },
 
   openDialog(key, id) {
