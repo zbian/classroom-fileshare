@@ -22,12 +22,13 @@ jobs:
       # 默认宿主）对无 BOM 文件按 ANSI/GBK 解析，中文字符串会乱码甚至语法崩坏
       # （已在 install.ps1 / uninstall.ps1 / register-context-menu.ps1 三次踩坑）。
       # 注意双面规则：**PS 脚本必须有 BOM**，而 gui.json 等 JSON 数据**不能有**。
+      # M2 #16：扫描范围由 scripts+apps 扩为全仓（qa 的 docs/acceptance/scripts
+      # 此前不在守卫内；全仓口径 = 除 node_modules/target/.git 外所有 .ps1）。
       - name: PowerShell 脚本 BOM 守卫
         shell: pwsh
         run: |
-          # 仅校验本仓库自有的 .ps1（排除 node_modules / target 等第三方与构建产物）
-          $bad = Get-ChildItem scripts, apps -Recurse -Filter *.ps1 -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '[\\/](node_modules|target)[\\/]' } |
+          $bad = Get-ChildItem -Path . -Recurse -Filter *.ps1 -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\\/](node_modules|target|\.git)[\\/]' } |
             Where-Object {
               $b = [IO.File]::ReadAllBytes($_.FullName)
               -not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
@@ -36,7 +37,9 @@ jobs:
             $bad | ForEach-Object { Write-Host "::error::PS 脚本缺 UTF-8 BOM（PS 5.1 会按 ANSI 误读中文）：$($_.FullName)" }
             exit 1
           }
-          Write-Host "PS 脚本 BOM 校验通过（仓库自有脚本）"
+          $count = (Get-ChildItem -Path . -Recurse -Filter *.ps1 -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\\/](node_modules|target|\.git)[\\/]' }).Count
+          Write-Host "PS 脚本 BOM 校验通过（全仓 $count 个 .ps1：scripts/ + docs/acceptance/scripts/）"
 
       - name: cargo fmt
         run: cargo fmt --all --check
