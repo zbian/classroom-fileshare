@@ -13,6 +13,7 @@ mod tips;
 mod windows;
 
 use classroom_ipc::GuiRequest;
+use classroom_protocol::Role;
 use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
 use tauri::{Emitter, Manager};
@@ -122,15 +123,30 @@ fn main() {
         .manage(AppState::new(config))
         .manage(IpcBridge::new())
         .setup(move |app| {
-            // E12 ③：角色持久化必须**先于** start_bridge——桥用 role_from_config
-            // 选管道名（teacher/student），晚写会用旧角色导致学员机连不上服务。
-            if let Some((_role, snapshot)) =
-                state::apply_role_arg(&app.state::<AppState>(), &startup_args)
-            {
+            // E12 补强：角色解析优先级 a > b > c > default（必须在 start_bridge 之前）
+            //   a) --role 显式参数
+            //   b) svc.json 的 mode（%PROGRAMDATA% 全员可读 → 免疫「安装者≠登录用户」）
+            //   c) gui.json role（上次持久化 / 安装脚本辅助）
+            //   d) 服务管道探测（仅一个角色管道存在时取之）
+            let gui_role = app
+                .state::<AppState>()
+                .config
+                .lock()
+                .map(|c| c.role.clone())
+                .unwrap_or_default();
+            let (role, source) = state::resolve_role(
+                state::parse_role_arg(&startup_args),
+                state::role_from_svc_json(),
+                &gui_role,
+                ipc_client::pipe_available(&Role::Student),
+                ipc_client::pipe_available(&Role::Teacher),
+            );
+            if let Some(snapshot) = state::apply_role(&app.state::<AppState>(), role) {
                 if let Err(e) = snapshot.save() {
                     eprintln!("[state] gui.json 角色持久化失败：{e}");
                 }
             }
+            eprintln!("[role] 解析为 {role}（来源 {source:?}）");
             windows::ensure_icon_window(app.handle())?;
             // tips 预创建隐藏：首条到达才 show（避免到达时才建窗的延迟）
             tips::ensure_tips_window(app.handle())?;

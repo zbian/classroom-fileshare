@@ -110,24 +110,99 @@ pub(crate) fn parse_role_arg(args: &[String]) -> Option<&'static str> {
     })
 }
 
-/// 应用 `--role` 到内存配置，返回 `(role, 待持久化快照)`。
-///
-/// **必须在 `ipc_client::start_bridge` 之前调用**（E12 时序竞争）：桥用
-/// [`crate::ipc_client`] 内的 role_from_config 选管道名
-/// （`classshare-svc-teacher` / `-student`），若角色写入晚于桥启动，首连会用
-/// 旧的/默认 teacher 角色 → 学员机必然连不上。
-///
-/// 持久化与内存更新分离，便于单测在不触碰磁盘的前提下断言状态迁移；
-/// 调用方负责 `snapshot.save()`。
-pub(crate) fn apply_role_arg(state: &AppState, args: &[String]) -> Option<(String, GuiConfig)> {
-    let role = parse_role_arg(args)?.to_string();
-    let mut cfg = state.config.lock().ok()?;
-    cfg.role = role.clone();
-    let snapshot = cfg.clone();
-    drop(cfg);
-    Some((role, snapshot))
+/// 角色来源（日志与取证用；E12 补强）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoleSource {
+    /// `--role=` 显式参数（安装脚本自启/调试）
+    Arg,
+    /// svc.json 的 `mode`——**角色权威源**，免疫「安装者≠登录用户」
+    SvcJson,
+    /// gui.json 的 role（上次运行持久化 / 安装脚本辅助写入，优先级最低的持久源）
+    GuiJson,
+    /// 服务管道探测（仅某角色管道存在时取之）
+    PipeProbe,
+    /// 兜底默认（历史行为 teacher）
+    Default,
 }
 
+/// 角色解析优先级（E12 补强 a > b > c > default），纯函数便于单测：
+///
+/// 1. `--role=` 显式参数
+/// 2. `svc.json` 的 `mode`——管理员安装场景下 `%APPDATA%` 属于安装者账号，
+///    GUI 读不到；而 svc.json 在 `%PROGRAMDATA%`（服务模式，全员可读）或
+///    当前用户 `%LOCALAPPDATA%`（降级模式），是天然的角色权威源
+/// 3. `gui.json` 的 role（install.ps1 辅助写入 / 上次运行持久化）
+/// 4. 管道探测：只有一个角色的管道存在时取之（覆盖「服务晚启动/角色未知」）
+/// 5. 默认 teacher（历史行为）
+pub(crate) fn resolve_role(
+    arg: Option<&'static str>,
+    svc_json: Option<&'static str>,
+    gui_role: &str,
+    student_pipe: bool,
+    teacher_pipe: bool,
+) -> (&'static str, RoleSource) {
+    if let Some(role) = arg {
+        return (role, RoleSource::Arg);
+    }
+    if let Some(role) = svc_json {
+        return (role, RoleSource::SvcJson);
+    }
+    match gui_role {
+        "student" => return ("student", RoleSource::GuiJson),
+        "teacher" => return ("teacher", RoleSource::GuiJson),
+        _ => {}
+    }
+    match (student_pipe, teacher_pipe) {
+        (true, false) => ("student", RoleSource::PipeProbe),
+        (false, true) => ("teacher", RoleSource::PipeProbe),
+        _ => ("teacher", RoleSource::Default),
+    }
+}
+
+/// 从 svc.json 读 `mode`（服务模式 PROGRAMDATA 优先，降级模式 LOCALAPPDATA）。
+/// BOM 容错：Windows 工具写出的 JSON 可能带 BOM（gui.json 曾有同类问题）。
+pub(crate) fn role_from_svc_json() -> Option<&'static str> {
+    let mut candidates = Vec::new();
+    for var in ["PROGRAMDATA", "LOCALAPPDATA"] {
+        if let Some(base) = std::env::var_os(var) {
+            candidates.push(
+                std::path::PathBuf::from(base)
+                    .join("ClassShare")
+                    .join("svc.json"),
+            );
+        }
+    }
+    role_from_svc_json_at(&candidates)
+}
+
+/// 在给定候选路径中解析 svc.json 的角色（抽出来便于用临时文件单测）。
+fn role_from_svc_json_at(paths: &[std::path::PathBuf]) -> Option<&'static str> {
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let text = text.trim_start_matches('\u{feff}');
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        match value.get("mode").and_then(|m| m.as_str()) {
+            Some("student") => return Some("student"),
+            Some("teacher") => return Some("teacher"),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// 应用解析出的角色到内存配置；角色未变化返回 None（避免无意义写盘）。
+pub(crate) fn apply_role(state: &AppState, role: &str) -> Option<GuiConfig> {
+    let mut cfg = state.config.lock().ok()?;
+    if cfg.role == role {
+        return None;
+    }
+    cfg.role = role.to_string();
+    Some(cfg.clone())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,27 +255,92 @@ mod tests {
         assert_eq!(parse_role_arg(&args("app.exe")), None);
     }
 
-    /// E12 ①（续）：role 写入内存状态并产出待持久化快照——
-    /// 该动作在 setup 中先于 start_bridge 执行，桥据此选择学员/教师管道。
+    /// E12 补强：角色优先级 a(--role) > b(svc.json mode) > c(gui.json) > 管道探测 > 默认。
     #[test]
-    fn apply_role_arg_updates_state_before_bridge() {
+    fn resolve_role_precedence() {
+        // 1) --role 最高（显式覆盖一切）
+        assert_eq!(
+            resolve_role(Some("student"), Some("teacher"), "teacher", true, true),
+            ("student", RoleSource::Arg)
+        );
+        // 2) svc.json 次之——管理员安装场景的关键路径（与 %APPDATA% 无关）
+        assert_eq!(
+            resolve_role(None, Some("student"), "teacher", false, true),
+            ("student", RoleSource::SvcJson)
+        );
+        // 3) gui.json 再次之
+        assert_eq!(
+            resolve_role(None, None, "student", false, false),
+            ("student", RoleSource::GuiJson)
+        );
+        // 4) 管道探测：仅学员管道存在 → student
+        assert_eq!(
+            resolve_role(None, None, "", true, false),
+            ("student", RoleSource::PipeProbe)
+        );
+        assert_eq!(
+            resolve_role(None, None, "", false, true),
+            ("teacher", RoleSource::PipeProbe)
+        );
+        // 无信息/双管道（异常）→ 历史默认 teacher
+        assert_eq!(
+            resolve_role(None, None, "", false, false),
+            ("teacher", RoleSource::Default)
+        );
+        assert_eq!(
+            resolve_role(None, None, "", true, true),
+            ("teacher", RoleSource::Default)
+        );
+    }
+
+    /// E12 补强：svc.json 解析（含 BOM 容错、非法 mode 跳过、按候选顺序命中）。
+    #[test]
+    fn role_from_svc_json_reads_mode_with_bom_tolerance() {
+        let dir = tempfile::tempdir().unwrap();
+        let student_json = dir.path().join("student.json");
+        let teacher_json = dir.path().join("teacher.json");
+        let broken_json = dir.path().join("broken.json");
+        let bom_json = dir.path().join("bom.json");
+        std::fs::write(&student_json, r#"{"mode":"student"}"#).unwrap();
+        std::fs::write(&teacher_json, r#"{"mode":"teacher"}"#).unwrap();
+        std::fs::write(&broken_json, r#"{"mode":"admin"}"#).unwrap();
+        std::fs::write(&bom_json, "\u{feff}{\"mode\":\"student\"}").unwrap();
+
+        assert_eq!(
+            role_from_svc_json_at(&[student_json.clone(), teacher_json.clone()]),
+            Some("student"),
+            "首个可解析候选优先"
+        );
+        assert_eq!(
+            role_from_svc_json_at(&[broken_json.clone(), teacher_json.clone()]),
+            Some("teacher"),
+            "非法 mode 跳过继续"
+        );
+        assert_eq!(
+            role_from_svc_json_at(&[bom_json]),
+            Some("student"),
+            "BOM 容错"
+        );
+        assert_eq!(
+            role_from_svc_json_at(&[dir.path().join("missing.json")]),
+            None
+        );
+    }
+
+    /// E12 补强：apply_role 仅在角色变化时产出快照（避免无意义写盘）。
+    #[test]
+    fn apply_role_saves_only_on_change() {
         let state = AppState::new(GuiConfig::default());
-        // 默认角色为空（等价 teacher 兜底），先确认基线
-        assert_eq!(state.config.lock().unwrap().role, "");
-
-        let args: Vec<String> = ["app.exe", "--role=student"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let (role, snapshot) = apply_role_arg(&state, &args).expect("应解析出 student");
-        assert_eq!(role, "student");
-        assert_eq!(snapshot.role, "student", "快照用于持久化，必须已带新角色");
-        // 内存状态同步更新：start_bridge 之后的 role_from_config 会读到 student
+        let snapshot = apply_role(&state, "student").expect("首次设置应产出快照");
+        assert_eq!(snapshot.role, "student");
         assert_eq!(state.config.lock().unwrap().role, "student");
-
-        // 无 --role 时不动既有配置
-        let before = state.config.lock().unwrap().role.clone();
-        assert!(apply_role_arg(&state, &["app.exe".to_string()]).is_none());
-        assert_eq!(state.config.lock().unwrap().role, before);
+        assert!(
+            apply_role(&state, "student").is_none(),
+            "角色未变化不应重复写盘"
+        );
+        assert_eq!(
+            apply_role(&state, "teacher").expect("切换应产出快照").role,
+            "teacher"
+        );
     }
 }

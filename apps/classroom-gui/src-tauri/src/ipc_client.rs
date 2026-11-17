@@ -58,12 +58,41 @@ fn role_from_config(app: &AppHandle) -> Role {
         .unwrap_or(Role::Teacher)
 }
 
-async fn connect(
-    app: &AppHandle,
-) -> anyhow::Result<(IpcClient, tokio::sync::mpsc::Receiver<SvcNotify>)> {
-    let role = role_from_config(app);
+/// 管道是否可用（E12 补强 b：双管道探测；也是「服务已就绪」的快速判据）。
+///
+/// `WaitNamedPipeW(…, 0)` 立即返回：管道存在且有可用实例 → TRUE；不存在/忙 → FALSE。
+pub(crate) fn pipe_available(role: &Role) -> bool {
+    let name = classroom_ipc::pipe_name(role.clone());
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        windows::Win32::System::Pipes::WaitNamedPipeW(windows::core::PCWSTR(wide.as_ptr()), 0)
+            .as_bool()
+    }
+}
+
+/// 连接服务：优先 `hint` 角色管道，其次另一角色（E12 补强 b）。
+///
+/// 角色权威源是 svc.json（a），但以下场景仍需探测兜底：
+/// ① 服务晚于 GUI 启动时管道尚未创建；② 老版本安装未写 svc.json；
+/// ③ 服务被手工以另一角色拉起。握手用同一 token，握上即证明角色。
+async fn connect_with_hint(
+    hint: Role,
+) -> anyhow::Result<(IpcClient, tokio::sync::mpsc::Receiver<SvcNotify>, Role)> {
     let token = load_shared_token()?;
-    connect_ipc(role, &token).await
+    let order = match hint {
+        Role::Student => [Role::Student, Role::Teacher],
+        Role::Teacher => [Role::Teacher, Role::Student],
+    };
+    for role in order {
+        if !pipe_available(&role) {
+            continue;
+        }
+        match connect_ipc(role.clone(), &token).await {
+            Ok((client, rx)) => return Ok((client, rx, role)),
+            Err(e) => eprintln!("[ipc] {role:?} 管道握手失败：{e:#}"),
+        }
+    }
+    anyhow::bail!("未发现可用服务管道（student/teacher 均不可达）")
 }
 
 /// 读取与后台服务共享的 IPC 令牌（集成契约；实测握手校验出的缺陷修正）：
@@ -138,17 +167,30 @@ where
 /// 因此常驻图标即使没人打开主界面也能自动恢复（E12 ②）。
 pub fn start_bridge(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // 角色提示：优先用 setup 已解析（a/c）的结果；连接时用 b 探测兜底
+        let mut hint = role_from_config(&app);
         loop {
-            let (client, rx) = {
-                let app_for_connect = app.clone();
-                retry_until_connected(|| {
-                    let app = app_for_connect.clone();
-                    async move { connect(&app).await }
-                })
-                .await
-            };
-            let role = role_from_config(&app);
-            eprintln!("[ipc] 服务管道已连接（role={role:?}）");
+            let hint_for_attempt = hint.clone();
+            let (client, rx, discovered) = retry_until_connected(|| {
+                let hint = hint_for_attempt.clone();
+                async move { connect_with_hint(hint).await }
+            })
+            .await;
+            // E12 补强 b：探测到的角色与配置不一致（svc.json 缺失/角色被改）→ 纠正并持久化
+            if discovered != hint {
+                eprintln!("[ipc] 探测到服务角色 {discovered:?}（配置 {hint:?}），已纠正");
+                if let Some(snapshot) =
+                    crate::state::apply_role(&app.state::<AppState>(), role_name(&discovered))
+                {
+                    let _ = snapshot.save();
+                }
+                let _ = app.emit(
+                    "svc://notify",
+                    retag(&SvcNotify::StatusChanged(String::new())),
+                );
+            }
+            hint = discovered.clone();
+            eprintln!("[ipc] 服务管道已连接（role={discovered:?}）");
             *app.state::<IpcBridge>().client.lock().expect("ipc lock") = Some(client);
             // 连接成功即通知前端重拉结构化状态（主窗已开时自愈 EX-10）
             let _ = app.emit(
@@ -159,6 +201,14 @@ pub fn start_bridge(app: AppHandle) {
             forward_loop(&app, rx).await;
         }
     });
+}
+
+/// `Role` → gui.json 中的角色字符串。
+fn role_name(role: &Role) -> &'static str {
+    match role {
+        Role::Teacher => "teacher",
+        Role::Student => "student",
+    }
 }
 
 async fn forward_loop(app: &AppHandle, mut rx: tokio::sync::mpsc::Receiver<SvcNotify>) {

@@ -1,0 +1,4 @@
+[role] 解析为 student（来源 SvcJson）
+[t8] icon created: outer=(72, 72) inner=(72, 72) scale=1 pos=(2464, 24)
+[ipc] 服务管道已连接（role=Student）
+[t11] push_tip: E12 冒烟通知
