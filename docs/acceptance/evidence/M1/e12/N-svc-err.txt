@@ -1,0 +1,9 @@
+2026-11-17T14:43:48.774569Z  INFO 前台降级模式启动（--console） mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M1\e12\t\localappdata\ClassShare\data
+2026-11-17T14:43:48.810327Z  INFO IPC 令牌已创建（ACL：SYSTEM/管理员 + 当前用户 + 主登录用户） path=<repo>\.wt\acc-m1\evidence\M1\e12\t\localappdata\ClassShare\data\ipc.token user_sid=None
+2026-11-17T14:43:48.813194Z  WARN svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；请升级安装或等待登录会话自愈（SessionChange）
+2026-11-17T14:43:48.851064Z  INFO 服务核心就绪 mode=Teacher data_root=<repo>\.wt\acc-m1\evidence\M1\e12\t\localappdata\ClassShare\data
+2026-11-17T14:43:48.851089Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-teacher
+2026-11-17T14:43:48.862307Z  INFO 教师端启动 room=XK-204 port=47821
+2026-11-17T14:43:52.380477Z  WARN 教师文件广播失败 path=<repo>\.wt\acc-m1\target\release\classroom-gui.exe error=高风险文件类型: classroom-gui.exe
+2026-11-17T14:44:11.987216Z  WARN IPC 握手被拒：令牌错误
+2026-11-17T14:44:12.017526Z  WARN IPC 握手被拒：令牌错误

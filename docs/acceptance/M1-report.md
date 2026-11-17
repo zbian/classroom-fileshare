@@ -7,8 +7,8 @@
 | 日期 | 2026-11-17（初版）/ 2026-11-17 修订（rc.2 补测） |
 | 基线 | **`main @ 46470fe`（v0.1.0-rc.2）**，含 E9 自动发现、**E10 100 MB 上限**、O-1 构建防呆、O-3/O-4 |
 | 环境 | 单机（用户确认仅 1 台可用）；Windows 11 专业版 26100；**非管理员**；PowerShell 5.1；WebView2 157.0.4341.60 |
-| 依据 | [PRD](../../../final_draft.md) 第 11 章 / 2.4 指标；[验收方案 v1.3.7](../M1-acceptance-plan.md)；[冻结报告](../../reports/M1-freeze.md) |
-| 结论 | **未见阻断缺陷，但发现两个 P0 缺口（E10 100 MB 上限未生效、E11 tips 生产路径未接线）——均已修复并验证闭环**；另在 tips 补测中发现 **E12（学员机安装路径 GUI 连错管道，阻塞 v0.1.0，修复中）**；6 项通过 / 1 项部分通过 / 若干项延后 |
+| 基线 | **`main @ 75d0d7c`（v0.1.0-rc.4 后 / 本机 CI 门禁；含 E12 修复与 M2 S1+S2）** |
+| 结论 | **P0 缺口 3 项（E10 100 MB 上限、E11 tips 接线、E12 学员机安装路径）——均已修复；E10/E11/E12 全部验证闭环，E12 已按真实安装路径复验通过**；另新发现 E13（GUI 自共享自身 exe，待修复）；6 项通过 / 1 项部分通过 / 若干项延后 |
 | 证据 | `docs/acceptance/evidence/M1/single-machine/`（命令输出、日志、截图）；rc.2 补测证据前缀 `C-*` |
 
 > 本报告只声明**单机可验范围**内的结论。凡需 2 台以上真机或管理员权限的判据，一律标注「延后」，不以单机结果替代。
@@ -283,13 +283,42 @@ UIA 读取 tips 窗口文本（`G-TIPS-stack.txt`）：
 
 #### 3.12.7 附：本轮暴露的 E12（阻塞 v0.1.0）
 
-补测时先用 `--role=student` 手工启动 GUI，实测 GUI 仍连 `\\.\pipe\classshare-svc-teacher` 并失败、45 s 内 tips 全无；改为**预先写 `gui.json{"role":"student"}`** 后才正常。根因三处（`install.ps1` 不写 GUI 角色/`start_bridge` 首连失败不重试/`--role` 与 `start_bridge` 时序竞争）详见 §4 的 E12 与 issue #83。**该缺陷意味着按 install.ps1 正常安装的学员机 GUI 连不上本机服务**，故 tips 的上述通过结论须在 E12 修复后由**真实安装路径**复验（rc.4）。
+补测时先用 `--role=student` 手工启动 GUI，实测 GUI 仍连 `\\.\pipe\classshare-svc-teacher` 并失败、45 s 内 tips 全无；改为**预先写 `gui.json{"role":"student"}`** 后才正常。根因三处（`install.ps1` 不写 GUI 角色/`start_bridge` 首连失败不重试/`--role` 与 `start_bridge` 时序竞争）详见 §4 的 E12 与 issue #83。
+> ✅ **后续闭环**：E12 已于 rc.4（518d9b1）修复，并按**真实 `install.ps1 -Mode student` 安装路径**复验通过（6/6，含「安装者≠登录用户」场景），见 §3.13。故上述 tips 通过结论在生产安装路径下同样成立。
 
-## 4 缺陷与观察项| 编号 | 级别 | 内容 | 处置 |
+### 3.13 rc.4 复验：E12（学员机安装路径）六项检查
+
+基线 `518d9b1`（v0.1.0-rc.4，E12 修复 #86）。复验方式：**真实 `install.ps1 -Mode student` 安装**（不使用预写 `gui.json` 绕过），并隔离 `LOCALAPPDATA`/`APPDATA` 避免污染本机（事后核验：本机真实数据根未被创建）。证据目录 `evidence/M1/e12/`（统一 UTF-8）。
+
+| # | 检查项 | 实测 | 判定 |
+| --- | --- | --- | --- |
+| ① | install 产物带角色 | `gui.json` = `{ "version":1, "role":"student" }`；HKCU `ClassShareGUI = <gui> --role=student`；安装摘要新增「GUI 角色: …（role=student）」 | ✅ 通过 |
+| ② | GUI 角色解析 + 连对管道 | Run 值启动：`[role] 解析为 student（来源 Arg）` + `[ipc] 服务管道已连接（role=Student）`；svc 侧 `pipe=\\.\pipe\classshare-svc-student` | ✅ 通过 |
+| ③ | 状态/列表正常、无 EX-10 | student 管道 status：`role=Student room=tcp://127.0.0.1:47830 nickname=tipsTester state=Running`；list：`items n=1`（教师广播条目）；GUI 日志无「连接失败」、无 EX-10 | ✅ 通过 |
+| ④ | 教师广播 → tips 正常 | tips 窗口 `vis=True`（隔离安装路径，非预写配置） | ✅ 通过 |
+| ⑤ | **先起 GUI 后起服务 → 退避重连** | `通知通道关闭（服务退出）` → `连接失败（第1次）…1s 后重试` → `2s` → `5s` → `5s` → 服务重启后**自动** `服务管道已连接（role=Student）`；随后教师广播 tips **可见**（3971 ms 内） | ✅ 通过（常驻图标场景通知流可自恢复） |
+| ⑥ | teacher 模式对称 | `-Mode teacher` 安装：Run 值 `--role=teacher`；GUI（不传 `--role`）→ `[role] 解析为 teacher（来源 SvcJson）` + `服务管道已连接（role=Teacher）`；status `room=XK-204 state=Running` | ✅ 通过 |
+| 附加 | **安装者≠登录用户** | 登录用户 `APPDATA` 用**全新目录（无 gui.json）**、安装者 `APPDATA` 另有 gui.json → GUI 日志 `[role] 解析为 **student（来源 SvcJson）**` + 连接成功 + tips 正常 | ✅ 通过（`svc.json` 权威源机制生效） |
+
+**结论：E12 闭环。** 按 `install.ps1` 正常安装的学员机 GUI 现在能自动解析角色、连对本地服务管道，状态/列表/tips 正常，且服务晚于 GUI 启动时可自动恢复通知流。
+
+### 3.14 新发现 E13（GUI 每次启动自共享自身 exe）
+
+复验 E12 时在 teacher svc 日志发现并复现（多轮共 **12 条**）：`WARN 教师文件广播失败 path=…\classroom-gui.exe error=高风险文件类型: classroom-gui.exe`。
+
+- 根因：`apps/classroom-gui/src-tauri/src/main.rs` 的 `file_args()` 未跳过 `argv[0]`，而 `argv[0]` 即 GUI 自身 exe（是文件）→ 被当作待共享文件走真实发送链路。
+- 影响：每次 GUI 启动发起一次注定失败的共享（日志噪音/可能失败提示）；目前仅因 `.exe` 属风险类型被 EX-05 拦下，**若类型限制变化则会外发程序本体**；学员端同样会向教师发起该尝试。
+- 建议：`file_args` 加 `.skip(1)`（或排除当前 exe 路径）+ 单测「argv[0] 不视为共享文件」。
+- 状态：**已开 issue #93，修复中（PR 随后）**（最新 main `75d0d7c` 仍存在）。
+
+## 4 缺陷与观察项
+
+| 编号 | 级别 | 内容 | 处置 |
 | --- | --- | --- | --- |
 | **E10** | **P0 缺口（已修复闭环）** | 单文件 100 MB 上限修复前未生效（PRD 5.3/9.4/EX-04）；QA 初版验收未覆盖该负例 | 已由 `7eea251` 修复，本报告 §3.11.1 验证闭环 |
 | **E11** | **P0 缺口（已修复闭环）** | tips 生产路径未接线：`push_tip` 在 release 无调用者（唯一调用方 `demo_tips` 为 debug-only），`ipc_client` emit `svc://notify` 而 `TipsStack` 监听 `svc://share-received` → **release 产物中 FR-G-02 永不触发**（「收到但从不提醒」）。QA 初版报告写「无自动化 → 未验证」**低估了问题**（实为生产路径未接线） | 已由 `1fea3d1` 修复（`ShareReceived → push_tip` + 同源双通知去重 + 本人条目不自弹）；本报告 §3.12 补测 ①–⑤ 全部通过。措辞已在 §5 更正 |
-| **E12** | **P0 阻塞（修复中，issue #83）** | **按 install.ps1 正常安装的学员机 GUI 连不上本机服务**：① `install.ps1` 注册 GUI 自启不传 `--role`、且从不写 `gui.json`，GUI 角色默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败仅记录、**不重试**（`ensure_client` 惰性重连只在有 UI 请求时触发）→ 常驻图标场景通知流永不建立；③ `--role=` 写盘在 `start_bridge` 之后（时序竞争）。实测：`--role=student` 手工启动仍连 teacher 管道失败、45 s 无 tips；预写 `gui.json role=student` 后一切正常 | 已裁定**阻塞 v0.1.0**，dev-gui 修复（写 GUI 角色 + `start_bridge` 退避重连 + `--role` 时序）；rc.4 后由 QA 用**真实 install.ps1 -Mode student** 复验 |
+| **E12** | **P0 阻塞（已修复闭环）** | **按 install.ps1 正常安装的学员机 GUI 连不上本机服务**：① `install.ps1` 注册 GUI 自启不传 `--role`、且从不写 `gui.json`，GUI 角色默认 `teacher` → 连 `classshare-svc-teacher`，而学员 svc 监听 `classshare-svc-student`；② `start_bridge` 首连失败仅记录、**不重试**；③ `--role=` 写盘在 `start_bridge` 之后。实测（修复前）：`--role=student` 手工启动仍连 teacher 管道失败、45 s 无 tips。**修复（#86 / 518d9b1）**：角色五级优先级（`--role` > **`svc.json` mode（权威源，免疫安装者≠登录用户）** > `gui.json` > 双管道探测 > 默认）+ install 写 GUI 角色 + `start_bridge` 退避重连（1s/2s/5s 封顶） | 已修复；**QA 按真实安装路径复验 6/6 通过**（含安装者≠登录用户、先 GUI 后服务自动重连），见 §3.13 |
+| **E13** | 一般（待修复，最新 main 仍存在） | **GUI 每次启动把自身 exe 当作待共享文件发送**：`file_args()` 未跳过 `argv[0]`（exe 是文件）→ 走真实发送链路；实测多轮共 12 条 `教师文件广播失败 … classroom-gui.exe 高风险文件类型`。目前仅被 EX-05 拦下，若类型限制变化会外发程序本体；学员端亦会向教师发起该尝试 | 建议 `file_args` 加 `.skip(1)` + 单测；已开 **issue #93**，修复中（PR 随后） |
 | O-1 | **口径要求（已升格为强制）** | GUI 生产构建必须用 `scripts/build-gui.ps1`（或显式 `--features custom-protocol`），**禁止裸 `cargo build --release`**——否则前端不内嵌、图标永不显示，极易被误判为产品缺陷 | 已入库：`build-gui.ps1` + `build.rs` 警告 + `main.rs` MessageBox 防呆；方案 §3.4 已写入强制口径，详见 [`docs/notes/m1-o1-gui-build.md`](../../notes/m1-o1-gui-build.md) |
 | O-2 | 观察（可观测性） | `broadcast` 锚点在**推送完成后**记录，`Δ=applied−broadcast` 为下界（可负），无法直接测 PRD 2.4 分发时延；本报告改用「请求发起→applied」保守上界 | M2/M3 补 `send_received` 锚点 |
 | O-3 | 轻微（已修） | `uninstall.ps1` 在右键项不存在时向 stderr 打印 reg.exe 原生错误 | `46470fe` 已修（PowerShell 原生 cmdlet + 静默） |

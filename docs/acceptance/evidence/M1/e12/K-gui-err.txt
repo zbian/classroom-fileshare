@@ -1,0 +1,8 @@
+[role] 解析为 student（来源 Arg）
+[ipc] 服务管道已连接（role=Student）
+[ipc] 通知通道关闭（服务退出）
+[ipc] 连接失败（第 1 次）：未发现可用服务管道（student/teacher 均不可达）；1s 后重试
+[ipc] 连接失败（第 2 次）：未发现可用服务管道（student/teacher 均不可达）；2s 后重试
+[ipc] 连接失败（第 3 次）：未发现可用服务管道（student/teacher 均不可达）；5s 后重试
+[ipc] 连接失败（第 4 次）：未发现可用服务管道（student/teacher 均不可达）；5s 后重试
+[ipc] 服务管道已连接（role=Student）

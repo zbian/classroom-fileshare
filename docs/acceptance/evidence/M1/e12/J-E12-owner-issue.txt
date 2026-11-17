@@ -1,0 +1,6 @@
+=== 「安装者≠登录用户」场景（学生模式，不传 --role，gui.json 不存在）===
+登录用户 APPDATA=<repo>\.wt\acc-m1\evidence\M1\e12\s\appdata-loginuser （无 gui.json: True）；安装者 APPDATA=<repo>\.wt\acc-m1\evidence\M1\e12\s\appdata（有 gui.json: True）
+--- GUI 日志（关键：role 来源应为 SvcJson）---
+[role] 解析为 student（来源 SvcJson）
+[ipc] 服务管道已连接（role=Student）
+tips 可见: True

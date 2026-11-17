@@ -1,0 +1,24 @@
+=== ⑤ 先起 GUI、后起服务：退避重连验证 ===
+已停服务与教师探针；GUI 仍在运行: True
+--- 停服务后 GUI 日志（应出现重连/断开提示）---
+[role] 解析为 student（来源 Arg）
+[ipc] 服务管道已连接（role=Student）
+[ipc] 通知通道关闭（服务退出）
+[ipc] 连接失败（第 1 次）：未发现可用服务管道（student/teacher 均不可达）；1s 后重试
+[ipc] 连接失败（第 2 次）：未发现可用服务管道（student/teacher 均不可达）；2s 后重试
+[ipc] 连接失败（第 3 次）：未发现可用服务管道（student/teacher 均不可达）；5s 后重试
+--- 服务重启后 GUI 日志（应自动重连成功，无需用户操作）---
+[ipc] 通知通道关闭（服务退出）
+[ipc] 连接失败（第 1 次）：未发现可用服务管道（student/teacher 均不可达）；1s 后重试
+[ipc] 连接失败（第 2 次）：未发现可用服务管道（student/teacher 均不可达）；2s 后重试
+[ipc] 连接失败（第 3 次）：未发现可用服务管道（student/teacher 均不可达）；5s 后重试
+[ipc] 连接失败（第 4 次）：未发现可用服务管道（student/teacher 均不可达）；5s 后重试
+[ipc] 服务管道已连接（role=Student）
+--- 学员 svc ---
+2026-11-17T14:37:33.416641Z  INFO 服务核心就绪 mode=Student data_root=<repo>\.wt\acc-m1\evidence\M1\e12\s\localappdata\ClassShare\data
+2026-11-17T14:37:33.416704Z  INFO IPC 服务监听中 pipe=\\.\pipe\classshare-svc-student
+2026-11-17T14:37:33.418843Z  INFO 已加入 addr=127.0.0.1:47830
+--- 教师探针 ---
+HOST started room=XK-204 port=47830
+HOST student joined: tipsTester
+重连后 tips 可见: True （轮询后 3971ms）

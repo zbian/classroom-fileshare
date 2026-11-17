@@ -1,0 +1,5 @@
+HOST started room=XK-204 port=47830
+HOST student joined: tipsTester
+HOST sending seq=0 at epoch_ms=1794925546487 kind=text
+HOST sent text seq=0 title=E12验证通知
+HOST exit
