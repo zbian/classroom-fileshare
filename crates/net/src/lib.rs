@@ -4,10 +4,12 @@
 //! TCP 服务 [`DEFAULT_TCP_PORT`] = 47821。
 
 pub mod beacon;
+pub mod client;
 pub mod frame;
 pub mod session;
 
 pub use beacon::{spawn_beacon, spawn_discovery, spawn_discovery_with_addr, Beacon};
+pub use client::{run_client_session, ClientHandler, ClientSessionConfig, SessionEnd};
 pub use frame::{
     encode_frame, read_frame, FileAck, FileChunk, FileEnd, FileHeader, Frame, Hello, HelloErr,
     HelloReply, MAX_FRAME_SIZE,
