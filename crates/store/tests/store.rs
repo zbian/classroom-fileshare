@@ -1161,3 +1161,43 @@ fn list_keyword_matches_title_or_text_body() {
         .unwrap()
         .is_empty());
 }
+
+/// E18（#136）：学员接收端占用重试的 attempts（`recv_retry.json`）叠加到
+/// `List.retry_count`——占用期间显示 1..5，成功后归零，耗尽 5。
+#[test]
+fn recv_retry_attempts_are_merged_into_list() {
+    let (_guard, root) = root("recv-retry-count");
+    let store = Store::open(&root).unwrap();
+    // 造一个 RetryLocked 条目（直接 upsert 经 store API 不便 → 用 put_text 后 set_sync_state）
+    let item = match store
+        .put_text("teacher", Role::Teacher, Audience::All, "被占用", "x", 100)
+        .unwrap()
+    {
+        PutOutcome::Created(i) => i,
+        other => panic!("{other:?}"),
+    };
+    store
+        .set_sync_state(&item.id, SyncState::RetryLocked)
+        .unwrap();
+    // 无 recv_retry.json → retry_count 0
+    let listed = store.list(ListFilter::default()).unwrap();
+    assert_eq!(listed[0].retry_count, 0);
+    // 写接收端队列（attempts=2）→ list 叠加为 2
+    let recv = format!(
+        r#"[{{"item_id":"{}","rel_path":"teacher/被占用.txt","part_rel":"retry_recv/{}.part","sha256":"00","attempts":2,"next_at":0,"created_at":0}}]"#,
+        item.id, item.id
+    );
+    std::fs::write(root.join("recv_retry.json"), recv).unwrap();
+    let listed = store.list(ListFilter::default()).unwrap();
+    assert_eq!(listed[0].retry_count, 2, "接收端 attempts 叠加");
+    assert_eq!(listed[0].sync_state, SyncState::RetryLocked);
+    // 成功后 set_sync_state Synced → retry_count 归零
+    store.set_sync_state(&item.id, SyncState::Synced).unwrap();
+    let listed = store.list(ListFilter::default()).unwrap();
+    assert_eq!(listed[0].retry_count, 0, "成功后归零");
+    // 耗尽 Failed → 上限 5
+    std::fs::remove_file(root.join("recv_retry.json")).unwrap();
+    store.set_sync_state(&item.id, SyncState::Failed).unwrap();
+    let listed = store.list(ListFilter::default()).unwrap();
+    assert_eq!(listed[0].retry_count, 5, "耗尽显示上限");
+}

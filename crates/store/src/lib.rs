@@ -990,10 +990,34 @@ impl Store {
         if let Some(e) = queue.iter().find(|e| e.item_id == item.id) {
             item.retry_count = e.attempts;
             item.sync_state = SyncState::RetryLocked;
+        } else if let Some(attempts) = self.recv_retry_attempts(&item.id) {
+            // E18（#136）：学员**接收端**占用重试队列（`recv_retry.json`，agent 侧）
+            // 的 attempts 只在 JSON 里维护、DB 无列 → list/get 时叠加回
+            // `retry_count`，使学员端 UI 显示「被占用重试（第 n/5 次）」。
+            // 仅对 `RetryLocked` 生效（避免覆盖 host 侧语义）。
+            if item.sync_state == SyncState::RetryLocked {
+                item.retry_count = attempts;
+            }
         } else if item.sync_state == SyncState::Failed {
             item.retry_count = retry::RETRY_MAX_ATTEMPTS;
         }
         item
+    }
+
+    /// 读学员端接收端重试队列（`data_root/recv_retry.json`）中该条目的 attempts。
+    ///
+    /// E18（#136）：agent 的接收端队列由 `crates/agent` 维护（同 data_root）；
+    /// store 只做只读叠加，不引入类型依赖（按 JSON 字段解析）。文件不存在/
+    /// 损坏 → `None`（按 0 处理，不影响列表）。
+    fn recv_retry_attempts(&self, item_id: &str) -> Option<u32> {
+        let path = self.root.join("recv_retry.json");
+        let bytes = std::fs::read(path).ok()?;
+        let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).ok()?;
+        entries
+            .iter()
+            .find(|e| e.get("item_id").and_then(|v| v.as_str()) == Some(item_id))
+            .and_then(|e| e.get("attempts").and_then(|v| v.as_u64()))
+            .map(|a| a as u32)
     }
 
     /// 按条件列出条目。
