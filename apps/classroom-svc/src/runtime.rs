@@ -483,6 +483,16 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
                 detail: detail.clone(),
             }]
         }
+        // M2 #114（S5）：删除进度（ack 聚合）→ GUI 显示「N/M 台已删除」（PRD 5.8）
+        CoreEvent::Host(HostEvent::DeleteProgress {
+            item_id,
+            done,
+            total,
+        }) => {
+            vec![SvcNotify::StatusChanged(format!(
+                "删除进度 {done}/{total}（{item_id}）"
+            ))]
+        }
         CoreEvent::Agent(AgentEvent::Removed(id)) => vec![SvcNotify::ItemRemoved(id.clone())],
         CoreEvent::Agent(AgentEvent::Discovered(beacons)) => {
             vec![SvcNotify::Discovered(beacons.clone())]

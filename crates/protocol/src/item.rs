@@ -47,6 +47,8 @@ pub enum SyncState {
     RetryLocked,
     /// 失败。
     Failed,
+    /// 已删除（所有目标端确认后的终态，M2 S5 ack 聚合）。
+    Deleted,
 }
 
 /// 一条共享记录（PRD 3.5 ShareItem）。

@@ -1034,7 +1034,27 @@ impl ClientHandler for AgentSessionHandler {
                 };
                 match outcome {
                     EvOutcome::Removed(id) => {
-                        let _ = self.notify.send(AgentEvent::Removed(id)).await;
+                        let _ = self.notify.send(AgentEvent::Removed(id.clone())).await;
+                        // M2 #114（S5）：**在线删除应用成功 → 上行 Ack**（PRD 5.8
+                        // 进度统计；Manifest 补删路径已在 align_manifest 发 Ack）。
+                        // 条目已在 store 中为墓碑快照，取 version 构造确定性事件 id。
+                        let deleted = self.store.lock().unwrap().get(&id).ok().flatten();
+                        if let Some(item) = deleted {
+                            let ack = Event {
+                                event_id: format!(
+                                    "ack-{}-{}-{}",
+                                    item.id, item.version, self.nickname
+                                ),
+                                kind: EventKind::Ack,
+                                item,
+                                new_name: None,
+                                acked_by: Some(self.nickname.clone()),
+                                ts: unix_now(),
+                            };
+                            if tx.send(Frame::Event(ack)).await.is_err() {
+                                tracing::debug!("删除 Ack 发送失败（写任务已退出）");
+                            }
+                        }
                     }
                     EvOutcome::Renamed(item) => {
                         let _ = self.notify.send(AgentEvent::Received(item)).await;
@@ -1070,7 +1090,7 @@ impl ClientHandler for AgentSessionHandler {
                 // 教师端据此观测端侧补删进度（墓碑清理用 TTL，不依赖 ack）
                 for item in acked {
                     let ev = Event {
-                        event_id: format!("ack-{}-{}", item.id, item.version),
+                        event_id: format!("ack-{}-{}-{}", item.id, item.version, self.nickname),
                         kind: EventKind::Ack,
                         item,
                         new_name: None,

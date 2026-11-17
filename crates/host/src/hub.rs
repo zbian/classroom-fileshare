@@ -58,11 +58,23 @@ pub(crate) struct Hub {
     /// session_id → (item_id → 上行 Event)：允许同一会话**并发多个**待完成
     /// 上传（M2 #18 补发可能连续投递多条；按 item_id 精确配对内容帧）。
     uploads: Mutex<HashMap<String, HashMap<String, Event>>>,
+    /// M2 #114（S5）：按 item_id 收集删除确认进度（内存态；幂等去重）。
+    deletes: Mutex<HashMap<String, DeleteProgress>>,
     /// 占用重试初始退避（秒，M2 #103；由 HostConfig 注入，测试可缩短）。
     retry_initial_backoff_secs: i64,
     port: AtomicU16,
 }
 
+/// 单个条目的删除确认进度（M2 #114 S5，内存态）。
+#[derive(Default)]
+struct DeleteProgress {
+    /// 已 ack 的会话集合（Ack 幂等：同会话重复 ack 不重复计数）。
+    sessions: std::collections::HashSet<String>,
+    /// 目标端数（删除时刻在线端数）。
+    target: u32,
+    /// 是否已收敛（全部 ack → `Deleted` 终态）。
+    converged: bool,
+}
 struct Conn {
     nickname: String,
     tx: mpsc::Sender<Frame>,
@@ -122,6 +134,7 @@ impl Hub {
             notify,
             conns: Mutex::new(HashMap::new()),
             uploads: Mutex::new(HashMap::new()),
+            deletes: Mutex::new(HashMap::new()),
             retry_initial_backoff_secs,
             port: AtomicU16::new(0),
         })
@@ -502,6 +515,17 @@ impl Hub {
                     owner_role = ?item.owner_role,
                     "delete"
                 );
+                // M2 #114（S5）：初始化删除进度——target=删除时刻在线端数；
+                // 端侧 ack（在线即时 / 离线补删）在此聚合，全部 ack 后收敛 Deleted。
+                let target = self.conns.lock().unwrap().len() as u32;
+                self.deletes.lock().unwrap().insert(
+                    item.id.clone(),
+                    DeleteProgress {
+                        sessions: std::collections::HashSet::new(),
+                        target,
+                        converged: false,
+                    },
+                );
                 // M2 #17：惰性清理过期墓碑（不引入常驻定时器）——墓碑在
                 // 保留期内随 manifest 下发，超期视为「端长期离线，放弃补删」
                 if let Err(e) = self
@@ -614,13 +638,70 @@ impl SessionHandler for Hub {
                 from_session = %session_tag,
                 "delete-ack"
             );
-            let _ = self
-                .notify
-                .send(HostEvent::DeleteAcked {
-                    item_id: ev.item.id,
-                    nickname: expected,
-                })
-                .await;
+            // M2 #114（S5）：**幂等去重**（顺带处理 #17 已知小项：Ack 未
+            // record_event → 重复 Ack 会重复触发 DeleteAcked/聚合计数）
+            let ack_item_id = ev.item.id.clone();
+            let first_seen = {
+                let store = self.store.lock().unwrap();
+                !store.seen_event(&ev.event_id).unwrap_or(false)
+            };
+            if !first_seen {
+                tracing::debug!(item_id = %ack_item_id, "重复 Ack（已处理），忽略");
+                return;
+            }
+            let _ = self.store.lock().unwrap().record_event(&ev);
+            // 聚合：按 item_id 收集 acked 会话（同会话重复 ack 不重复计数）
+            let (done, total, converged_now) = {
+                let mut deletes = self.deletes.lock().unwrap();
+                match deletes.get_mut(&ack_item_id) {
+                    Some(p) => {
+                        p.sessions.insert(session_id.to_string());
+                        let done = p.sessions.len() as u32;
+                        let converged_now = !p.converged && p.target > 0 && done >= p.target;
+                        if converged_now {
+                            p.converged = true;
+                        }
+                        (done, p.target, converged_now)
+                    }
+                    // 无进度记录（如删除前已离线、上线补删的端）：只记日志
+                    None => (0, 0, false),
+                }
+            };
+            if total > 0 {
+                // 先发 DeleteAcked（兼容既有观测），再发进度
+                let _ = self
+                    .notify
+                    .send(HostEvent::DeleteAcked {
+                        item_id: ack_item_id.clone(),
+                        nickname: expected.clone(),
+                    })
+                    .await;
+                let _ = self
+                    .notify
+                    .send(HostEvent::DeleteProgress {
+                        item_id: ack_item_id.clone(),
+                        done,
+                        total,
+                    })
+                    .await;
+                if converged_now {
+                    // 全部目标端确认 → 终态 Deleted（PRD 7.4「已删除」收敛）
+                    let _ = self
+                        .store
+                        .lock()
+                        .unwrap()
+                        .set_sync_state(&ack_item_id, classroom_protocol::SyncState::Deleted);
+                    tracing::info!(item_id = %ack_item_id, done, total, "删除进度收敛（全部 ack）");
+                }
+            } else {
+                let _ = self
+                    .notify
+                    .send(HostEvent::DeleteAcked {
+                        item_id: ack_item_id.clone(),
+                        nickname: expected.clone(),
+                    })
+                    .await;
+            }
             return;
         }
         // ===== M2 S3 会话身份绑定（接口修订 #9①，设计文档 §3.3）=====
