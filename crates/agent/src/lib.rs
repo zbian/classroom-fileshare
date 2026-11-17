@@ -159,39 +159,36 @@ pub async fn run_agent_with_commands(
 /// 两条写路径或乱序：
 /// - `on_frame(tx)`：**会话内被动回应**（收到帧后的即时 Ack 等）；
 /// - 本泵：**会话外主动上行**（GUI 触发的发送，跨重连由 uplink 槽更换端点）。
+///
+/// 内存策略（评审建议 1）：**流式构造 + 立即发送**——多选大文件不再把所有
+/// 帧累计进内存（旧实现峰值 N×100MB），单文件峰值 ≤ 单文件大小；通道容量
+/// （32 帧）提供背压。
 async fn command_pump(
     mut commands: mpsc::Receiver<AgentCommand>,
     uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
     nickname: String,
 ) {
     while let Some(cmd) = commands.recv().await {
-        let frames = match build_upload_frames(cmd, &nickname).await {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!(error = %e, "上行帧构造失败（未发送）");
-                continue;
-            }
-        };
         let sender = uplink.lock().unwrap().clone();
         let Some(sender) = sender else {
             // svc 在 IPC 应答前已按连接状态拦截；此处为竞态兜底
             tracing::warn!("未连接教师机，丢弃上行发送（离线补发归 #18）");
             continue;
         };
-        for frame in frames {
-            if sender.send(frame).await.is_err() {
-                tracing::warn!("上行发送失败（会话已关闭）");
-                break;
-            }
+        if let Err(e) = stream_command(cmd, &nickname, &sender).await {
+            tracing::warn!(error = %e, "上行发送失败（通道关闭或内容非法）");
         }
     }
     tracing::debug!("上行命令通道关闭，命令泵退出");
 }
 
-/// 把一条上行命令翻译为协议帧序列（Event 元数据 + 内容帧，与教师广播对称）。
-async fn build_upload_frames(cmd: AgentCommand, nickname: &str) -> anyhow::Result<Vec<Frame>> {
+/// 把一条上行命令**流式**翻译为协议帧并立即发送。
+async fn stream_command(
+    cmd: AgentCommand,
+    nickname: &str,
+    tx: &mpsc::Sender<Frame>,
+) -> anyhow::Result<()> {
     let now = unix_now();
-    let mut frames = Vec::new();
     match cmd {
         AgentCommand::SendText { title, body } => {
             // PRD 10.3：标题/正文长度与合法性（发送端预检，host 侧再复检）
@@ -199,30 +196,17 @@ async fn build_upload_frames(cmd: AgentCommand, nickname: &str) -> anyhow::Resul
             let bytes = body.as_bytes();
             let sha = sha256_bytes_hex(bytes);
             let item_id = uuid::Uuid::new_v4().to_string();
-            frames.push(Frame::Event(Event {
-                event_id: format!("up-{item_id}"),
-                kind: EventKind::Upsert,
-                item: ShareItem {
-                    id: item_id.clone(),
-                    kind: ItemKind::Text,
-                    owner_id: nickname.into(),
-                    owner_role: Role::Student,
-                    audience: Audience::Teacher,
-                    title: title.clone(),
-                    size: body.chars().count() as u64,
-                    sha256: None,
-                    rel_path: None,
-                    created_at: now,
-                    updated_at: now,
-                    version: 1,
-                    deleted: false,
-                    sync_state: SyncState::PendingSync,
-                },
-                new_name: None,
-                acked_by: None,
-                ts: now,
-            }));
-            push_content_frames(&mut frames, &item_id, &title, bytes, &sha);
+            let ev = upload_event(
+                nickname,
+                &item_id,
+                ItemKind::Text,
+                &title,
+                body.chars().count() as u64,
+                None,
+                now,
+            );
+            send_frame(tx, Frame::Event(ev)).await?;
+            send_content(tx, &item_id, &title, bytes, &sha).await?;
         }
         AgentCommand::SendFiles { paths } => {
             if paths.is_empty() {
@@ -249,62 +233,103 @@ async fn build_upload_frames(cmd: AgentCommand, nickname: &str) -> anyhow::Resul
                 let bytes = tokio::fs::read(&path).await?;
                 let sha = sha256_bytes_hex(&bytes);
                 let item_id = uuid::Uuid::new_v4().to_string();
-                frames.push(Frame::Event(Event {
-                    event_id: format!("up-{item_id}"),
-                    kind: EventKind::Upsert,
-                    item: ShareItem {
-                        id: item_id.clone(),
-                        kind: ItemKind::File,
-                        owner_id: nickname.into(),
-                        owner_role: Role::Student,
-                        audience: Audience::Teacher,
-                        title: title.clone(),
-                        size: bytes.len() as u64,
-                        sha256: Some(sha.clone()),
-                        rel_path: None,
-                        created_at: now,
-                        updated_at: now,
-                        version: 1,
-                        deleted: false,
-                        sync_state: SyncState::PendingSync,
-                    },
-                    new_name: None,
-                    acked_by: None,
-                    ts: now,
-                }));
-                push_content_frames(&mut frames, &item_id, &title, &bytes, &sha);
+                let ev = upload_event(
+                    nickname,
+                    &item_id,
+                    ItemKind::File,
+                    &title,
+                    bytes.len() as u64,
+                    Some(sha.clone()),
+                    now,
+                );
+                send_frame(tx, Frame::Event(ev)).await?;
+                send_content(tx, &item_id, &title, &bytes, &sha).await?;
+                // bytes 在此 drop：单文件峰值释放后再读下一个（流式语义）
             }
         }
     }
-    Ok(frames)
+    Ok(())
 }
 
-/// 内容帧序列：FileHeader → 1MB FileChunk × N → FileEnd。
-fn push_content_frames(
-    frames: &mut Vec<Frame>,
+/// 构造学员上行事件（owner=本机昵称；host 以会话身份权威校验，#94 契约）。
+fn upload_event(
+    nickname: &str,
+    item_id: &str,
+    kind: ItemKind,
+    title: &str,
+    size: u64,
+    sha256: Option<String>,
+    now: i64,
+) -> Event {
+    Event {
+        event_id: format!("up-{item_id}"),
+        kind: EventKind::Upsert,
+        item: ShareItem {
+            id: item_id.to_string(),
+            kind,
+            owner_id: nickname.to_string(),
+            owner_role: Role::Student,
+            audience: Audience::Teacher,
+            title: title.to_string(),
+            size,
+            sha256,
+            rel_path: None,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::PendingSync,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: now,
+    }
+}
+
+async fn send_frame(tx: &mpsc::Sender<Frame>, frame: Frame) -> anyhow::Result<()> {
+    tx.send(frame)
+        .await
+        .map_err(|_| anyhow::anyhow!("上行通道已关闭"))
+}
+
+/// 内容帧序列：FileHeader → 1MB FileChunk × N → FileEnd（逐帧发送，不累计）。
+async fn send_content(
+    tx: &mpsc::Sender<Frame>,
     item_id: &str,
     file_name: &str,
     bytes: &[u8],
     sha: &str,
-) {
-    frames.push(Frame::FileHeader(FileHeader {
-        item_id: item_id.into(),
-        file_name: file_name.into(),
-        size: bytes.len() as u64,
-        sha256: sha.into(),
-    }));
-    for (seq, part) in bytes.chunks(classroom_protocol::CHUNK_SIZE).enumerate() {
-        frames.push(Frame::FileChunk(FileChunk {
+) -> anyhow::Result<()> {
+    send_frame(
+        tx,
+        Frame::FileHeader(FileHeader {
             item_id: item_id.into(),
-            seq: seq as u64,
-            bytes: part.to_vec(),
-        }));
+            file_name: file_name.into(),
+            size: bytes.len() as u64,
+            sha256: sha.into(),
+        }),
+    )
+    .await?;
+    for (seq, part) in bytes.chunks(classroom_protocol::CHUNK_SIZE).enumerate() {
+        send_frame(
+            tx,
+            Frame::FileChunk(FileChunk {
+                item_id: item_id.into(),
+                seq: seq as u64,
+                bytes: part.to_vec(),
+            }),
+        )
+        .await?;
     }
-    frames.push(Frame::FileEnd(FileEnd {
-        item_id: item_id.into(),
-    }));
+    send_frame(
+        tx,
+        Frame::FileEnd(FileEnd {
+            item_id: item_id.into(),
+        }),
+    )
+    .await?;
+    Ok(())
 }
-
 fn sha256_bytes_hex(bytes: &[u8]) -> String {
     to_hex(&Sha256::digest(bytes))
 }
@@ -360,8 +385,9 @@ async fn connect_loop(
 ) -> anyhow::Result<()> {
     let mut backoff = Duration::from_secs(1);
     loop {
+        // 会话结束时的 Disconnected 由 agent_session 内部发出（先于清理
+        // uplink，见其中注释）——此处不再重复通知，避免 svc 收到双份状态变更。
         agent_session(cfg, store, addr, notify, uplink).await?;
-        let _ = notify.send(AgentEvent::Disconnected).await;
         tracing::info!(retry_in = ?backoff, %addr, "与教师机断开，稍后自动重连");
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -407,7 +433,11 @@ async fn agent_session(
     let session_cfg = ClientSessionConfig::new(addr, hello).with_outbound(out_rx);
 
     let result = run_client_session(session_cfg, handler).await;
-    // 会话结束：清空上行端点（命令泵将判定「未连接」并丢弃/告警）
+    // M2 #104 评审（顺序修正）：**先通知 Disconnected（svc 状态先变），再清
+    // 上行端点**——原顺序会在两者之间留下窗口：svc 仍认为「已连接」→ 对
+    // GUI 返回 Ok，而命令泵已看到 uplink=None 丢弃命令（静默成功）。先通知
+    // 可保证 svc 一旦对外说「未连接」，命令泵必然也已拒绝。
+    let _ = notify.send(AgentEvent::Disconnected).await;
     *uplink.lock().unwrap() = None;
     let end = match result {
         Ok(end) => end,
