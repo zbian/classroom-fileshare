@@ -164,6 +164,7 @@ pub async fn run_agent_with_commands(
         joined.clone(),
         epoch.clone(),
         sent.clone(),
+        store.clone(),
     ));
     // M2 #18：补发泵——连接可用时按操作时间顺序补做离线操作（失败退避，
     // 单条失败不阻塞队列；PRD 6.8）
@@ -176,6 +177,7 @@ pub async fn run_agent_with_commands(
         joined.clone(),
         epoch.clone(),
         sent.clone(),
+        store.clone(),
     ));
 
     if let Some(addr) = cfg.manual_addr {
@@ -233,11 +235,12 @@ async fn command_pump(
     joined: Arc<AtomicBool>,
     epoch: Arc<AtomicU64>,
     sent: SentTracker,
+    store: Arc<Mutex<Store>>,
 ) {
     while let Some(cmd) = commands.recv().await {
         // M2 #18：先落盘（PendingOp 持久化，断电不丢；PRD 6.8/9.2），
         // 再尝试立即发送；成功后从队列移除，失败留给补发泵
-        let ops = match prepare_ops(cmd, &data_root).await {
+        let ops = match prepare_ops(cmd, &data_root, &store, &nickname).await {
             Ok(ops) => ops,
             Err(e) => {
                 tracing::warn!(error = %e, "上行内容准备失败（未入队）");
@@ -258,7 +261,11 @@ async fn command_pump(
         // 标记成功。
         let session_ready = joined.load(Ordering::SeqCst) && uplink.lock().unwrap().is_some();
         let cur_epoch = epoch.load(Ordering::SeqCst);
-        confirm_sent(&pending, &sent, session_ready, cur_epoch);
+        let confirmed = confirm_sent(&pending, &sent, session_ready, cur_epoch);
+        if confirmed > 0 {
+            // M2 #128：出队后必须补报队列长度（否则 GUI pending_count 不归零）
+            notify_pending(&notify, &pending).await;
+        }
 
         if !session_ready {
             tracing::info!(
@@ -275,6 +282,8 @@ async fn command_pump(
         for op in ops {
             match stream_op(&op, &data_root, &nickname, &sender).await {
                 Ok(()) => {
+                    // M2 #121：发送成功后本地落库（「我共享的」可见）
+                    record_local_submission(&store, &op, &data_root, &nickname, &notify).await;
                     sent.lock().unwrap().insert(op.id.clone(), cur_epoch);
                     tracing::info!(op_id = %op.id, epoch = cur_epoch, "上行发送完成，待下一轮确认");
                 }
@@ -291,12 +300,15 @@ async fn command_pump(
 
 /// E15（#123）确认出队：仅当会话就绪且 `sent` 标记的 epoch 与当前会话一致
 /// 时把条目移出队列；否则清除标记（条目保留，由补发泵重发）。
+///
+/// 返回值 = 本次**确认出队**的条目数（M2 #128：>0 时调用方需补报
+/// `PendingOpsChanged`，否则补发完成后 `pending_count` 不会归零）。
 fn confirm_sent(
     pending: &Arc<Mutex<PendingQueue>>,
     sent: &SentTracker,
     session_ready: bool,
     cur_epoch: u64,
-) {
+) -> usize {
     let mut sent_map = sent.lock().unwrap();
     if !session_ready {
         // 会话不可用：所有待确认项重新排队（内容仍在，等待重发）
@@ -304,13 +316,14 @@ fn confirm_sent(
             tracing::info!(count = sent_map.len(), "会话不可用，已发送待确认项退回队列");
             sent_map.clear();
         }
-        return;
+        return 0;
     }
     let confirmed: Vec<String> = sent_map
         .iter()
         .filter(|(_, ep)| **ep == cur_epoch)
         .map(|(id, _)| id.clone())
         .collect();
+    let confirmed_count = confirmed.len();
     for id in confirmed {
         pending.lock().unwrap().complete(&id);
         sent_map.remove(&id);
@@ -318,15 +331,21 @@ fn confirm_sent(
     }
     // 旧会话（epoch 不同）的标记：清除，下轮重发
     sent_map.retain(|_, ep| *ep == cur_epoch);
+    confirmed_count
 }
 
 /// 把一条命令拆成待发操作并在 `data_root/pending/` 落盘内容（PRD 9.2 本地缓存）。
+///
+/// M2 #121：同时解析**本地条目身份**（item_id/version）——同名已有条目 →
+/// 复用其 id + version+1，保证学员本地「我共享的」与教师端 id/version 一致。
 ///
 /// - 文本：`validate_text` 预检（PRD 10.3），内容 = 正文 UTF-8 字节
 /// - 文件：≤100MB（E10）+ 风险类型（PRD 5.3）预检，内容 = 文件字节
 async fn prepare_ops(
     cmd: AgentCommand,
     data_root: &std::path::Path,
+    store: &Arc<Mutex<Store>>,
+    nickname: &str,
 ) -> anyhow::Result<Vec<PendingOp>> {
     let dir = pending::pending_dir(data_root);
     tokio::fs::create_dir_all(&dir).await?;
@@ -335,13 +354,15 @@ async fn prepare_ops(
     match cmd {
         AgentCommand::SendText { title, body } => {
             classroom_protocol::validate_text(&title, &body)?;
-            let bytes = body.as_bytes().to_vec();
+            let (item_id, version) = resolve_identity(store, nickname, &title);
             ops.push(write_pending_content(
                 data_root,
                 PendingKind::Text,
                 &title,
-                bytes,
+                body.as_bytes().to_vec(),
                 now,
+                item_id,
+                version,
             )?);
         }
         AgentCommand::SendFiles { paths } => {
@@ -367,12 +388,15 @@ async fn prepare_ops(
                     anyhow::bail!("高风险文件类型不允许发送: {title}");
                 }
                 let bytes = tokio::fs::read(&path).await?;
+                let (item_id, version) = resolve_identity(store, nickname, &title);
                 ops.push(write_pending_content(
                     data_root,
                     PendingKind::File,
                     &title,
                     bytes,
                     now,
+                    item_id,
+                    version,
                 )?);
             }
         }
@@ -380,13 +404,30 @@ async fn prepare_ops(
     Ok(ops)
 }
 
+/// 解析本地条目身份（M2 #121）：同名（本机昵称 + `audience=Teacher`）已有
+/// 条目 → 复用其 `id` 与 `version+1`（与教师端同名覆盖语义一致）；否则新
+/// `id` + `version = 1`。
+fn resolve_identity(store: &Arc<Mutex<Store>>, nickname: &str, title: &str) -> (String, u64) {
+    match store
+        .lock()
+        .unwrap()
+        .find_by_scope(nickname, Audience::Teacher, title)
+    {
+        Ok(Some(old)) => (old.id, old.version + 1),
+        _ => (uuid::Uuid::new_v4().to_string(), 1),
+    }
+}
+
 /// 写入待发内容文件并构造队列项（`pending/<id>.bin`）。
+#[allow(clippy::too_many_arguments)]
 fn write_pending_content(
     data_root: &std::path::Path,
     kind: PendingKind,
     title: &str,
     bytes: Vec<u8>,
     now: i64,
+    item_id: String,
+    version: u64,
 ) -> anyhow::Result<PendingOp> {
     let id = uuid::Uuid::new_v4().to_string();
     let sha = sha256_bytes_hex(&bytes);
@@ -394,6 +435,8 @@ fn write_pending_content(
     std::fs::write(data_root.join(&content_rel), &bytes)?;
     Ok(PendingOp {
         id,
+        item_id,
+        version,
         kind,
         title: title.to_string(),
         content_rel,
@@ -430,7 +473,7 @@ async fn stream_op(
     let sha = op.sha256.clone();
     let ev = upload_event(
         nickname,
-        &op.id,
+        &op.item_id,
         kind,
         &op.title,
         size,
@@ -438,10 +481,11 @@ async fn stream_op(
             PendingKind::File => Some(sha.clone()),
             PendingKind::Text => None,
         },
+        op.version,
         now,
     );
     send_frame(tx, Frame::Event(ev)).await?;
-    send_content(tx, &op.id, &op.title, &bytes, &sha).await
+    send_content(tx, &op.item_id, &op.title, &bytes, &sha).await
 }
 
 /// 补发泵（M2 #18，PRD 6.8）：连接可用时按**操作时间顺序**补发到期项；
@@ -460,6 +504,7 @@ async fn resend_pump(
     joined: Arc<AtomicBool>,
     epoch: Arc<AtomicU64>,
     sent: SentTracker,
+    store: Arc<Mutex<Store>>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -468,7 +513,11 @@ async fn resend_pump(
         let session_ready = joined.load(Ordering::SeqCst) && uplink.lock().unwrap().is_some();
         let cur_epoch = epoch.load(Ordering::SeqCst);
         // 先确认上轮发送（会话就绪且 epoch 未变才出队）
-        confirm_sent(&pending, &sent, session_ready, cur_epoch);
+        let confirmed = confirm_sent(&pending, &sent, session_ready, cur_epoch);
+        if confirmed > 0 {
+            // M2 #128：出队后必须补报队列长度（否则 GUI pending_count 不归零）
+            notify_pending(&notify, &pending).await;
+        }
         if !session_ready {
             continue; // 未 Joined：保持队列，等会话就绪
         }
@@ -483,6 +532,8 @@ async fn resend_pump(
             }
             match stream_op(&op, &data_root, &nickname, &sender).await {
                 Ok(()) => {
+                    // M2 #121：补发送成功同样本地落库（「我共享的」可见）
+                    record_local_submission(&store, &op, &data_root, &nickname, &notify).await;
                     sent.lock().unwrap().insert(op.id.clone(), cur_epoch);
                     tracing::info!(
                         op_id = %op.id,
@@ -502,6 +553,62 @@ async fn resend_pump(
     }
 }
 
+/// 发送成功后本地落库（M2 #121，PRD 6.x「我共享的」）：`id/version` 与上行
+/// Event 一致（`op.item_id`/`op.version`），初始 `PendingSync`；host
+/// `FileAck{sha256_ok:true}` 到达后置 `Synced`（见 `on_frame` 的 FileAck 分支）。
+async fn record_local_submission(
+    store: &Arc<Mutex<Store>>,
+    op: &PendingOp,
+    data_root: &std::path::Path,
+    nickname: &str,
+    notify: &mpsc::Sender<AgentEvent>,
+) {
+    let content = match tokio::fs::read(data_root.join(&op.content_rel)).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(op_id = %op.id, error = %e, "本地落库读取内容失败");
+            return;
+        }
+    };
+    let now = unix_now();
+    let (kind, size, sha) = match op.kind {
+        PendingKind::Text => {
+            // PRD 3.5：文本 size = 字符数
+            let body = String::from_utf8_lossy(&content);
+            (ItemKind::Text, body.chars().count() as u64, None)
+        }
+        PendingKind::File => (
+            ItemKind::File,
+            content.len() as u64,
+            Some(op.sha256.clone()),
+        ),
+    };
+    let result = store.lock().unwrap().put_entry_with_id(
+        &op.item_id,
+        nickname,
+        Role::Student,
+        Audience::Teacher,
+        &op.title,
+        kind,
+        &content,
+        size,
+        sha.as_deref(),
+        op.version,
+        SyncState::PendingSync,
+        now,
+    );
+    match result {
+        Ok(item) => {
+            tracing::info!(
+                item_id = %item.id,
+                version = item.version,
+                "本地落库（PendingSync，等待教师确认）"
+            );
+            let _ = notify.send(AgentEvent::Received(item)).await;
+        }
+        Err(e) => tracing::warn!(item_id = %op.item_id, error = %e, "本地落库失败"),
+    }
+}
 /// 推送待发队列状态（GUI 状态条「待发送 N 条」）。
 async fn notify_pending(notify: &mpsc::Sender<AgentEvent>, pending: &Arc<Mutex<PendingQueue>>) {
     let (count, bytes) = {
@@ -529,6 +636,7 @@ async fn check_cache_threshold(
     }
 }
 /// 构造学员上行事件（owner=本机昵称；host 以会话身份权威校验，#94 契约）。
+#[allow(clippy::too_many_arguments)]
 fn upload_event(
     nickname: &str,
     item_id: &str,
@@ -536,6 +644,7 @@ fn upload_event(
     title: &str,
     size: u64,
     sha256: Option<String>,
+    version: u64,
     now: i64,
 ) -> Event {
     Event {
@@ -553,7 +662,7 @@ fn upload_event(
             rel_path: None,
             created_at: now,
             updated_at: now,
-            version: 1,
+            version,
             deleted: false,
             sync_state: SyncState::PendingSync,
             retry_count: 0,
@@ -837,6 +946,30 @@ impl ClientHandler for AgentSessionHandler {
                     }
                 }
                 let _ = self.notify.send(AgentEvent::Synced).await;
+            }
+            // M2 #121：host 对学员上传的确认 → 本地条目 PendingSync → Synced
+            Frame::FileAck(ack) => {
+                if ack.sha256_ok {
+                    let synced = self.store.lock().unwrap().mark_synced(&ack.item_id);
+                    match synced {
+                        Ok(Some(item)) => {
+                            tracing::info!(
+                                item_id = %item.id,
+                                "FileAck：本地提交已确认（Synced）"
+                            );
+                            let _ = self.notify.send(AgentEvent::Received(item)).await;
+                        }
+                        Ok(None) => {
+                            tracing::debug!(item_id = %ack.item_id, "FileAck 无对应本地条目")
+                        }
+                        Err(e) => tracing::warn!(error = %e, "FileAck 更新 Synced 失败"),
+                    }
+                } else {
+                    tracing::warn!(
+                        item_id = %ack.item_id,
+                        "FileAck 校验失败（本地条目保持 PendingSync）"
+                    );
+                }
             }
             other => tracing::debug!(frame = ?other, "agent 忽略该帧"),
         }

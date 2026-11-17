@@ -33,6 +33,12 @@ pub enum PendingKind {
 pub struct PendingOp {
     /// 操作 id（同时是内容文件名）。
     pub id: String,
+    /// 本地条目 id（与上行 Event 的 `item.id` 一致；M2 #121）。
+    #[serde(default)]
+    pub item_id: String,
+    /// 条目版本（与上行 Event 的 `item.version` 一致；M2 #121）。
+    #[serde(default = "default_version")]
+    pub version: u64,
     /// 类型。
     pub kind: PendingKind,
     /// 文本标题 / 文件名。
@@ -49,6 +55,11 @@ pub struct PendingOp {
     pub attempts: u32,
     /// 下次允许补发时间（退避）。
     pub next_at: i64,
+}
+
+/// 旧队列 JSON 兼容默认值（M2 #121 前持久化的条目无 item_id/version）。
+fn default_version() -> u64 {
+    1
 }
 
 /// 待发内容目录（`data_root/pending/`）。
@@ -209,6 +220,8 @@ mod tests {
     fn op(id: &str, created_at: i64) -> PendingOp {
         PendingOp {
             id: id.into(),
+            item_id: format!("item-{id}"),
+            version: 1,
             kind: PendingKind::Text,
             title: "作业".into(),
             content_rel: format!("pending/{id}.bin"),

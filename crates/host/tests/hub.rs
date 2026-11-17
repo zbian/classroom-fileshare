@@ -2139,3 +2139,350 @@ async fn rename_does_not_duplicate_entries() {
     }
     task.abort();
 }
+
+// ---------- M2 #121：学员提交本地落库（「我共享的」可见） ----------
+
+/// 打开 agent 本地库（只读用途的独立连接；WAL 允许多连接）。
+fn agent_store(root: &std::path::Path) -> Store {
+    Store::open(root).unwrap()
+}
+
+/// #121 用例 1：文本提交成功后本地可见——owner/role/audience/size 正确，
+/// **id 与教师端一致**，最终 `Synced`（host FileAck 后）。
+#[tokio::test]
+async fn student_submission_locally_stored_text() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "我的作业".into(),
+            body: "二次函数练习".into(),
+        })
+        .await
+        .expect("投递");
+    // 教师端入库
+    let host_item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(host_item.owner_role, Role::Student);
+    assert_eq!(host_item.audience, classroom_protocol::Audience::Teacher);
+
+    // 本地落库（乐观 PendingSync → FileAck 后 Synced）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let store = agent_store(&agent_root);
+        if let Some(local) = store
+            .list(ListFilter::default())
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == host_item.id)
+        {
+            assert_eq!(local.owner_id, "alice");
+            assert_eq!(local.owner_role, Role::Student);
+            assert_eq!(local.audience, classroom_protocol::Audience::Teacher);
+            assert_eq!(local.title, "我的作业");
+            // PRD 3.5：文本 size = 字符数
+            assert_eq!(local.size, "二次函数练习".chars().count() as u64);
+            assert_eq!(
+                local.version, host_item.version,
+                "本地与教师端 version 一致"
+            );
+            if local.sync_state == classroom_protocol::SyncState::Synced {
+                break;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "本地应落库并（FileAck 后）置 Synced；当前本地 store={:?} host_item={:?}",
+            agent_store(&agent_root)
+                .list(ListFilter::default())
+                .unwrap(),
+            host_item
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
+}
+
+/// #121 用例 2：文件提交成功后本地可见——sha256/size 正确、id 与教师端一致。
+#[tokio::test]
+async fn student_submission_locally_stored_file() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+    let src = tempfile::tempdir().unwrap();
+    let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let f = src.path().join("实验报告.pdf");
+    std::fs::write(&f, &payload).unwrap();
+    let expected_sha = classroom_store::sha256_file(&f).unwrap();
+
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendFiles { paths: vec![f] })
+        .await
+        .expect("投递");
+    let host_item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let store = agent_store(&agent_root);
+        if let Some(local) = store
+            .list(ListFilter::default())
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == host_item.id)
+        {
+            assert_eq!(local.kind, classroom_protocol::ItemKind::File);
+            assert_eq!(local.size, payload.len() as u64);
+            assert_eq!(
+                local.sha256.as_deref(),
+                Some(expected_sha.as_str()),
+                "本地 sha256 正确"
+            );
+            assert_eq!(local.version, host_item.version);
+            // 本地实体可打开
+            let body = store.file_body(&local).unwrap();
+            assert!(body.exists());
+            if local.sync_state == classroom_protocol::SyncState::Synced {
+                break;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "文件本地应落库并置 Synced"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
+}
+
+/// #121 用例 3：同名再次提交 → 本地同名覆盖（单条、version+1），
+/// 与教师端版本一致（id 不变）。
+#[tokio::test]
+async fn student_submission_same_name_overwrite_single() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "同名作业".into(),
+            body: "第一版".into(),
+        })
+        .await
+        .expect("投递");
+    let first = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "同名作业" => Some(i),
+        _ => None,
+    })
+    .await;
+    // 等本地首次落库
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while agent_store(&agent_root)
+        .list(ListFilter::default())
+        .unwrap()
+        .iter()
+        .all(|i| i.id != first.id)
+    {
+        assert!(tokio::time::Instant::now() < deadline, "首次本地落库超时");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 同名再发（新内容）
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "同名作业".into(),
+            body: "第二版".into(),
+        })
+        .await
+        .expect("投递");
+    let second = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "同名作业" && i.version > first.version => {
+            Some(i)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(second.id, first.id, "同名覆盖保持同一 id（不产生第二条）");
+    assert_eq!(second.version, first.version + 1, "教师端 version+1");
+
+    // 本地：单条、version+1
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let store = agent_store(&agent_root);
+        let mine: Vec<_> = store
+            .list(ListFilter::default())
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.owner_id == "alice")
+            .collect();
+        if mine.len() == 1 && mine[0].version == second.version {
+            assert_eq!(mine[0].id, first.id);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "本地应为单条且 version+1（实际: {:?}）",
+            mine
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    task.abort();
+}
+
+/// #121 用例 4：本地落库**持久化**——agent 重启（同 data_root）后条目仍在
+/// 「我共享的」可见（无需重连）。
+#[tokio::test]
+async fn student_submission_survives_agent_restart() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "持久化作业".into(),
+            body: "内容".into(),
+        })
+        .await
+        .expect("投递");
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "持久化作业" => Some(i),
+        _ => None,
+    })
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while agent_store(&agent_root)
+        .list(ListFilter::default())
+        .unwrap()
+        .iter()
+        .all(|i| i.id != item.id)
+    {
+        assert!(tokio::time::Instant::now() < deadline, "本地落库超时");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 「重启」：abort agent，重新打开本地库（无需重连）
+    task.abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let store = agent_store(&agent_root);
+    let after_restart: Vec<_> = store
+        .list(ListFilter::default())
+        .unwrap()
+        .into_iter()
+        .filter(|i| i.id == item.id)
+        .collect();
+    assert_eq!(after_restart.len(), 1, "重启后本地条目仍在");
+    assert_eq!(after_restart[0].title, "持久化作业");
+    assert_eq!(after_restart[0].owner_role, Role::Student);
+    assert_eq!(
+        after_restart[0].audience,
+        classroom_protocol::Audience::Teacher
+    );
+    // 正文可读
+    let body = store.file_body(&after_restart[0]).unwrap();
+    assert!(body.exists(), "重启后本地实体仍在");
+    drop(host);
+}
+// ---------- M2 #128（E16）：补发完成后 pending_count 归零 ----------
+
+/// #128：在线发送出队后 `PendingOpsChanged{count:0}`；**未就绪期间保持 N**
+/// （E15 语义不回归）；恢复送达后再次归零。
+#[tokio::test]
+async fn pending_count_resets_after_resend() {
+    let port = free_port();
+    let host_root = tempfile::tempdir().unwrap();
+    let host_data = host_root.path().to_path_buf();
+    let host = start_host_on(port, None, host_data.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, _dir, mut ev_rx) = start_real_agent_observed(port, "alice", dir).await;
+
+    // 1) 在线发送 1 条 → 出队后应上报 count=0（#128 核心）
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "在线一".into(),
+            body: "x".into(),
+        })
+        .await
+        .expect("投递");
+    let mut saw_zero = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), ev_rx.recv()).await {
+            Ok(Some(classroom_agent::AgentEvent::PendingOpsChanged { count: 0, .. })) => {
+                saw_zero = true;
+                break;
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert!(saw_zero, "#128：在线发送出队后应上报 count=0");
+
+    // 2) 停教师 → 等 Disconnected → 提交 1 条（未就绪：count 保持 1）
+    host.cmd.send(HostCommand::Shutdown).await.unwrap();
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(5), ev_rx.recv())
+            .await
+            .expect("等待 Disconnected 超时")
+            .expect("agent 事件通道关闭");
+        if matches!(ev, classroom_agent::AgentEvent::Disconnected) {
+            break;
+        }
+    }
+    cmd_tx
+        .send(classroom_agent::AgentCommand::SendText {
+            title: "离线一".into(),
+            body: "y".into(),
+        })
+        .await
+        .expect("断网投递");
+    let mut saw_pending = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), ev_rx.recv()).await {
+            Ok(Some(classroom_agent::AgentEvent::PendingOpsChanged { count, .. }))
+                if count >= 1 =>
+            {
+                saw_pending = true;
+                break;
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert!(saw_pending, "E15：未就绪期间 pending_count 应保持 ≥1");
+
+    // 3) 教师恢复 → 送达 → count 再次归零
+    let mut _host2 = start_host_on(port, None, host_data).await;
+    let mut saw_zero_after = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), ev_rx.recv()).await {
+            Ok(Some(classroom_agent::AgentEvent::PendingOpsChanged { count: 0, .. })) => {
+                saw_zero_after = true;
+                break;
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert!(
+        saw_zero_after,
+        "#128：补发完成后 pending_count 应归零（实际未收到 count=0）"
+    );
+    task.abort();
+}
