@@ -71,7 +71,8 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 
 - M1 交付形态：仓库 release 产物 + Task 13（issue #14）的 `scripts/install.ps1`（注册服务 + SCM failure 自动重启 5s/5s/30s + 防火墙（TCP 47821 仅 teacher；UDP 47820 两角色，E1）+ GUI HKCU Run）与 `uninstall.ps1`。NSIS 安装包属 M3。
 - 已确认安装参数（e42dbd5，QA 已读脚本核对）：
-  - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> [-ManualAddr <ip>:47821] -GuiExe <…>`（对应 RK-04 备用手动地址）。
+  - 教师：`install.ps1 -Mode teacher -Room <房间码> [-Pin <PIN>] -GuiExe <classroom-gui.exe>`；学员：`install.ps1 -Mode student -Nickname <昵称> -GuiExe <…>`。
+  - ★**学员安装不传 `-Room`（E9 方案 b，2026-11-17 口径变更）**：学员端 `svc.json` 的 `room_code=""` → `room_filter=None` → **自动连接首个发现的教师机**，对齐 PRD 2.4「学生 1 步（设昵称）」与 3.1 自动发现。**多教室场景**才需传 `-Room` 且与教师端一致（install 摘要行会提示）。`[-ManualAddr <ip>:47821]` 仅作 RK-04 备用（广播被交换机限制时）。
   - ★**`-UserSid`（E7 令牌分发，#49）**：服务模式下 GUI 需以登录用户身份读取 `ipc.token`，故 install.ps1 须写入 `user_sid`（`svc.json`）→ 令牌 ACL 双授予「服务账号 + 主登录用户」。缺省时自动探测活动控制台会话用户（`quser` → `Win32_UserAccount` 取 SID）；探测不到（裸机镜像未登录）则 WARN 并**跳过**，待首次登录后由服务 SessionChange 自愈。**验收要求**：安装须以目标登录用户身份执行（或显式传 `-UserSid S-1-…`），并核验令牌 ACL 同时含服务账号与该登录用户。
   - 服务名 `ClassShareSvc`、服务进程 `classroom-svc.exe`、GUI 进程 `classroom-gui.exe`（以打包产物名为准）。
   - **数据根（管理员安装）= `%PROGRAMDATA%\ClassShare\data`**（svc.json 在 `%PROGRAMDATA%\ClassShare\svc.json`）；日志 `<数据根>\logs\svc.log`。降级安装（无管理员）数据根 = `%LOCALAPPDATA%\ClassShare\data`。GUI 侧 `gui.json` / `profile.json` 仍在 `%APPDATA%\ClassShare\`。
@@ -124,9 +125,9 @@ Get-NetFirewallRule -DisplayName "*ClassShare*" -ErrorAction SilentlyContinue  #
 | **E5** | `applied` 锚点仅含 `item_id=` + `version=`，**缺 `file=` / `size=`**（与 #14 约定格式 `item_id=/file=/size=` 的轻微偏差；Δ 按 item_id 对齐，不影响判定） | **Lead 定性（2026-11-16）：接受偏差，不修码**——applied 行不含 file/size 属约定，证据表以 item_id 为键，file/size 为冗余 | 已在 issue #14 评论留痕（applied 行不含 file/size 属约定 + 三条锚点真实行格式 + 解析口径） | **已关闭（约定达成）** |
 | **E6** | 文本条目的 `size` 两侧语义不一致：teacher `broadcast size=9`（正文字符数，符 PRD 3.5）vs agent `received size=27`（文本正文字节数 UTF-8）；文件条目两侧均为字节，无此问题 | **Lead 定性（2026-11-16）：一般，派单修复**——agent `received` 锚点 `size=` 改用 `ev.item.size`，对齐 PRD 3.5「文本为字符数」；PR #48 → **已合并 main（3603f23）** | 修复后：文本条目的 teacher/agent `size` 两侧相等（均为字符数）；QA 重跑 §3.9 演练核对 | **已闭环**：QA 复验通过（2026-11-16，PR #48）——真实日志实测文本条目两侧均 `size=9`（字符数），文件条目两侧均 3145728（字节）；上游测试 EXIT=0 全绿；PR 新增断言把「字符数 5 / 正文实体 UTF-8 15 字节」固化。**已于 3603f23 合入 main** |
 | **E7** | **IPC 令牌 ACL 限权从未生效（PRD 9.4 本地通信鉴权形同失效）**：`crates/ipc/src/token.rs` 的 `restrict_acl_to_current_user` 调用 `icacls <path> /inheritance:r "<USERNAME>:(R,W)"`——**缺 `/grant`**，icacls 报 `Invalid parameter "/inheritance:r"` 并返回 **code=87**（QA 已用真实服务二进制复现，服务日志同款告警）；令牌文件继承权限从未被移除（ACL 仍带 `(I)`）。实测正确写法 `icacls <path> /inheritance:r /grant "*<SID>:(R,W)"` → **EXIT=0 且限权生效**（ACL 仅当前用户 RW）。叠加：命名管道经 tokio `ServerOptions` 创建、**未设显式 DACL**（无第二道屏障）；服务模式数据根 `%PROGRAMDATA%\ClassShare\data` 继承 `BUILTIN\Users:(RX)`（QA 实测新建子目录同样继承）→ **任何本地非管理员用户可读 ipc.token**，再连管道并出示令牌即通过握手，取得 GUI 同等 IPC 权限（列/发/删课堂数据）。降级（`--console`）模式数据根在 `%LOCALAPPDATA%`（天然用户私有），暴露面低 | **issue #49**（P0 / type/bug / area/ipc）：① `/grant` + **SID**；② 失败**升级为启动错误（fail closed，Lead 裁定）**；③ 真实 icacls 单测；④ 管道 DACL 残余风险记录进 #14（M2 纵深防御）。**PR #50（9c1797d）** 另用 `CommandExt::raw_arg` 规避 std `arg()` 给含 `:` 参数加引号导致的第二层根因；追加**存量令牌幂等重限权**、`user_sid` 双授予（svc.json / install.ps1 自动探测+`-UserSid` / SessionChange 登录自愈）、`--console` 打印 `{e}`。**残余加固 `/remove:g`（清理非预期显式 ACE）经 Lead 裁定列为 M2 备案**（低危：显式 ACE 非旧版产生形态；令牌限权 + 双授予已闭合 M1 暴露面）——**注：windows-rs API 路径（7083a5f）因全量重建 DACL 已连显式 ACE 一并清除，该备案项已被覆盖，建议撤销（待 Lead 确认，见 §3.9.3）**——待并入 #14 的 M2 残余风险清单 | ① `icacls <数据根>\ipc.token` 退出码 **0** 且 ACL 仅当前用户（**无 `(I)`**）；② 服务模式下令牌文件对其他用户不可读；③ 管道连接仍须令牌握手通过；④ 限权失败时服务**拒绝启动**（fail closed）而非降级放行；⑤ **存量令牌必须重新限权**（升级场景） | **QA 复验 5/5 通过**（实测记录见 §3.9.2）；**待 #50 合并后关闭**（关闭证据已满足）；残余 `/remove:g` 加固 → M2 备案（Lead 裁定 2026-11-16） |
+| **E9** | **学员端无 beacon 自动发现/自动连接**（agent 原仅支持 `manual_addr` 直连）：违反 PRD 2.4「学生 1 步（设昵称）」与 3.1「学员端自动发现并展示可加入的教师机」，属 P0 缺口（reviewer 全检发现） | **已修复并合入 main（e134b76 / PR #69）**，采用**方案 b**：`svc.json.room_code=""` → `room_filter=None` → **自动连接首个发现的教师机**；学员安装**不再需要 `-Room`**（多教室场景才传且须与教师一致，install 摘要行提示）；`manual_addr` 降为 RK-04 备用 | ① 未传 `-Room` 安装的学员机能自动发现并加入（单教室 1 步入班）；② 多教室/多教师场景传 `-Room` 后只连房间码匹配者；③ 无教师可发现时不崩溃、可重连 | **已修复 + 已合入（e134b76）**；QA 单机以 agent 自动发现链路复核（§3.9.4），**双机真实广播链路仍延后** |
 
 ### 3.8.1 QA 静态复核记录
-
 | 检查点 | 结论 |
 | --- | --- |
 | student 模式建 UDP 47820 入站规则 | ✓ 两角色均建，且 `program="$svcExe"` 程序限定 |
@@ -247,7 +248,7 @@ E7 的 icacls 路线在 **GHA runner 上「退出 0 + 自报成功但 ACL 未变
 2. 观察窗口：房间码已自动生成（记下其值与格式）；PIN 开关保持**关闭**；「允许学员自动发现」默认开启（截图）。
 3. 点击「开始上课」。此刻记 T0（教师机录屏 + 服务日志 Started 事件时间戳）。
 4. 学员机 A：双击「课堂共享」→ 首次运行弹出设置昵称窗口（B1），观察教师机与房间码出现在发现列表中，记 T1（T1−T0 ≤ 3s，FR-T-01）。
-5. 学员机 A：输入昵称「张三」→ 点击加入。
+5. 学员机 A：输入昵称「张三」→ 点击加入（**单选场景无需选房间/输房间码**：E9 起 `room_code=""` → 自动连接首个发现的教师机，对齐 PRD 2.4「学生 1 步」；多教室场景才在安装时用 `-Room` 限定）。
 6. 学员机 A 主界面状态区显示「已连接」与房间码（B3，截图）；教师机主界面在线人数 +1、服务状态正常（截图）。—— **TC-01 主判据完成点**
 7. 学员机 B（FR 扩展）：同样进入昵称窗口，输入相同昵称「张三」加入 → 预期提示「该昵称已被使用，请换一个」（8.3 文案）且无法进入；改为「李四」后可进入。
 8. （可选轮次，FR 扩展）教师重建房间并开启 PIN：学员用错误 PIN 加入 → 拒绝；正确 PIN → 加入。
@@ -597,6 +598,7 @@ PRD TC-02 与 9.1 要求 30 台，M1 现实可用机器有限。备选与决策�
 ```powershell
 # 安装/卸载（管理员；-GuiExe 必传，否则 GUI 登录自启不注册）
 .\scripts\install.ps1 -Mode teacher -Room XK-204 -Pin 9527 -GuiExe <classroom-gui.exe>
+# 学员：不传 -Room（E9 默认自动发现首个教师机）；多教室时才传 -Room 与教师一致
 .\scripts\install.ps1 -Mode student -Nickname alice -GuiExe <classroom-gui.exe>
 .\scripts\uninstall.ps1
 Get-Content "$env:ProgramData\ClassShare\svc.json"    # 服务配置（mode/room_code/pin/nickname/manual_addr/tcp_port）
