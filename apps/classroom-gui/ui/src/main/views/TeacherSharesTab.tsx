@@ -13,8 +13,17 @@ function stateChip(s: SyncState, isNew: boolean): { cls: string; label: string }
       return { cls: 'ok', label: '已下载' }
     case 'PendingSync':
       return { cls: 'warn', label: '下载中' }
+    case 'PendingSend':
+      return { cls: 'warn', label: '待发送' }
+    case 'DeleteDeferred':
+      return { cls: 'warn', label: '延迟删除' }
+    case 'RetryLocked':
+      return { cls: 'err', label: '被占用重试' }
+    case 'Failed':
+      return { cls: 'err', label: '失败' }
     default:
-      return { cls: 'warn', label: s }
+      // 未知枚举不裸露英文（PRD 4.6 状态表达：文字标签 + 色块）
+      return { cls: 'warn', label: '同步中' }
   }
 }
 

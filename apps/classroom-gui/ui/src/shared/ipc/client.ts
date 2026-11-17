@@ -254,6 +254,23 @@ export class MockGuiClient implements GuiClient {
 
   subscribe(h: NotifyHandler): () => void {
     this.handlers.add(h)
+    // mock 模式补一条 Discovered（B1 房间列表来源；真实模式由服务 beacon 发现推送）
+    setTimeout(
+      () =>
+        h({
+          t: 'Discovered',
+          beacons: [
+            {
+              protocol_version: 1,
+              room: this.room,
+              tcp_port: 47821,
+              pin_required: true,
+              host_name: '教师机',
+            },
+          ],
+        }),
+      0,
+    )
     return () => this.handlers.delete(h)
   }
 

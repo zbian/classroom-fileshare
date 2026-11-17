@@ -22,6 +22,8 @@ interface MainStore {
   role: Role
   /** 学员已完成首次昵称（B1 关闭条件） */
   nicknameDone: boolean
+  /** B1 自动发现的教师机房间（SvcNotify::Discovered 消费；TC-01 步骤 4） */
+  discovered: { room: string; host: string; pinRequired: boolean }[]
   items: UiShareItem[]
   status: ServiceStatus | null
   serviceDown: boolean
@@ -65,6 +67,7 @@ export const useMainStore = create<MainStore>((set, get) => ({
   client: getClient(),
   role: 'unset',
   nicknameDone: false,
+  discovered: [],
   items: [],
   status: null,
   serviceDown: false,
@@ -229,9 +232,18 @@ export const useMainStore = create<MainStore>((set, get) => ({
       }
       case 'ShareReceived':
       case 'TransferProgress':
-      case 'Discovered':
-        // T12 接进度条 / B1 发现列表；当前不消费
+        // T12 接进度条；当前不消费
         break
+      case 'Discovered': {
+        // B1 自动发现房间列表（TC-01 步骤 4：须显示真实房间码，不得硬编码）
+        const rooms = n.beacons.map((b) => ({
+          room: b.room,
+          host: b.host_name,
+          pinRequired: b.pin_required,
+        }))
+        set({ discovered: rooms })
+        break
+      }
     }
   },
 }))

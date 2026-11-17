@@ -182,10 +182,19 @@ function Toolbar() {
       </select>
       <span className="spacer" />
       {role === 'student' ? <span className="chip warn">发送对象：仅教师</span> : null}
-      <button className="btn" disabled title="T12 接文件选择器">
+      <button
+        className="btn"
+        disabled
+        title={role === 'student' ? 'M2（FR-S-03 学员文件回传）' : 'T12 接文件选择器'}
+      >
         + 添加文件
       </button>
-      <button className="btn pri" onClick={() => openDialog('pasteText')}>
+      <button
+        className="btn pri"
+        disabled={role === 'student'}
+        title={role === 'student' ? 'M2（FR-S-02 学员文本回传）' : '粘贴剪贴板文本并共享'}
+        onClick={() => openDialog('pasteText')}
+      >
         + 粘贴文本
       </button>
       <button className="btn" disabled title="M2（rename 事件）">
@@ -193,8 +202,14 @@ function Toolbar() {
       </button>
       <button
         className="btn dg"
-        disabled={!selectedId}
-        title={selectedId ? '删除选中条目' : '先在列表选中一条'}
+        disabled={!selectedId || role === 'student'}
+        title={
+          role === 'student'
+            ? 'M2（FR-S-05 学员删除同步）'
+            : selectedId
+              ? '删除选中条目'
+              : '先在列表选中一条'
+        }
         onClick={() => selectedId && openDialog('deleteConfirm', selectedId)}
       >
         删除

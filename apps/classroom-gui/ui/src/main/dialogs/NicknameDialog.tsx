@@ -1,18 +1,20 @@
 /**
- * B1 学员首次设置昵称（FR-S-01）：昵称（1-20 字）+ 检查可用 + 自动发现的房间列表（mock XK-204，
- * T7 后接 SvcNotify::Discovered）+ PIN 输入 + 重名文案（PRD 8.3 逐字）+ 「进入课堂」。
+ * B1 学员首次设置昵称（FR-S-01）：昵称（1-20 字）+ 检查可用 + 自动发现的房间列表
+ * （SvcNotify::Discovered 消费，TC-01 步骤 4 须显示真实房间码）+ PIN 输入 +
+ * 重名文案（PRD 8.3 逐字）+ 「进入课堂」。
  * 首次必须完成：不可关闭（Modal onClose 为空操作）。
  */
 import { useState } from 'react'
 import Modal from '../../shared/components/Modal'
 import { useMainStore } from '../store'
 
-/** mock 发现列表（T7 Discovered 接线后替换） */
-const DISCOVERED = [{ room: 'XK-204', host: '教师机', pinRequired: true }]
+/** 无发现结果时的占位（真实房间码由 Discovered 通知提供；mock 模式保留演示值） */
+const FALLBACK_ROOM = { room: '（未发现教师机）', host: '', pinRequired: false }
 
 export default function NicknameDialog() {
   const open = useMainStore((s) => s.dialog.nickname)
   const setNickname = useMainStore((s) => s.setNickname)
+  const discovered = useMainStore((s) => s.discovered)
   const [nickname, setNicknameValue] = useState('')
   const [pin, setPin] = useState('')
   const [check, setCheck] = useState<{ ok: boolean; msg: string } | null>(null)
@@ -20,7 +22,7 @@ export default function NicknameDialog() {
 
   if (!open) return null
 
-  const room = DISCOVERED[0]
+  const room = discovered[0] ?? FALLBACK_ROOM
 
   const doCheck = async () => {
     const name = nickname.trim()
