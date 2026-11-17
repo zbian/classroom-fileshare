@@ -8,7 +8,7 @@
 | 基线 | `main @ 4c61750`（#124 E15 修复；**实测 183 passed**）|
 | 依据 | [PRD](../../../final_draft.md) 第 11 章 / 3.3 / 3.6 / 7.4 / 7.5；[M2 验收方案](M2-acceptance-plan.md) |
 | 跟踪 issue | #21（M2 验收）；关联 #16/#17/#18/#19/#20/#91 |
-| 状态 | TC-04/05 **后端+UI 通过**（#121 缺口）；TC-08 **后端+教师端 UI 通过**；**TC-09 通过（E15 已闭环，0/5 丢件）**；TC-07 教师侧通过 / 接收端待 #117；E14 已闭环；**E16（pending_count 不归零）待修** |
+| 状态 | TC-04/05 **后端+UI 通过**（#121 缺口）；TC-08 **后端+教师端 UI 通过**；**TC-09 通过（E15 已闭环）**；TC-07 教师侧通过 / 接收端待 #117；E14 已闭环；**#19 重命名/搜索后端通过（E17 静默失败待修）**；E16 待修 |
 
 > 判定原则沿用 M1：结论须可追溯到 PRD 用例编号/FR 与实际证据；需求真机的判据标注延后，不以代理结果替代。
 
@@ -208,6 +208,27 @@
 
 建议修复：`resend_pump` 在 `confirm_sent(...)` 之后（队列长度变化时）调用 `notify_pending()`；或每个 tick 固定上报一次。验证：补发完成后 `pending_count` 应归 0。
 
+### 3.8 #19 重命名与内容搜索（后端验收）
+
+基线 `main @ fa1c95e`（#126；**实测 190 passed**）。方法：隔离 teacher svc + 真实学员 agent；教师经真实 IPC `RenameItem` / `SendText` / `ListFilter{keyword}` 操作，学员端以**磁盘 + 索引 + 日志锚点**核验。证据 `evidence/M2/Rename-*`。
+
+| # | 判据 | 实测 | 判定 |
+| --- | --- | --- | --- |
+| 1 | 重命名同步 ≤2 s | 教师 `rename … version=2` @17:33:43.401969 → 学员 `rename … new_name=新名.bin` @17:33:43.411505，**Δ=10 ms** | ✅ |
+| 2 | 磁盘/索引/rel_path 同步 | 学员端 `原名.bin` 消失、`新名.bin` 出现；索引 `('新名.bin','teacher/新名.bin',0)` | ✅ |
+| 3 | 教师端结果 | `title=新名.bin version=2`、旧名不再出现 | ✅ |
+| 4 | 同名冲突不静默覆盖 | 服务端 `WARN 重命名失败 … error=名称已被占用: 冲突A.bin`；`冲突B.bin` 保持不变 | ✅（服务端语义正确，但见 E17 回复问题） |
+| 5 | 内容搜索：文本正文命中（标题不含词） | 文本标题「标题不含关键词」正文含「青花瓷」→ `list kw 青花瓷` **命中** | ✅ |
+| 6 | 内容搜索：文件正文不参与 | 文件「文件不含词.bin」正文含「青花瓷」→ **不命中** | ✅ |
+
+**E17（P2，静默失败）：教师操作走 fire-and-forget，失败对 GUI 不可见**
+
+现象：`RenameItem` 到已存在名称 → 服务端正确拒绝并记 WARN（`名称已被占用`），但 **IPC 返回 `REPLY ok`** → GUI 若按返回值提示会显示「重命名成功」，实际未生效。
+
+根因（代码定位）：`apps/classroom-svc/src/runtime.rs:267` `GuiRequest::RenameItem` → `dispatch_teacher(&host_cmd, HostCommand::Rename{..}, …)`，该路径只把命令 `try_send` 给 host 后即返回 `Ok`（host 实际执行结果不回传）。同类：`SendFiles`（E13 期间的失败 WARN 亦不可见）、`DeleteItem` 等教师操作同模式。
+
+建议：① 教师操作返回前 await host 结果（或 host 回执经 SvcNotify 映射为 GUI 提示）；② 最低限度：GUI 在操作后**校验列表状态**（如 rename 后比对标题）并在不一致时提示失败；③ 与 #114/S5 的 ack 聚合可统一考虑。
+
 ## 4 缺陷与观察项（M2 期间）
 
 | 编号 | 级别 | 内容 | 状态 |
@@ -216,6 +237,7 @@
 | **E14** | **P1（修复中，issue #119）** | **UI 数据范围错误（双向）**：`store.ts` 学员 `studentFilter("mine")` 返回 `owner:null`；教师分支 `filter={include_deleted:false}` **完全无 owner 过滤**。实测：教师「我共享的 (3)」= 1 条教师广播 + **2 条 alice 学生提交**（IPC `Submissions alice=2` 印证）；学员「我共享的」显示教师广播文件且状态「已送达」，而「教师共享 (0)」。该 Tab 行内有「编辑」、工具栏「删除」→ 教师可代改学生提交（PRD 5.5 禁止） | **issue #119 修复中**（dev-gui 独立小 PR）；建议 #16B 合并前合入。关联：**#121**（学员「我共享的」空内容缺口——#104 不落本地库，E14 修复后该 Tab「语义正确但为空」，属已知缺口） |
 | **E15** | **P1（已修复闭环）** | 离线补发在会话未就绪时被判成功 → 静默丢件（间歇→该窗口实测 5/5 丢）：先报「补发送成功」后 4s 才 `已加入房间`；断连瞬间提交被记「上行发送成功」未入队 | **#123 → PR #124 已合入**；QA 复验：丢件 **5/5 → 0/5**、`flush_before_join=0`、送达 5/5 ≤10s；TC-09 判据 6 通过 |
 | **E16** | **P2（待修）** | 补发完成后 `pending_count` 不归零：队列已空、教师已收到，状态条仍显示「待发送 2 条」（5 s 采样不变）。根因：`resend_pump` 在 `confirm_sent` 出队后未再 `notify_pending` | **待 Lead 开 issue**；建议出队后补一次 `notify_pending` |
+| **E17** | **P2（待修，静默失败）** | 教师操作 fire-and-forget：`RenameItem` 同名冲突被服务端拒绝（WARN `名称已被占用`），但 IPC 返回 `REPLY ok` → GUI 可能提示成功而实际未生效；`SendFiles`/`DeleteItem` 同模式 | **待 Lead 开 issue**；建议 await host 结果或 GUI 操作后校验状态 |
 | — | — | M2 执行中新发现缺陷（待填） | — |
 
 ## 5 延后项
