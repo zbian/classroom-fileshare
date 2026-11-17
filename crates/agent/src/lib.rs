@@ -11,6 +11,7 @@ pub mod pending;
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,13 @@ use classroom_protocol::{
 use classroom_store::{sha256_file, Store};
 
 use pending::{PendingKind, PendingOp, PendingQueue};
+
+/// E15（#123）：已发送待确认表——`op_id → 发送时所在的会话 epoch`。
+///
+/// 帧写入通道 ≠ host 已收到（无 ack，见 S5）：因此发送成功后**不出队**，
+/// 由下一次泵 tick 在「会话仍就绪且 epoch 未变」时确认出队；会话切换/断开
+/// 时清除标记并由补发泵重发（host 端事件幂等/同名覆盖保证不重复条目）。
+type SentTracker = Arc<Mutex<std::collections::HashMap<String, u64>>>;
 
 /// 学员端配置。
 pub struct AgentConfig {
@@ -141,6 +149,11 @@ pub async fn run_agent_with_commands(
     let uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>> = Arc::new(Mutex::new(None));
     // M2 #18：离线待发队列（持久化在 data_root/pending/；断电不丢）
     let pending = Arc::new(Mutex::new(PendingQueue::open(&cfg.data_root)));
+    // E15（#123）：会话就绪信号——仅 `Joined` 后为 true（net 层的 Joined
+    // 事件复用，不另造机制）；epoch 每次新会话 +1，用于「发送待确认」判定。
+    let joined = Arc::new(AtomicBool::new(false));
+    let epoch = Arc::new(AtomicU64::new(0));
+    let sent: SentTracker = Arc::new(Mutex::new(std::collections::HashMap::new()));
     tokio::spawn(command_pump(
         commands,
         uplink.clone(),
@@ -148,6 +161,9 @@ pub async fn run_agent_with_commands(
         notify.clone(),
         cfg.nickname.clone(),
         cfg.data_root.clone(),
+        joined.clone(),
+        epoch.clone(),
+        sent.clone(),
     ));
     // M2 #18：补发泵——连接可用时按操作时间顺序补做离线操作（失败退避，
     // 单条失败不阻塞队列；PRD 6.8）
@@ -157,10 +173,13 @@ pub async fn run_agent_with_commands(
         notify.clone(),
         cfg.nickname.clone(),
         cfg.data_root.clone(),
+        joined.clone(),
+        epoch.clone(),
+        sent.clone(),
     ));
 
     if let Some(addr) = cfg.manual_addr {
-        return connect_loop(&cfg, &store, addr, &notify, &uplink).await;
+        return connect_loop(&cfg, &store, addr, &notify, &uplink, &joined, &epoch).await;
     }
 
     // 自动发现：watch 保存最新连接目标；None = 尚未发现任何可用教师机
@@ -184,7 +203,7 @@ pub async fn run_agent_with_commands(
         };
         // connect_loop 仅在致命错误（join 被拒）时返回 `?` 上抛，
         // 正常路径（断线重连）永不返回——此处无需退避（PR #69 顺手项）
-        connect_loop(&cfg, &store, target, &notify, &uplink).await?;
+        connect_loop(&cfg, &store, target, &notify, &uplink, &joined, &epoch).await?;
     }
 }
 
@@ -203,6 +222,7 @@ pub const PENDING_CACHE_LIMIT_BYTES: u64 = 100 * 1024 * 1024;
 ///
 /// 内存策略（#104 评审建议 1）：**流式构造 + 立即发送**——单文件峰值 ≤
 /// 单文件大小；通道容量（32 帧）提供背压。
+#[allow(clippy::too_many_arguments)]
 async fn command_pump(
     mut commands: mpsc::Receiver<AgentCommand>,
     uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
@@ -210,6 +230,9 @@ async fn command_pump(
     notify: mpsc::Sender<AgentEvent>,
     nickname: String,
     data_root: std::path::PathBuf,
+    joined: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    sent: SentTracker,
 ) {
     while let Some(cmd) = commands.recv().await {
         // M2 #18：先落盘（PendingOp 持久化，断电不丢；PRD 6.8/9.2），
@@ -230,17 +253,30 @@ async fn command_pump(
         notify_pending(&notify, &pending).await;
         check_cache_threshold(&notify, &pending).await;
 
-        // 已连接则尝试立即发送（失败交由补发泵退避重试）
+        // E15（#123）：先确认**上一轮已发送**的条目（会话就绪且 epoch 未变才
+        // 出队）；会话未就绪/已切换 → 清标记留队列，绝不在「未 Joined」时
+        // 标记成功。
+        let session_ready = joined.load(Ordering::SeqCst) && uplink.lock().unwrap().is_some();
+        let cur_epoch = epoch.load(Ordering::SeqCst);
+        confirm_sent(&pending, &sent, session_ready, cur_epoch);
+
+        if !session_ready {
+            tracing::info!(
+                count = ops.len(),
+                "会话未就绪（未 Joined），已入待发队列，等待会话就绪后补发"
+            );
+            continue;
+        }
+        // 会话就绪：尝试立即发送（成功仅登记「待确认」，下一轮确认后才出队）
         let sender = uplink.lock().unwrap().clone();
         let Some(sender) = sender else {
-            tracing::info!(count = ops.len(), "未连接教师机，已入待发队列");
             continue;
         };
         for op in ops {
             match stream_op(&op, &data_root, &nickname, &sender).await {
                 Ok(()) => {
-                    pending.lock().unwrap().complete(&op.id);
-                    tracing::info!(op_id = %op.id, "上行发送成功");
+                    sent.lock().unwrap().insert(op.id.clone(), cur_epoch);
+                    tracing::info!(op_id = %op.id, epoch = cur_epoch, "上行发送完成，待下一轮确认");
                 }
                 Err(e) => {
                     tracing::warn!(op_id = %op.id, error = %e, "上行发送失败，留待补发");
@@ -251,6 +287,37 @@ async fn command_pump(
         notify_pending(&notify, &pending).await;
     }
     tracing::debug!("上行命令通道关闭，命令泵退出");
+}
+
+/// E15（#123）确认出队：仅当会话就绪且 `sent` 标记的 epoch 与当前会话一致
+/// 时把条目移出队列；否则清除标记（条目保留，由补发泵重发）。
+fn confirm_sent(
+    pending: &Arc<Mutex<PendingQueue>>,
+    sent: &SentTracker,
+    session_ready: bool,
+    cur_epoch: u64,
+) {
+    let mut sent_map = sent.lock().unwrap();
+    if !session_ready {
+        // 会话不可用：所有待确认项重新排队（内容仍在，等待重发）
+        if !sent_map.is_empty() {
+            tracing::info!(count = sent_map.len(), "会话不可用，已发送待确认项退回队列");
+            sent_map.clear();
+        }
+        return;
+    }
+    let confirmed: Vec<String> = sent_map
+        .iter()
+        .filter(|(_, ep)| **ep == cur_epoch)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in confirmed {
+        pending.lock().unwrap().complete(&id);
+        sent_map.remove(&id);
+        tracing::info!(op_id = %id, "待发条目已确认出队");
+    }
+    // 旧会话（epoch 不同）的标记：清除，下轮重发
+    sent_map.retain(|_, ep| *ep == cur_epoch);
 }
 
 /// 把一条命令拆成待发操作并在 `data_root/pending/` 落盘内容（PRD 9.2 本地缓存）。
@@ -379,29 +446,50 @@ async fn stream_op(
 
 /// 补发泵（M2 #18，PRD 6.8）：连接可用时按**操作时间顺序**补发到期项；
 /// 单条失败按退避重试（1s 起 ×2，封顶 60s）并记次数，**不阻塞其他条目**。
+///
+/// E15（#123）：**仅在会话 `Joined` 后**才发送；发送成功仅登记「待确认」，
+/// 下一次 tick 在会话仍就绪且 epoch 未变时确认出队——避免「未就绪会话
+/// 发送成功但 host 未收到」的静默丢件。
+#[allow(clippy::too_many_arguments)]
 async fn resend_pump(
     pending: Arc<Mutex<PendingQueue>>,
     uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
     notify: mpsc::Sender<AgentEvent>,
     nickname: String,
     data_root: std::path::PathBuf,
+    joined: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    sent: SentTracker,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        let session_ready = joined.load(Ordering::SeqCst) && uplink.lock().unwrap().is_some();
+        let cur_epoch = epoch.load(Ordering::SeqCst);
+        // 先确认上轮发送（会话就绪且 epoch 未变才出队）
+        confirm_sent(&pending, &sent, session_ready, cur_epoch);
+        if !session_ready {
+            continue; // 未 Joined：保持队列，等会话就绪
+        }
         let Some(sender) = uplink.lock().unwrap().clone() else {
-            continue; // 未连接：保持队列，等重连
+            continue;
         };
         let due = pending.lock().unwrap().due(unix_now());
-        if due.is_empty() {
-            continue;
-        }
         for op in due {
+            // 已发送待确认的条目不重复发送（等确认或断线后重发）
+            if sent.lock().unwrap().contains_key(&op.id) {
+                continue;
+            }
             match stream_op(&op, &data_root, &nickname, &sender).await {
                 Ok(()) => {
-                    pending.lock().unwrap().complete(&op.id);
-                    tracing::info!(op_id = %op.id, created_at = op.created_at, "延迟补发送成功");
+                    sent.lock().unwrap().insert(op.id.clone(), cur_epoch);
+                    tracing::info!(
+                        op_id = %op.id,
+                        created_at = op.created_at,
+                        epoch = cur_epoch,
+                        "延迟补发送完成，待下一轮确认"
+                    );
                     notify_pending(&notify, &pending).await;
                 }
                 Err(e) => {
@@ -572,12 +660,14 @@ async fn connect_loop(
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
     uplink: &Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
+    joined: &Arc<AtomicBool>,
+    epoch: &Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     let mut backoff = Duration::from_secs(1);
     loop {
         // 会话结束时的 Disconnected 由 agent_session 内部发出（先于清理
         // uplink，见其中注释）——此处不再重复通知，避免 svc 收到双份状态变更。
-        agent_session(cfg, store, addr, notify, uplink).await?;
+        agent_session(cfg, store, addr, notify, uplink, joined, epoch).await?;
         tracing::info!(retry_in = ?backoff, %addr, "与教师机断开，稍后自动重连");
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -600,6 +690,8 @@ async fn agent_session(
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
     uplink: &Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
+    joined: &Arc<AtomicBool>,
+    epoch: &Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     let hello = Hello::Join {
         protocol_version: PROTOCOL_VERSION,
@@ -614,6 +706,8 @@ async fn agent_session(
         notify: notify.clone(),
         addr,
         nickname: cfg.nickname.clone(),
+        joined: joined.clone(),
+        epoch: epoch.clone(),
     };
     // 默认：心跳 5s、建连超时 5s、加入后自动请求版本清单（与原实现一致）
     // M2 #104：附加业务上行通道，并把发送端装入 uplink 槽——命令泵据此
@@ -623,10 +717,12 @@ async fn agent_session(
     let session_cfg = ClientSessionConfig::new(addr, hello).with_outbound(out_rx);
 
     let result = run_client_session(session_cfg, handler).await;
-    // M2 #104 评审（顺序修正）：**先通知 Disconnected（svc 状态先变），再清
-    // 上行端点**——原顺序会在两者之间留下窗口：svc 仍认为「已连接」→ 对
-    // GUI 返回 Ok，而命令泵已看到 uplink=None 丢弃命令（静默成功）。先通知
-    // 可保证 svc 一旦对外说「未连接」，命令泵必然也已拒绝。
+    // E15（#123）顺序：**先置会话不可就绪（joined=false）**，再通知
+    // Disconnected、最后清 uplink——保证泵不会在「会话已断但仍被判定就绪」
+    // 的窗口内发送并误确认出队。
+    joined.store(false, Ordering::SeqCst);
+    // M2 #104 评审（顺序修正）：先通知 Disconnected（svc 状态先变），再清
+    // 上行端点——消除「svc 认为已连接但命令泵已丢弃」的静默成功窗口。
     let _ = notify.send(AgentEvent::Disconnected).await;
     *uplink.lock().unwrap() = None;
     let end = match result {
@@ -655,11 +751,23 @@ struct AgentSessionHandler {
     addr: SocketAddr,
     /// 本机昵称（上行 Ack 的 `acked_by`，PRD 3.6）
     nickname: String,
+    /// E15（#123）：会话就绪信号（仅 Joined 后 true；结束前 false）。
+    joined: Arc<AtomicBool>,
+    /// E15（#123）：会话 epoch（每次 Joined +1，用于发送待确认判定）。
+    epoch: Arc<AtomicU64>,
 }
 
 #[async_trait]
 impl ClientHandler for AgentSessionHandler {
     async fn on_joined(&self, _session_id: &str) {
+        // E15（#123）：会话就绪——新会话递增 epoch（旧会话的「已发送待确认」
+        // 标记随之失效，由补发泵重发，避免跨会话误确认出队）。
+        self.joined.store(true, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(
+            epoch = self.epoch.load(Ordering::SeqCst),
+            "会话已就绪（Joined）"
+        );
         let _ = self
             .notify
             .send(AgentEvent::Joined(format!("tcp://{}", self.addr)))
