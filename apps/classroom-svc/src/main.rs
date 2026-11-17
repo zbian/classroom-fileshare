@@ -8,7 +8,7 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use tokio::sync::Notify;
 use windows_service::service::{
@@ -28,6 +28,30 @@ fn shutdown_handle() -> Arc<Notify> {
     SHUTDOWN.get_or_init(|| Arc::new(Notify::new())).clone()
 }
 
+/// 会话自愈上下文（E7 令牌分发）：bootstrap 后就位（令牌根目录 + 配置的
+/// 主登录用户 SID），SessionChange 触发对令牌重授——TC-11「重启不登录 →
+/// 登录瞬间令牌即可读」链路。
+static GRANT_CTX: RwLock<Option<(PathBuf, String)>> = RwLock::new(None);
+
+/// SessionChange 登录 → 令牌重授（M1 单元形态：直接 restrict 覆盖 WTS
+/// 取 SID 集成，真机链路为 SCM 回调；`sid` 为空串时用配置的 user_sid）。
+fn self_heal_token_for_session(sid: &str) {
+    let ctx = GRANT_CTX.read().unwrap().clone();
+    let Some((root, configured)) = ctx else {
+        tracing::debug!("令牌上下文未就绪，跳过会话自愈");
+        return;
+    };
+    let sid = if configured.is_empty() {
+        sid.to_string()
+    } else {
+        configured
+    };
+    match classroom_ipc::grant_for_session(&root, &sid) {
+        Ok(()) => tracing::info!(%sid, "登录会话令牌重授完成（SessionChange 自愈）"),
+        Err(e) => tracing::warn!(error = %e, "会话令牌重授失败"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--console") {
@@ -43,10 +67,14 @@ fn main() {
 /// 前台降级模式：配置与数据根位于 `%LOCALAPPDATA%\ClassShare`，
 /// Ctrl+C 触发与 SCM 停机相同的优雅退出路径。
 fn run_console(args: &[String]) {
-    let Ok((cfg, data_root)) = bootstrap(true, config_override(args)) else {
-        // 配置损坏：驻留等待人工修复（fail-fast，评审随包项 2）
-        eprintln!("svc.json 配置损坏，无法启动。请修复后重启进程。");
-        std::process::exit(1);
+    let (cfg, data_root) = match bootstrap(true, config_override(args)) {
+        Ok(v) => v,
+        Err(e) => {
+            // 配置损坏：驻留等待人工修复（fail-fast）；打印原始错误定位
+            // 方向（评审随包项 2 的 console 侧补丁：静默丢弃 {e} 会误导运维）
+            eprintln!("{e}；svc.json 配置损坏，无法启动。请修复后重启进程。");
+            std::process::exit(1);
+        }
     };
     if let Err(e) = logging::init(&data_root.join("logs")) {
         eprintln!("日志初始化失败（继续运行）: {e}");
@@ -111,6 +139,16 @@ fn my_service_main(_arguments: Vec<OsString>) {
                 ctrl_shutdown.notify_one();
                 ServiceControlHandlerResult::NoError
             }
+            ServiceControl::SessionChange(change) => {
+                // E7 令牌分发：登录会话 → 令牌重授（TC-11 登录即见链路）
+                if matches!(
+                    change.reason,
+                    windows_service::service::SessionChangeReason::SessionLogon
+                ) {
+                    self_heal_token_for_session("");
+                }
+                ServiceControlHandlerResult::NoError
+            }
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     };
@@ -125,7 +163,9 @@ fn my_service_main(_arguments: Vec<OsString>) {
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: state,
-            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            controls_accepted: ServiceControlAccept::STOP
+                | ServiceControlAccept::SHUTDOWN
+                | ServiceControlAccept::SESSION_CHANGE,
             exit_code: ServiceExitCode::NO_ERROR,
             checkpoint: 0,
             wait_hint: std::time::Duration::from_secs(5),
@@ -147,6 +187,9 @@ fn my_service_main(_arguments: Vec<OsString>) {
     if let Err(e) = logging::init(&data_root.join("logs")) {
         eprintln!("日志初始化失败（继续运行）: {e}");
     }
+    // E7 令牌分发：会话自愈上下文就位（SessionChange → 重授主登录用户）
+    *GRANT_CTX.write().unwrap() =
+        Some((data_root.clone(), cfg.user_sid.clone().unwrap_or_default()));
     tracing::info!(service = SERVICE_NAME, "服务启动（Session 0）");
 
     let rt = match tokio::runtime::Builder::new_multi_thread()

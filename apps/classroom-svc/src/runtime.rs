@@ -71,7 +71,16 @@ pub async fn run_core(
         tracing::info!(removed = swept, "已清理残留 .part（PRD 9.2）");
     }
 
-    let token = classroom_ipc::load_or_create_token(data_root)?;
+    // E7 令牌分发：服务模式限权 LocalSystem + 主登录用户（GUI 会话可读）；
+    // user_sid 缺失时告警明示（GUI 不可用属配置缺失），补装/登录后由
+    // SessionChange 自愈路径重授
+    let token = classroom_ipc::load_or_create_token_for(data_root, cfg.user_sid.as_deref())?;
+    if cfg.user_sid.is_none() {
+        tracing::warn!(
+            "svc.json 缺少 user_sid：服务模式令牌仅 LocalSystem 可读，GUI 将无法连接；\
+             请升级安装或等待登录会话自愈（SessionChange）"
+        );
+    }
     // handler 专用 store 连接（与核心连接独立；短查询，SQLite 并发安全）
     let handler_store: Arc<Mutex<Store>> = Arc::new(Mutex::new(Store::open(data_root)?));
     let (notify_tx, notify_rx) = mpsc::channel::<SvcNotify>(128);
