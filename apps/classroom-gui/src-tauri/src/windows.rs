@@ -8,6 +8,7 @@
 //! - 全程 Logical 坐标，抗多显示器 DPI 差异。
 
 use crate::state::{AppState, IconPlacement};
+use classroom_ipc::GuiRequest;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::{
@@ -359,12 +360,40 @@ fn handle_drag_drop(app: &AppHandle, dd: &DragDropEvent) {
         DragDropEvent::Leave => set_drop_state(app, false),
         DragDropEvent::Drop { paths, .. } => {
             set_drop_state(app, false);
-            // T12：接入 SendFiles 发送链路（归一化校验 → ipc）
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[t8] icon 收到拖放 {} 个文件（发送链路 T12 接入）",
-                paths.len()
-            );
+            // T12：接入 SendFiles 真链路；目录过滤并提示（EX：目录暂不支持共享）
+            let mut files = Vec::new();
+            let mut dirs = 0u32;
+            for p in paths {
+                let path = p.to_string_lossy().to_string();
+                if std::path::Path::new(&path).is_dir() {
+                    dirs += 1;
+                } else {
+                    files.push(path);
+                }
+            }
+            let app2 = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut toasts: Vec<String> = Vec::new();
+                if !files.is_empty() {
+                    match crate::ipc_client::svc_request(
+                        app2.clone(),
+                        GuiRequest::SendFiles {
+                            paths: files.into_iter().map(std::path::PathBuf::from).collect(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(_) => toasts.push("已通过拖放共享".into()),
+                        Err(e) => toasts.push(e),
+                    }
+                }
+                if dirs > 0 {
+                    toasts.push(format!("目录暂不支持共享（{dirs} 个目录已跳过）"));
+                }
+                for t in toasts {
+                    let _ = app2.emit_to(ICON_LABEL, "gui://toast", t);
+                }
+            });
         }
         DragDropEvent::Over { .. } => {}
         _ => {}
