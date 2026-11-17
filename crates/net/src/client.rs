@@ -42,7 +42,7 @@ pub trait ClientHandler: Send + Sync {
 }
 
 /// 客户端会话配置。
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ClientSessionConfig {
     /// 服务端地址。
     pub addr: SocketAddr,
@@ -54,10 +54,20 @@ pub struct ClientSessionConfig {
     pub connect_timeout: Duration,
     /// 加入成功后是否自动请求版本清单（重连对齐，PRD 7.5）。
     pub request_manifest: bool,
+    /// **业务上行帧通道**（接口修订 #11①，M2 #104）。
+    ///
+    /// 调用方（agent）把待发送的业务帧（`Event` / `FileHeader` / `FileChunk`
+    /// / `FileEnd`）投入此通道，运行器在主循环中与心跳、下行帧一同 `select!`，
+    /// 转发到写任务。控制帧（Hello/Ping/Pong/ManifestReq）仍由运行器独占管理，
+    /// 调用方**不应**经此通道发送控制帧。
+    ///
+    /// `None` = 该会话只收不发（S1/S2 既有行为不变）；通道关闭后运行器停止
+    /// 监听该通道（会话继续收）。
+    pub outbound: Option<mpsc::Receiver<Frame>>,
 }
 
 impl ClientSessionConfig {
-    /// 默认配置：心跳 5s、建连超时 5s、加入后请求清单。
+    /// 默认配置：心跳 5s、建连超时 5s、加入后请求清单、无上行通道。
     pub fn new(addr: SocketAddr, hello: Hello) -> Self {
         Self {
             addr,
@@ -65,7 +75,14 @@ impl ClientSessionConfig {
             heartbeat: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(5),
             request_manifest: true,
+            outbound: None,
         }
+    }
+
+    /// 附加业务上行通道（链式构造）。
+    pub fn with_outbound(mut self, outbound: mpsc::Receiver<Frame>) -> Self {
+        self.outbound = Some(outbound);
+        self
     }
 }
 
@@ -145,9 +162,13 @@ pub async fn run_client_session<H: ClientHandler>(
         bail!("ManifestReq 发送失败（写任务已退出）");
     }
 
-    // ---- 主循环：心跳 + 帧分派 ----
+    // ---- 主循环：心跳 + 帧分派 + 业务上行（接口修订 #11①）----
     let mut heartbeat = tokio::time::interval(cfg.heartbeat);
     heartbeat.tick().await; // interval 首个 tick 立即触发，先吃掉
+                            // 取出上行通道（cfg 其余字段已在上面消费）
+    let mut outbound = cfg.outbound;
+    // 会话结束（对端关闭/读错误/回调失败）时，关闭上行通道以便调用方
+    // 及时感知「暂时无法发送」；通道关闭后本循环不再监听它。
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
@@ -188,10 +209,32 @@ pub async fn run_client_session<H: ClientHandler>(
                     }
                 }
             }
+            outbound_frame = recv_outbound(&mut outbound) => {
+                match outbound_frame {
+                    Some(frame) => {
+                        if tx.send(frame).await.is_err() {
+                            tracing::debug!("上行帧转发失败（写任务已退出）");
+                            break;
+                        }
+                    }
+                    // 通道关闭（调用方 drop 发送端）或从未提供：停止监听，
+                    // 会话继续只收不发
+                    None => outbound = None,
+                }
+            }
         }
     }
 
     drop(tx);
+    drop(outbound);
     let _ = writer_task.await;
     Ok(SessionEnd::Closed)
+}
+
+/// 等待上行业务帧；`outbound` 为 `None` 时永久挂起（select 分支保持休眠）。
+async fn recv_outbound(rx: &mut Option<mpsc::Receiver<Frame>>) -> Option<Frame> {
+    match rx {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
 }

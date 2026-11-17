@@ -1293,3 +1293,111 @@ async fn online_student_delete_immediate_and_repeat_idempotent() {
         "墓碑保留在教师端索引（供离线端补删）"
     );
 }
+// ---------- M2 #104：学员端上行发送链路（真实 agent 命令通道 → 教师端）----------
+
+/// 起一个带 `AgentCommand` 上行通道的真实 agent，并等到 manifest 对齐完成。
+async fn start_real_agent_with_commands(
+    port: u16,
+    nickname: &str,
+    dir: tempfile::TempDir,
+) -> (
+    mpsc::Sender<classroom_agent::AgentCommand>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<classroom_agent::AgentCommand>(8);
+    let (ev_tx, mut ev_rx) = mpsc::channel(64);
+    let cfg = classroom_agent::AgentConfig {
+        nickname: nickname.into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
+        data_root: dir.path().to_path_buf(),
+    };
+    let task = tokio::spawn(classroom_agent::run_agent_with_commands(cfg, ev_tx, cmd_rx));
+    loop {
+        let ev = tokio::time::timeout(TIMEOUT, ev_rx.recv())
+            .await
+            .expect("agent 加入超时")
+            .expect("agent 事件通道关闭");
+        if matches!(ev, classroom_agent::AgentEvent::Synced) {
+            break;
+        }
+    }
+    (cmd_tx, task, dir)
+}
+
+/// #104 用例 1：GUI「发送文本」→ agent 成帧上行 → 教师端入库可查。
+#[tokio::test]
+async fn student_uplink_text_reaches_teacher() {
+    use classroom_agent::AgentCommand;
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+
+    cmd_tx
+        .send(AgentCommand::SendText {
+            title: "作业".into(),
+            body: "老师好".into(),
+        })
+        .await
+        .expect("投递发送命令");
+
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.owner_role, Role::Student);
+    assert_eq!(item.audience, classroom_protocol::Audience::Teacher);
+    assert_eq!(item.kind, ItemKind::Text);
+    assert_eq!(item.title, "作业");
+
+    let store = Store::open(&host.data_root).unwrap();
+    let got = store.get(&item.id).unwrap().expect("教师端入库");
+    assert_eq!(
+        std::fs::read_to_string(store.file_body(&got).unwrap()).unwrap(),
+        "老师好",
+        "正文可读"
+    );
+    task.abort();
+    let _ = dir;
+}
+
+/// #104 用例 2：GUI「发送文件」→ agent 分块上行（1.5MB）→ 教师端落盘
+/// 且 sha256/size 与源文件一致（分块 + 哈希链路端到端）。
+#[tokio::test]
+async fn student_uplink_file_reaches_teacher() {
+    use classroom_agent::AgentCommand;
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+
+    let payload: Vec<u8> = (0..1_572_864u32).map(|i| (i % 251) as u8).collect();
+    let src = dir.path().join("实验报告.pdf");
+    std::fs::write(&src, &payload).unwrap();
+    let expected_sha = sha256_hex(&payload);
+
+    cmd_tx
+        .send(AgentCommand::SendFiles { paths: vec![src] })
+        .await
+        .expect("投递发送命令");
+
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.kind, ItemKind::File);
+    assert_eq!(item.size, payload.len() as u64);
+    assert_eq!(item.sha256.as_deref(), Some(expected_sha.as_str()));
+
+    let store = Store::open(&host.data_root).unwrap();
+    let got = store.get(&item.id).unwrap().expect("教师端入库");
+    let body = std::fs::read(store.file_body(&got).unwrap()).unwrap();
+    assert_eq!(sha256_hex(&body), expected_sha, "落盘字节与源文件哈希一致");
+    task.abort();
+    let _ = dir;
+}

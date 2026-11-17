@@ -19,9 +19,12 @@ use tokio::sync::mpsc;
 
 use classroom_net::{
     run_client_session, spawn_discovery_with_addr, Beacon, ClientHandler, ClientSessionConfig,
-    FileHeader, Frame, Hello, SessionEnd,
+    FileChunk, FileEnd, FileHeader, Frame, Hello, SessionEnd,
 };
-use classroom_protocol::{Event, EventKind, MergeDecision, Role, ShareItem, PROTOCOL_VERSION};
+use classroom_protocol::{
+    Audience, Event, EventKind, ItemKind, MergeDecision, Role, ShareItem, SyncState,
+    PROTOCOL_VERSION,
+};
 use classroom_store::{sha256_file, Store};
 
 /// 学员端配置。
@@ -76,11 +79,52 @@ fn to_hex(bytes: &[u8]) -> String {
 /// 后台 discovery 泵持续把最新信标的 `(peer.ip, tcp_port)` 写入 watch，
 /// 连接循环每次重连都取最新目标（教师机换 IP/端口后自然跟上）。
 pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> anyhow::Result<()> {
+    // 兼容既有调用：无上行命令通道（rx 端立即关闭 → 命令泵空转退出）
+    let (_tx, rx) = mpsc::channel(1);
+    run_agent_with_commands(cfg, notify, rx).await
+}
+
+/// 学员端上行发送命令（svc → agent，M2 #104）。
+///
+/// 发送对象固定为教师（PRD 6.2 FR-S-02：学员不提供「发送给全班」）：
+/// agent 构造的 `Event` 一律 `audience=Teacher` / `owner_id=本机昵称` /
+/// `owner_role=Student`——owner 由 host 以**会话身份**权威校验（#94 契约），
+/// 客户端只表达发送意图，不携带可信身份。
+#[derive(Debug)]
+pub enum AgentCommand {
+    /// 发送文本给教师（正文经文件帧承载，与教师广播模型对称）。
+    SendText {
+        /// 标题（同名覆盖键）。
+        title: String,
+        /// 正文。
+        body: String,
+    },
+    /// 发送文件给教师（多选；100MB 上限与风险类型由发送端预检 + host 权威复检）。
+    SendFiles {
+        /// 本地文件路径列表。
+        paths: Vec<std::path::PathBuf>,
+    },
+}
+
+/// 运行学员端并**提供上行发送命令通道**（M2 #104，#16 学员发送 UI 的后端入口）。
+///
+/// 命令经命令泵翻译为协议帧（Event + FileHeader/Chunk/End），投递到**当前
+/// 已认证会话**的上行通道；未连接时命令被丢弃并 `warn`（离线补发归 #18）。
+pub async fn run_agent_with_commands(
+    cfg: AgentConfig,
+    notify: mpsc::Sender<AgentEvent>,
+    commands: mpsc::Receiver<AgentCommand>,
+) -> anyhow::Result<()> {
     // S2：Store 经 Arc<Mutex<>> 传给会话回调（ClientHandler 要求 Send+Sync，
     // 而 Store 内含 rusqlite Connection（非 Sync）；锁只在同步临界区持有）。
     let store = Arc::new(Mutex::new(Store::open(&cfg.data_root)?));
+    // 当前会话的上行发送端：连接建立时装入、会话结束时清空；命令泵据此
+    // 判定「是否已连接」（net 层同一写任务，无第二套发送路径）
+    let uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>> = Arc::new(Mutex::new(None));
+    tokio::spawn(command_pump(commands, uplink.clone(), cfg.nickname.clone()));
+
     if let Some(addr) = cfg.manual_addr {
-        return connect_loop(&cfg, &store, addr, &notify).await;
+        return connect_loop(&cfg, &store, addr, &notify, &uplink).await;
     }
 
     // 自动发现：watch 保存最新连接目标；None = 尚未发现任何可用教师机
@@ -104,8 +148,190 @@ pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> an
         };
         // connect_loop 仅在致命错误（join 被拒）时返回 `?` 上抛，
         // 正常路径（断线重连）永不返回——此处无需退避（PR #69 顺手项）
-        connect_loop(&cfg, &store, target, &notify).await?;
+        connect_loop(&cfg, &store, target, &notify, &uplink).await?;
     }
+}
+
+/// 上行命令泵：`AgentCommand` → 协议帧 → 当前会话（#104）。
+///
+/// 设计说明（与 #17 的 `ClientHandler::on_frame(tx)` 关系）：两者最终都经
+/// **同一个** `mpsc::Sender<Frame>` 写入（net 运行器的单一写任务），不存在
+/// 两条写路径或乱序：
+/// - `on_frame(tx)`：**会话内被动回应**（收到帧后的即时 Ack 等）；
+/// - 本泵：**会话外主动上行**（GUI 触发的发送，跨重连由 uplink 槽更换端点）。
+///
+/// 内存策略（评审建议 1）：**流式构造 + 立即发送**——多选大文件不再把所有
+/// 帧累计进内存（旧实现峰值 N×100MB），单文件峰值 ≤ 单文件大小；通道容量
+/// （32 帧）提供背压。
+async fn command_pump(
+    mut commands: mpsc::Receiver<AgentCommand>,
+    uplink: Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
+    nickname: String,
+) {
+    while let Some(cmd) = commands.recv().await {
+        let sender = uplink.lock().unwrap().clone();
+        let Some(sender) = sender else {
+            // svc 在 IPC 应答前已按连接状态拦截；此处为竞态兜底
+            tracing::warn!("未连接教师机，丢弃上行发送（离线补发归 #18）");
+            continue;
+        };
+        if let Err(e) = stream_command(cmd, &nickname, &sender).await {
+            tracing::warn!(error = %e, "上行发送失败（通道关闭或内容非法）");
+        }
+    }
+    tracing::debug!("上行命令通道关闭，命令泵退出");
+}
+
+/// 把一条上行命令**流式**翻译为协议帧并立即发送。
+async fn stream_command(
+    cmd: AgentCommand,
+    nickname: &str,
+    tx: &mpsc::Sender<Frame>,
+) -> anyhow::Result<()> {
+    let now = unix_now();
+    match cmd {
+        AgentCommand::SendText { title, body } => {
+            // PRD 10.3：标题/正文长度与合法性（发送端预检，host 侧再复检）
+            classroom_protocol::validate_text(&title, &body)?;
+            let bytes = body.as_bytes();
+            let sha = sha256_bytes_hex(bytes);
+            let item_id = uuid::Uuid::new_v4().to_string();
+            let ev = upload_event(
+                nickname,
+                &item_id,
+                ItemKind::Text,
+                &title,
+                body.chars().count() as u64,
+                None,
+                now,
+            );
+            send_frame(tx, Frame::Event(ev)).await?;
+            send_content(tx, &item_id, &title, bytes, &sha).await?;
+        }
+        AgentCommand::SendFiles { paths } => {
+            if paths.is_empty() {
+                anyhow::bail!("未选择文件");
+            }
+            for path in paths {
+                let meta = tokio::fs::metadata(&path).await?;
+                if meta.len() > classroom_protocol::MAX_FILE_SIZE {
+                    anyhow::bail!(
+                        "单文件不能超过 100 MB: {}",
+                        path.file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    );
+                }
+                let title = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("路径无有效文件名"))?;
+                if classroom_protocol::is_risky_ext(&title) {
+                    anyhow::bail!("高风险文件类型不允许发送: {title}");
+                }
+                let bytes = tokio::fs::read(&path).await?;
+                let sha = sha256_bytes_hex(&bytes);
+                let item_id = uuid::Uuid::new_v4().to_string();
+                let ev = upload_event(
+                    nickname,
+                    &item_id,
+                    ItemKind::File,
+                    &title,
+                    bytes.len() as u64,
+                    Some(sha.clone()),
+                    now,
+                );
+                send_frame(tx, Frame::Event(ev)).await?;
+                send_content(tx, &item_id, &title, &bytes, &sha).await?;
+                // bytes 在此 drop：单文件峰值释放后再读下一个（流式语义）
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 构造学员上行事件（owner=本机昵称；host 以会话身份权威校验，#94 契约）。
+fn upload_event(
+    nickname: &str,
+    item_id: &str,
+    kind: ItemKind,
+    title: &str,
+    size: u64,
+    sha256: Option<String>,
+    now: i64,
+) -> Event {
+    Event {
+        event_id: format!("up-{item_id}"),
+        kind: EventKind::Upsert,
+        item: ShareItem {
+            id: item_id.to_string(),
+            kind,
+            owner_id: nickname.to_string(),
+            owner_role: Role::Student,
+            audience: Audience::Teacher,
+            title: title.to_string(),
+            size,
+            sha256,
+            rel_path: None,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::PendingSync,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: now,
+    }
+}
+
+async fn send_frame(tx: &mpsc::Sender<Frame>, frame: Frame) -> anyhow::Result<()> {
+    tx.send(frame)
+        .await
+        .map_err(|_| anyhow::anyhow!("上行通道已关闭"))
+}
+
+/// 内容帧序列：FileHeader → 1MB FileChunk × N → FileEnd（逐帧发送，不累计）。
+async fn send_content(
+    tx: &mpsc::Sender<Frame>,
+    item_id: &str,
+    file_name: &str,
+    bytes: &[u8],
+    sha: &str,
+) -> anyhow::Result<()> {
+    send_frame(
+        tx,
+        Frame::FileHeader(FileHeader {
+            item_id: item_id.into(),
+            file_name: file_name.into(),
+            size: bytes.len() as u64,
+            sha256: sha.into(),
+        }),
+    )
+    .await?;
+    for (seq, part) in bytes.chunks(classroom_protocol::CHUNK_SIZE).enumerate() {
+        send_frame(
+            tx,
+            Frame::FileChunk(FileChunk {
+                item_id: item_id.into(),
+                seq: seq as u64,
+                bytes: part.to_vec(),
+            }),
+        )
+        .await?;
+    }
+    send_frame(
+        tx,
+        Frame::FileEnd(FileEnd {
+            item_id: item_id.into(),
+        }),
+    )
+    .await?;
+    Ok(())
+}
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    to_hex(&Sha256::digest(bytes))
 }
 
 /// 后台发现泵：监听 beacon，更新最新连接目标并向 GUI 推送发现列表。
@@ -155,11 +381,13 @@ async fn connect_loop(
     store: &Arc<Mutex<Store>>,
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
+    uplink: &Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
 ) -> anyhow::Result<()> {
     let mut backoff = Duration::from_secs(1);
     loop {
-        agent_session(cfg, store, addr, notify).await?;
-        let _ = notify.send(AgentEvent::Disconnected).await;
+        // 会话结束时的 Disconnected 由 agent_session 内部发出（先于清理
+        // uplink，见其中注释）——此处不再重复通知，避免 svc 收到双份状态变更。
+        agent_session(cfg, store, addr, notify, uplink).await?;
         tracing::info!(retry_in = ?backoff, %addr, "与教师机断开，稍后自动重连");
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -181,6 +409,7 @@ async fn agent_session(
     store: &Arc<Mutex<Store>>,
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
+    uplink: &Arc<Mutex<Option<mpsc::Sender<Frame>>>>,
 ) -> anyhow::Result<()> {
     let hello = Hello::Join {
         protocol_version: PROTOCOL_VERSION,
@@ -197,9 +426,20 @@ async fn agent_session(
         nickname: cfg.nickname.clone(),
     };
     // 默认：心跳 5s、建连超时 5s、加入后自动请求版本清单（与原实现一致）
-    let session_cfg = ClientSessionConfig::new(addr, hello);
+    // M2 #104：附加业务上行通道，并把发送端装入 uplink 槽——命令泵据此
+    // 把 GUI 触发的发送投递到**当前会话**（重连后自动换新端点）。
+    let (out_tx, out_rx) = mpsc::channel::<Frame>(32);
+    *uplink.lock().unwrap() = Some(out_tx);
+    let session_cfg = ClientSessionConfig::new(addr, hello).with_outbound(out_rx);
 
-    let end = match run_client_session(session_cfg, handler).await {
+    let result = run_client_session(session_cfg, handler).await;
+    // M2 #104 评审（顺序修正）：**先通知 Disconnected（svc 状态先变），再清
+    // 上行端点**——原顺序会在两者之间留下窗口：svc 仍认为「已连接」→ 对
+    // GUI 返回 Ok，而命令泵已看到 uplink=None 丢弃命令（静默成功）。先通知
+    // 可保证 svc 一旦对外说「未连接」，命令泵必然也已拒绝。
+    let _ = notify.send(AgentEvent::Disconnected).await;
+    *uplink.lock().unwrap() = None;
+    let end = match result {
         Ok(end) => end,
         Err(e) => {
             tracing::debug!(error = %e, %addr, "会话结束（将重连）");

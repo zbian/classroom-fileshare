@@ -52,8 +52,14 @@ async fn student_core_serves_ipc_and_stops_cleanly() {
                 })
                 .await
             {
-                Ok(Err(msg)) => assert!(msg.contains("M2"), "学员回传 M1 明确拒绝: {msg}"),
-                other => panic!("student SendText 应被拒绝: {other:?}"),
+                Ok(Err(msg)) => assert!(
+                    // M2 #104：student 发送链路已打通；无教师机连接时
+                    // 明确报「未连接教师机…」（断言「明确错误、不静默成功」
+                    // 不变，文案随新语义更新）
+                    msg.contains("未连接") || msg.contains("不支持发送"),
+                    "student 未连接时发送应明确报错: {msg}"
+                ),
+                other => panic!("student SendText 应返回错误而非静默成功: {other:?}"),
             }
             served = true;
             break;

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, Notify};
 
-use classroom_agent::{run_agent, AgentConfig, AgentEvent};
+use classroom_agent::{run_agent_with_commands, AgentConfig, AgentEvent};
 use classroom_host::{run_host, HostCommand, HostConfig, HostEvent};
 use classroom_ipc::{
     serve_ipc, GuiReply, GuiRequest, ItemUpdatedPayload, ListFilter, ServiceState, StatusSnapshot,
@@ -91,6 +91,10 @@ pub async fn run_core(
     };
     let status = Arc::new(StatusBoard::new(role.clone(), cfg.nickname.clone()));
     let mut host_cmd: Option<mpsc::Sender<HostCommand>> = None;
+    // M2 #104：学员端上行发送通道（svc → agent）；teacher 模式为 None
+    let mut agent_cmd: Option<mpsc::Sender<classroom_agent::AgentCommand>> = None;
+    // M2 #104：学员端「是否已连接教师机」（未连接时发送返回明确错误）
+    let agent_connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut agent_task: Option<tokio::task::JoinHandle<()>> = None;
     match cfg.mode {
         SvcMode::Teacher => {
@@ -128,13 +132,15 @@ pub async fn run_core(
                 room_filter: cfg.room_filter(),
                 data_root: data_root.to_path_buf(),
             };
+            let (cmd_tx, cmd_rx) = mpsc::channel::<classroom_agent::AgentCommand>(16);
             agent_task = Some(tokio::spawn(async move {
                 // 致命错误（join 被拒等）记录后返回：服务保持运行等待人工处理，
                 // 避免 SCM failure 策略造成的重启风暴
-                if let Err(e) = run_agent(agent_cfg, ev_tx).await {
+                if let Err(e) = run_agent_with_commands(agent_cfg, ev_tx, cmd_rx).await {
                     tracing::error!(error = %e, "agent 核心致命错误，驻留等待人工处理");
                 }
             }));
+            agent_cmd = Some(cmd_tx);
             let forward = core_event_tx.clone();
             tokio::spawn(async move {
                 while let Some(ev) = ev_rx.recv().await {
@@ -149,8 +155,19 @@ pub async fn run_core(
     // 事件桥：CoreEvent → SvcNotify（tips/列表刷新/状态快照更新）
     let bridge_notify = notify_tx.clone();
     let bridge_status = status.clone();
+    let bridge_connected = agent_connected.clone();
     tokio::spawn(async move {
         while let Some(ev) = core_event_rx.recv().await {
+            // M2 #104：维护「是否已连接教师机」状态（学员发送的未连接判定）
+            match &ev {
+                CoreEvent::Agent(AgentEvent::Joined(_)) => {
+                    bridge_connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                CoreEvent::Agent(AgentEvent::Disconnected) => {
+                    bridge_connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                _ => {}
+            }
             for notify in map_notify(&ev) {
                 if bridge_notify.send(notify).await.is_err() {
                     return;
@@ -161,7 +178,13 @@ pub async fn run_core(
     });
 
     // IPC 服务
-    let handler = make_ipc_handler(host_cmd.clone(), handler_store, status.clone());
+    let handler = make_ipc_handler(
+        host_cmd.clone(),
+        agent_cmd.clone(),
+        agent_connected.clone(),
+        handler_store,
+        status.clone(),
+    );
     let ipc_token = token.clone();
     tokio::spawn(async move {
         if let Err(e) = serve_ipc(role, &ipc_token, handler, notify_rx).await {
@@ -196,6 +219,8 @@ pub async fn run_core(
 /// - `PauseTips` / `ShutdownGuiOnly`：GUI 本地行为，服务仅确认
 pub fn make_ipc_handler(
     host_cmd: Option<mpsc::Sender<HostCommand>>,
+    agent_cmd: Option<mpsc::Sender<classroom_agent::AgentCommand>>,
+    agent_connected: Arc<std::sync::atomic::AtomicBool>,
     store: Arc<Mutex<Store>>,
     status: Arc<StatusBoard>,
 ) -> Arc<dyn Fn(GuiRequest) -> SvcResult + Send + Sync> {
@@ -219,15 +244,17 @@ pub fn make_ipc_handler(
             }
             Ok(GuiReply::FilePath(path))
         }
-        GuiRequest::SendText { title, body } => dispatch_teacher(
+        GuiRequest::SendText { title, body } => dispatch_send(
             &host_cmd,
-            HostCommand::SendText { title, body },
-            "学员回传在 M2 提供",
+            &agent_cmd,
+            &agent_connected,
+            AgentSend::Text { title, body },
         ),
-        GuiRequest::SendFiles { paths } => dispatch_teacher(
+        GuiRequest::SendFiles { paths } => dispatch_send(
             &host_cmd,
-            HostCommand::SendFiles { paths },
-            "学员回传在 M2 提供",
+            &agent_cmd,
+            &agent_connected,
+            AgentSend::Files { paths },
         ),
         GuiRequest::DeleteItem { id } => {
             dispatch_teacher(&host_cmd, HostCommand::Delete { id }, "学员删除在 M2 提供")
@@ -286,6 +313,56 @@ pub(crate) fn group_submissions(
             .then_with(|| a.owner_id.cmp(&b.owner_id))
     });
     out
+}
+
+/// 在线发送请求（teacher 走 HostCommand 广播 / student 走 agent 上行，#104）。
+enum AgentSend {
+    Text { title: String, body: String },
+    Files { paths: Vec<PathBuf> },
+}
+
+/// 发送路由（M2 #104）：teacher → `HostCommand`（广播给全班）；
+/// student → `AgentCommand`（定向教师，PRD 6.2）。
+///
+/// 失败语义：
+/// - student 未连接教师机 → 明确错误「未连接教师机…」（GUI 提示；离线队列归 #18）
+/// - 队列满/核心未运行 → 明确错误（不静默丢弃）
+fn dispatch_send(
+    host_cmd: &Option<mpsc::Sender<HostCommand>>,
+    agent_cmd: &Option<mpsc::Sender<classroom_agent::AgentCommand>>,
+    connected: &Arc<std::sync::atomic::AtomicBool>,
+    send: AgentSend,
+) -> SvcResult {
+    if let Some(cmd) = host_cmd {
+        let host = match send {
+            AgentSend::Text { title, body } => HostCommand::SendText { title, body },
+            AgentSend::Files { paths } => HostCommand::SendFiles { paths },
+        };
+        return cmd
+            .try_send(host)
+            .map(|_| GuiReply::Ok)
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => "发送队列已满，请稍后重试".to_string(),
+                mpsc::error::TrySendError::Closed(_) => "教师核心未运行".to_string(),
+            });
+    }
+    let Some(cmd) = agent_cmd else {
+        return Err("当前角色不支持发送".into());
+    };
+    if !connected.load(std::sync::atomic::Ordering::SeqCst) {
+        // 待发队列（离线补发）归 #18；本 issue 只保证「不静默丢弃」
+        return Err("未连接教师机，暂时无法发送（恢复连接后可重试）".into());
+    }
+    let command = match send {
+        AgentSend::Text { title, body } => classroom_agent::AgentCommand::SendText { title, body },
+        AgentSend::Files { paths } => classroom_agent::AgentCommand::SendFiles { paths },
+    };
+    cmd.try_send(command)
+        .map(|_| GuiReply::Ok)
+        .map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => "发送队列已满，请稍后重试".to_string(),
+            mpsc::error::TrySendError::Closed(_) => "agent 核心未运行".to_string(),
+        })
 }
 
 fn dispatch_teacher(
@@ -464,7 +541,13 @@ mod tests {
         let store = Arc::new(Mutex::new(store));
         let status = Arc::new(StatusBoard::new(Role::Teacher, String::new()));
         let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
-        let handler = make_ipc_handler(Some(cmd_tx), store, status);
+        let handler = make_ipc_handler(
+            Some(cmd_tx),
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            store,
+            status,
+        );
 
         // List 直读本地索引
         match handler(GuiRequest::List(ListFilter::default())) {
@@ -506,6 +589,8 @@ mod tests {
         let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
         let handler = make_ipc_handler(
             None,
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             store,
             Arc::new(StatusBoard::new(Role::Student, String::new())),
         );
@@ -513,7 +598,14 @@ mod tests {
             title: "t".into(),
             body: "b".into(),
         }) {
-            Err(msg) => assert!(msg.contains("M2"), "学员回传 M1 明确拒绝: {msg}"),
+            // M2 #104 语义变更：student 发送链路已打通——无 agent 通道时
+            // 报「当前角色不支持发送」；接入通道但未连接时报「未连接教师机」
+            // （见 student_send_routes_to_agent_with_connection_gate）。
+            // 断言「明确错误、不静默成功」不变。
+            Err(msg) => assert!(
+                msg.contains("不支持发送") || msg.contains("未连接"),
+                "student 无通道时应给出明确错误: {msg}"
+            ),
             other => panic!("{other:?}"),
         }
         assert!(handler(GuiRequest::ConfigureRoom {
@@ -591,6 +683,8 @@ mod tests {
         }
         let handler = make_ipc_handler(
             None,
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             store,
             Arc::new(StatusBoard::new(Role::Teacher, String::new())),
         );
@@ -606,6 +700,58 @@ mod tests {
         match handler(GuiRequest::List(ListFilter::default())) {
             Ok(GuiReply::Items(items)) => assert_eq!(items.len(), 2),
             other => panic!("期望 Items，实际 {other:?}"),
+        }
+    }
+
+    /// M2 #104：student 模式发送路由——未连接 → 明确错误（不静默丢弃）；
+    /// 已连接 → 投递 `AgentCommand` 给 agent（teacher 模式仍走 HostCommand）。
+    #[test]
+    fn student_send_routes_to_agent_with_connection_gate() {
+        use classroom_agent::AgentCommand;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
+        let status = Arc::new(StatusBoard::new(Role::Student, "alice".into()));
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+        let connected = Arc::new(AtomicBool::new(false));
+        let handler = make_ipc_handler(None, Some(cmd_tx), connected.clone(), store, status);
+
+        // 未连接教师机 → 明确错误（GUI 提示；离线队列归 #18）
+        match handler(GuiRequest::SendText {
+            title: "作业".into(),
+            body: "老师好".into(),
+        }) {
+            Err(msg) => assert!(msg.contains("未连接"), "未连接应给出明确错误: {msg}"),
+            other => panic!("期望未连接错误，实际 {other:?}"),
+        }
+        // 标记已连接 → 投递命令（agent 侧命令泵负责成帧与发送）
+        connected.store(true, Ordering::SeqCst);
+        match handler(GuiRequest::SendText {
+            title: "作业".into(),
+            body: "老师好".into(),
+        }) {
+            Ok(GuiReply::Ok) => {}
+            other => panic!("期望 Ok，实际 {other:?}"),
+        }
+        match cmd_rx.try_recv() {
+            Ok(AgentCommand::SendText { title, body }) => {
+                assert_eq!(title, "作业");
+                assert_eq!(body, "老师好");
+            }
+            other => panic!("期望 AgentCommand::SendText，实际 {other:?}"),
+        }
+        // 文件同样路由（路径原样透传，读取/分块在 agent 侧）
+        let f = dir.path().join("课件.pdf");
+        std::fs::write(&f, b"%PDF").unwrap();
+        match handler(GuiRequest::SendFiles {
+            paths: vec![f.clone()],
+        }) {
+            Ok(GuiReply::Ok) => {}
+            other => panic!("期望 Ok，实际 {other:?}"),
+        }
+        match cmd_rx.try_recv() {
+            Ok(AgentCommand::SendFiles { paths }) => assert_eq!(paths, vec![f]),
+            other => panic!("期望 AgentCommand::SendFiles，实际 {other:?}"),
         }
     }
 }
