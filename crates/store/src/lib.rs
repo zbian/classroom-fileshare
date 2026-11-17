@@ -61,6 +61,9 @@ pub enum StoreError {
     /// 条目不存在。
     #[error("条目不存在: {0}")]
     NotFound(String),
+    /// 重命名目标名称在同作用域内已被其他条目占用（M2 #19 / PRD 5.4）。
+    #[error("名称已被占用: {0}")]
+    NameTaken(String),
     /// 索引 schema 版本过新，程序需要升级。
     #[error("不支持的 schema 版本: {0}")]
     UnsupportedSchema(i64),
@@ -227,6 +230,24 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ShareItem> {
         // store 返回条目时由队列状态覆盖（见 `Store::with_retry_state`）
         retry_count: 0,
     })
+}
+
+/// 重命名正文文件（含同名 `.bak`）到新路径；旧文件不存在时视为无需移动
+/// （容忍实体已缺失——墓碑/异常场景不阻塞索引更新）。
+fn rename_body_pair(old_file: &Path, new_file: &Path) -> Result<()> {
+    if old_file == new_file || !old_file.exists() {
+        return Ok(());
+    }
+    std::fs::rename(old_file, new_file)?;
+    let mut old_bak = old_file.as_os_str().to_os_string();
+    old_bak.push(".bak");
+    let old_bak = PathBuf::from(old_bak);
+    if old_bak.exists() {
+        let mut new_bak = new_file.as_os_str().to_os_string();
+        new_bak.push(".bak");
+        let _ = std::fs::rename(&old_bak, PathBuf::from(new_bak));
+    }
+    Ok(())
 }
 
 /// owner_id 作为目录名的防御性校验（PRD 9.4：只写应用数据目录内、拒绝穿越）。
@@ -857,20 +878,46 @@ impl Store {
             sql.push_str(" AND kind = ?");
             args.push(kind_name(kind).to_string());
         }
-        if let Some(keyword) = &f.keyword {
-            sql.push_str(" AND title LIKE ? ESCAPE '\\'");
-            args.push(format!("%{}%", escape_like(keyword)));
-        }
         sql.push_str(" ORDER BY updated_at DESC, id");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params_from_iter(args), row_to_item)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        // M2 #19（PRD 5.4「按名称与内容搜索」）：标题或**文本正文**包含关键字。
+        // 正文存放在文件里、SQL 无法直接检索 → 内存过滤（M2 条目量级可接受；
+        // M3 若需要可加全文索引列）。
+        let rows: Vec<ShareItem> = if let Some(keyword) = &f.keyword {
+            let kw_lower = keyword.to_lowercase();
+            rows.into_iter()
+                .filter(|item| self.item_matches_keyword(item, &kw_lower))
+                .collect()
+        } else {
+            rows
+        };
         // M2 #103：叠加重试状态（RetryLocked / retry_count），GUI 据此显示「第 n/5 次」
         Ok(rows
             .into_iter()
             .map(|item| self.with_retry_state(item))
             .collect())
+    }
+
+    /// 关键字命中判定（PRD 5.4）：标题包含，或文本条目正文包含（忽略大小写）。
+    ///
+    /// 文件正文不参与搜索（M2 仅文本；PRD 5.4 的「内容」指文本正文）。
+    fn item_matches_keyword(&self, item: &ShareItem, kw_lower: &str) -> bool {
+        if item.title.to_lowercase().contains(kw_lower) {
+            return true;
+        }
+        if item.kind != ItemKind::Text {
+            return false;
+        }
+        let Ok(path) = self.file_body(item) else {
+            return false;
+        };
+        match std::fs::read_to_string(path) {
+            Ok(body) => body.to_lowercase().contains(kw_lower),
+            Err(_) => false,
+        }
     }
 
     /// 按 id 查询。
@@ -904,6 +951,66 @@ impl Store {
     }
 
     /// 软删除：写墓碑（deleted=1、DeleteDeferred），不动文件实体。
+    /// 重命名条目（M2 #19，PRD 5.4 FR-T-04：文本与文件通用）。
+    ///
+    /// 语义：
+    /// - 新名经 [`sanitize_file_name`] 净化（剥路径成分）；文件条目另拒风险
+    ///   扩展名（PRD 5.3）
+    /// - 同作用域（owner+audience+新名）已有**其他**未删除条目 →
+    ///   [`StoreError::NameTaken`]（M2 拒绝而非静默覆盖：避免误删数据；
+    ///   PRD 5.4 的「按 5.7 覆盖」语义留 M3）
+    /// - 文本：正文文件按新 scope hash 改名；文件：实体与 `.bak` 一并改名
+    /// - `version + 1`、`updated_at = now`、索引同步更新（各端按 version 应用）
+    pub fn rename_item(&self, id: &str, new_title: &str, now: i64) -> Result<ShareItem> {
+        let Some(item) = self.get(id)? else {
+            return Err(StoreError::NotFound(id.to_string()));
+        };
+        if item.deleted {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        let name = sanitize_file_name(new_title)?;
+        if item.kind == ItemKind::File && classroom_protocol::is_risky_ext(&name) {
+            return Err(StoreError::RiskyExt(name));
+        }
+        if let Some(prev) = self.find_scope(&item.owner_id, &item.audience, &name)? {
+            if prev.id != item.id {
+                return Err(StoreError::NameTaken(name));
+            }
+        }
+        let old_rel = item.rel_path.clone().unwrap_or_default();
+        let old_file = self.repo().join(&old_rel);
+        let owner_dir = self.repo().join(&item.owner_id);
+        let new_rel = match item.kind {
+            ItemKind::Text => {
+                std::fs::create_dir_all(owner_dir.join("texts"))?;
+                let h = scope_hash(&item.owner_id, &item.audience, &name);
+                let new_file = owner_dir.join("texts").join(format!("t{h}.txt"));
+                rename_body_pair(&old_file, &new_file)?;
+                self.rel_of(&new_file)
+            }
+            ItemKind::File => {
+                std::fs::create_dir_all(&owner_dir)?;
+                let new_file = owner_dir.join(&name);
+                rename_body_pair(&old_file, &new_file)?;
+                self.rel_of(&new_file)
+            }
+        };
+        let updated = ShareItem {
+            title: name,
+            rel_path: Some(new_rel),
+            updated_at: now,
+            version: item.version + 1,
+            ..item
+        };
+        self.upsert_item(&updated)?;
+        tracing::info!(
+            item_id = %updated.id,
+            version = updated.version,
+            "rename"
+        );
+        Ok(updated)
+    }
+
     pub fn soft_delete(&self, id: &str, now: i64) -> Result<ShareItem> {
         // M2 #103：删除条目即取消其占位重试（不再重试已删除内容）
         self.retry_remove(id)?;
@@ -1039,16 +1146,4 @@ fn outcome(old: Option<ShareItem>, latest: ShareItem) -> PutOutcome {
         },
         None => PutOutcome::Created(latest),
     }
-}
-
-/// LIKE 通配符转义（`%`、`_`、`\`）。
-fn escape_like(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }

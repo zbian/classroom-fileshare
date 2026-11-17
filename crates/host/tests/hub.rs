@@ -1988,3 +1988,154 @@ async fn submission_during_disconnect_is_kept_and_resent() {
     }
     task.abort();
 }
+
+// ---------- M2 #19：rename 事件广播与各端应用 ----------
+
+/// #19（PRD 5.4）：教师重命名 → **真实 agent 2 秒内**同步：
+/// 索引 title/rel_path 更新、实体文件改名（旧实体不再存在）、version+1。
+#[tokio::test]
+async fn rename_syncs_to_real_agent_within_2s() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    // 教师发文件 → agent 落盘
+    let src = tempfile::tempdir().unwrap();
+    let f = src.path().join("课件.pdf");
+    std::fs::write(&f, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f] })
+        .await
+        .unwrap();
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "课件.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+
+    // 等 agent 落盘（索引出现该条目且实体存在）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let old_body = loop {
+        let store = Store::open(&agent_root).unwrap();
+        if let Some(it) = store
+            .list(ListFilter::default())
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == item.id)
+        {
+            let body = store.file_body(&it).unwrap();
+            if body.exists() {
+                break body;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "agent 未在 5s 内收到初始文件"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(old_body.exists());
+
+    // 教师重命名 → 计时到 agent 端应用完成
+    let t0 = tokio::time::Instant::now();
+    host.cmd
+        .send(HostCommand::Rename {
+            id: item.id.clone(),
+            new_name: "新课件".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        let store = Store::open(&agent_root).unwrap();
+        if let Some(it) = store
+            .list(ListFilter::default())
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == item.id)
+        {
+            if it.title == "新课件" {
+                let new_body = store.file_body(&it).unwrap();
+                // 实体改名完成（旧路径不复存在、新路径存在）
+                if new_body.exists() && !old_body.exists() {
+                    assert_eq!(it.version, item.version + 1, "version+1");
+                    assert_ne!(it.rel_path, item.rel_path, "rel_path 更新");
+                    assert!(
+                        t0.elapsed() < Duration::from_secs(2),
+                        "PRD 5.4：rename 应在 2 秒内同步，实际 {:?}",
+                        t0.elapsed()
+                    );
+                    break;
+                }
+            }
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "PRD 5.4：2 秒内未同步 rename（当前 title={:?}）",
+            store
+                .list(ListFilter::default())
+                .unwrap()
+                .into_iter()
+                .find(|i| i.id == item.id)
+                .map(|i| i.title)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    task.abort();
+}
+
+/// #19：学生端（真实 agent）收到 rename 后**不产生重复条目**（同 id 覆盖）。
+#[tokio::test]
+async fn rename_does_not_duplicate_entries() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+    let src = tempfile::tempdir().unwrap();
+    let f = src.path().join("a.txt");
+    std::fs::write(&f, b"hello").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f] })
+        .await
+        .unwrap();
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "a.txt" => Some(i),
+        _ => None,
+    })
+    .await;
+    // 等落盘
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while Store::open(&agent_root)
+        .unwrap()
+        .list(ListFilter::default())
+        .unwrap()
+        .iter()
+        .all(|i| i.id != item.id)
+    {
+        assert!(tokio::time::Instant::now() < deadline, "agent 未收到文件");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    host.cmd
+        .send(HostCommand::Rename {
+            id: item.id.clone(),
+            new_name: "b.txt".into(),
+        })
+        .await
+        .unwrap();
+    // 等 rename 应用，然后断言 agent 端恰好 1 条（同 id，不重复）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let store = Store::open(&agent_root).unwrap();
+        let all = store.list(ListFilter::default()).unwrap();
+        if all.iter().any(|i| i.title == "b.txt") {
+            assert_eq!(all.len(), 1, "rename 不应产生重复条目: {all:?}");
+            assert_eq!(all[0].id, item.id);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "rename 未应用");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    task.abort();
+}

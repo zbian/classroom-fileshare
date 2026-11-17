@@ -121,6 +121,13 @@ pub enum HostCommand {
         /// 条目 id。
         id: String,
     },
+    /// 重命名条目并广播 rename 事件（M2 #19，PRD 5.4 FR-T-04）。
+    Rename {
+        /// 条目 id。
+        id: String,
+        /// 新名称。
+        new_name: String,
+    },
     /// 停止 host（退出 beacon 与服务循环）。
     Shutdown,
 }
