@@ -2486,3 +2486,416 @@ async fn pending_count_resets_after_resend() {
     );
     task.abort();
 }
+// ---------- M2 #117：接收端占用重试队列（PRD 5.7 / EX-06 接收侧） ----------
+
+/// 等 agent 本地条目达到期望状态（轮询）。
+async fn wait_agent_state(
+    agent_root: &std::path::Path,
+    item_id: &str,
+    state: classroom_protocol::SyncState,
+    timeout: Duration,
+) -> classroom_protocol::ShareItem {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(item) = agent_store(agent_root).get(item_id).unwrap() {
+            if item.sync_state == state {
+                return item;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待 agent 条目状态 {state:?} 超时（item_id={item_id}）"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// #117 用例 1：接收端目标被占用 → **不抛错不断连**、条目置 `RetryLocked`
+/// 并持久化内容；释放后自动完成（内容为新版、`.bak` 恰 1 份、`Synced`）。
+#[tokio::test]
+async fn recv_retry_enqueues_and_completes_after_release() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    // 教师发 v1 → agent 落盘
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("课件.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "课件.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let agent_final = agent_store(&agent_root).file_body(&first).unwrap();
+    // 学员本地旧版被阅读器锁定（独占句柄）
+    let lock = hold_exclusive(&agent_final);
+
+    // 教师发同名新版 v2 → agent 接收端遇占用
+    let f2 = src.path().join("课件2.pdf");
+    std::fs::write(&f2, b"v2").unwrap();
+    // 同名（同 scope）：构造同名路径
+    let f2_named = src.path().join("课件.pdf");
+    std::fs::write(&f2_named, b"v2").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles {
+            paths: vec![f2_named],
+        })
+        .await
+        .unwrap();
+    // 教师端覆盖广播（同 id、version+1）
+    let v2 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+        _ => None,
+    })
+    .await;
+
+    // 关键断言（#117）：agent 端**未断连**、条目登记为 RetryLocked（队列化）
+    let locked = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::RetryLocked,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(locked.version, v2.version);
+    assert!(
+        agent_root.join("retry_recv").exists(),
+        "待安装内容已持久到 retry_recv/"
+    );
+
+    // 释放锁 → 自动完成（无需重连/用户操作）
+    drop(lock);
+    let done = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(done.version, v2.version);
+    let store = agent_store(&agent_root);
+    let body = store.file_body(&done).unwrap();
+    assert_eq!(std::fs::read(&body).unwrap(), b"v2", "内容为新版");
+    let mut bak = body.as_os_str().to_os_string();
+    bak.push(".bak");
+    let bak = std::path::PathBuf::from(bak);
+    assert!(bak.exists(), "旧版 `.bak` 存在");
+    assert_eq!(std::fs::read(&bak).unwrap(), b"v1", ".bak 为旧版");
+    assert!(
+        classroom_agent::recv_retry::load(&agent_root).is_empty(),
+        "完成后队列清空"
+    );
+    task.abort();
+    let _ = f2;
+}
+
+/// #117 用例 2：持续占用 → 重试 **≤5 次** 后耗尽：条目 `Failed` +
+/// `AgentEvent::Warning{RetryExhausted}`（GUI banner 数据源）；期间**不断连**。
+#[tokio::test]
+async fn recv_retry_exhausts_with_warning_and_no_disconnect_storm() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir, mut ev_rx) = start_real_agent_observed(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    // v1 落盘 → 锁定 → v2 同名覆盖
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("被锁.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "被锁.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let lock = hold_exclusive(&agent_store(&agent_root).file_body(&first).unwrap());
+    let f2 = src.path().join("被锁.pdf");
+    std::fs::write(&f2, b"v2").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f2] })
+        .await
+        .unwrap();
+    let _ = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+        _ => None,
+    })
+    .await;
+
+    // 等告警（重试 5 次 ≈ 5-6s）
+    let mut warned = false;
+    let mut disconnected_during_retry = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), ev_rx.recv()).await {
+            Ok(Some(classroom_agent::AgentEvent::Warning {
+                kind: classroom_agent::AgentWarningKind::RetryExhausted,
+                ..
+            })) => {
+                warned = true;
+                break;
+            }
+            Ok(Some(classroom_agent::AgentEvent::Disconnected)) => {
+                disconnected_during_retry = true;
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert!(warned, "#117：重试耗尽应产生 Warning（GUI banner）");
+    assert!(
+        !disconnected_during_retry,
+        "#117：占用重试期间**不得**断连（会话保持）"
+    );
+    let failed = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Failed,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(failed.id, v1.id);
+    assert!(
+        classroom_agent::recv_retry::load(&agent_root).is_empty(),
+        "耗尽后队列清空（不无限重试）"
+    );
+    drop(lock);
+    task.abort();
+}
+
+/// #117 用例 3：锁快速释放 → **无需教师重推**即自动完成（队列语义，而非
+/// 依赖断连重连的 Manifest 重推）。
+#[tokio::test]
+async fn recv_retry_completes_without_reconnect() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("短暂锁定.txt");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "短暂锁定.txt" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let lock = hold_exclusive(&agent_store(&agent_root).file_body(&first).unwrap());
+    let f2 = src.path().join("短暂锁定.txt");
+    std::fs::write(&f2, b"v2").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f2] })
+        .await
+        .unwrap();
+    let _ = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+        _ => None,
+    })
+    .await;
+    // 进入重试队列后立即释放
+    let _ = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::RetryLocked,
+        Duration::from_secs(5),
+    )
+    .await;
+    drop(lock);
+    let done = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(done.version, v1.version + 1);
+    assert_eq!(
+        std::fs::read(agent_store(&agent_root).file_body(&done).unwrap()).unwrap(),
+        b"v2",
+        "内容为新版"
+    );
+    task.abort();
+}
+
+/// #117 用例 4：锁**持续**期间会话保持——不产生断连/重连风暴（教师端在线
+/// 数不变），释放后队列自动完成。
+#[tokio::test]
+async fn recv_retry_sustained_lock_keeps_session() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir, mut ev_rx) = start_real_agent_observed(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("持久锁.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "持久锁.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let lock = hold_exclusive(&agent_store(&agent_root).file_body(&first).unwrap());
+    let f2 = src.path().join("持久锁.pdf");
+    std::fs::write(&f2, b"v2").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f2] })
+        .await
+        .unwrap();
+    let _ = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+        _ => None,
+    })
+    .await;
+    let _ = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::RetryLocked,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // 持续锁定 3 秒：会话不得断开（无 Disconnected 事件）
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut disconnect_count = 0;
+    while tokio::time::Instant::now() < until {
+        match tokio::time::timeout(Duration::from_millis(200), ev_rx.recv()).await {
+            Ok(Some(classroom_agent::AgentEvent::Disconnected)) => disconnect_count += 1,
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    assert_eq!(
+        disconnect_count, 0,
+        "#117：锁持续期间不得断连（否则形成重连风暴）"
+    );
+    // 释放后自动完成（无需重连）
+    drop(lock);
+    let done = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(done.version, v1.version + 1);
+    task.abort();
+}
+
+/// #117 评审修正：同一 item 连续被占用（教师连续覆盖 v2→v3 且学员端持续锁定）
+/// → 重试使用**最新内容**（队列内容/sha 更新，不得因旧 sha 哈希不符而中止）。
+#[tokio::test]
+async fn recv_retry_uses_latest_content_on_repeated_overwrite() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let dir = tempfile::tempdir().unwrap();
+    let (_cmd_tx, task, dir) = start_real_agent_with_commands(port, "alice", dir).await;
+    let agent_root = dir.path().to_path_buf();
+
+    // v1 落盘并锁定
+    let src = tempfile::tempdir().unwrap();
+    let f1 = src.path().join("连更.pdf");
+    std::fs::write(&f1, b"v1").unwrap();
+    host.cmd
+        .send(HostCommand::SendFiles { paths: vec![f1] })
+        .await
+        .unwrap();
+    let v1 = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.title == "连更.pdf" => Some(i),
+        _ => None,
+    })
+    .await;
+    let first = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(5),
+    )
+    .await;
+    let lock = hold_exclusive(&agent_store(&agent_root).file_body(&first).unwrap());
+
+    // v2 → v3（持续锁定，两次都入队；第二次必须覆盖队列内容）
+    for content in [b"v2".as_slice(), b"v3".as_slice()] {
+        let f = src.path().join("连更.pdf");
+        std::fs::write(&f, content).unwrap();
+        host.cmd
+            .send(HostCommand::SendFiles { paths: vec![f] })
+            .await
+            .unwrap();
+        let _ = next_matching(&mut host.events, |e| match e {
+            HostEvent::ReceivedUpsert(i) if i.id == v1.id && i.version > v1.version => Some(i),
+            _ => None,
+        })
+        .await;
+        // 等该版本进入队列（RetryLocked 或队列内容更新）
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    // 队列应为 1 项且尝试次数已复位（内容最新）
+    {
+        let queue = classroom_agent::recv_retry::load(&agent_root);
+        assert_eq!(queue.len(), 1, "同 item 不重复入队");
+    }
+
+    // 释放 → 自动完成，内容必须是最新（v3）
+    drop(lock);
+    let done = wait_agent_state(
+        &agent_root,
+        &v1.id,
+        classroom_protocol::SyncState::Synced,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read(agent_store(&agent_root).file_body(&done).unwrap()).unwrap(),
+        b"v3",
+        "重试应使用最新内容（v3）"
+    );
+    task.abort();
+}

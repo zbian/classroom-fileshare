@@ -504,6 +504,23 @@ fn map_notify(ev: &CoreEvent) -> Vec<SvcNotify> {
                 limit / (1024 * 1024)
             ))]
         }
+        // M2 #117：接收端占用重试耗尽告警 → GUI SyncIssuesBanner（#101/#125 聚合位）
+        CoreEvent::Agent(AgentEvent::Warning {
+            kind,
+            item_id,
+            detail,
+        }) => {
+            let kind = match kind {
+                classroom_agent::AgentWarningKind::RetryExhausted => {
+                    classroom_ipc::WarningKind::RetryExhausted
+                }
+            };
+            vec![SvcNotify::Warning {
+                kind,
+                item_id: item_id.clone(),
+                detail: detail.clone(),
+            }]
+        }
         // 评审随包项 3：EX-08「教师机离线只读缓存」信号通路（T-10 前端
         // 消费 StatusChanged 展示离线横幅与待发提示）
         CoreEvent::Agent(AgentEvent::Disconnected) => {

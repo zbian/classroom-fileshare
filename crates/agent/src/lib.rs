@@ -8,6 +8,7 @@
 //! 重推对齐。学员回传（发送）是 M2（P1）内容。
 
 pub mod pending;
+pub mod recv_retry;
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -83,6 +84,23 @@ pub enum AgentEvent {
         /// 阈值。
         limit: u64,
     },
+    /// 同步异常告警（M2 #117：接收端占用重试耗尽等）→ svc 映射
+    /// `SvcNotify::Warning` 推送 GUI `SyncIssuesBanner`。
+    Warning {
+        /// 告警类型。
+        kind: AgentWarningKind,
+        /// 关联条目 id（无关联为空串）。
+        item_id: String,
+        /// 人类可读细节。
+        detail: String,
+    },
+}
+
+/// 同步告警类型（M2 #117，可扩展）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWarningKind {
+    /// 接收端文件被占用，重试次数耗尽（条目转 `Failed`）。
+    RetryExhausted,
 }
 
 fn unix_now() -> i64 {
@@ -178,6 +196,13 @@ pub async fn run_agent_with_commands(
         epoch.clone(),
         sent.clone(),
         store.clone(),
+    ));
+    // M2 #117：接收端占用重试泵（教师发同名新版、学员本地被锁 → 队列化重试，
+    // 不抛错不断连；成功 Synced / 耗尽 Failed + 告警）
+    tokio::spawn(recv_retry_pump(
+        store.clone(),
+        notify.clone(),
+        cfg.data_root.clone(),
     ));
 
     if let Some(addr) = cfg.manual_addr {
@@ -609,6 +634,118 @@ async fn record_local_submission(
         Err(e) => tracing::warn!(item_id = %op.item_id, error = %e, "本地落库失败"),
     }
 }
+/// 接收端占用重试泵（M2 #117，PRD 5.7 / EX-06 接收侧）：1s tick，对到期项
+/// 尝试安装；**成功 → `Synced` + 清队列；仍占用 → 退避（≤5 次）；耗尽 →
+/// `Failed` + 告警**。与上行补发泵独立，互不阻塞。
+async fn recv_retry_pump(
+    store: Arc<Mutex<Store>>,
+    notify: mpsc::Sender<AgentEvent>,
+    data_root: std::path::PathBuf,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let due = recv_retry::RecvRetryQueue::open(&data_root).due(unix_now());
+        for entry in due {
+            match try_install_recv(&data_root, &entry) {
+                Ok(true) => {
+                    recv_retry::RecvRetryQueue::open(&data_root).remove(&entry.item_id);
+                    let updated = store
+                        .lock()
+                        .unwrap()
+                        .set_sync_state(&entry.item_id, SyncState::Synced)
+                        .ok()
+                        .flatten();
+                    tracing::info!(item_id = %entry.item_id, "接收端占用重试成功");
+                    if let Some(item) = updated {
+                        let _ = notify.send(AgentEvent::Received(item)).await;
+                    }
+                }
+                Ok(false) => {
+                    let attempts = recv_retry::RecvRetryQueue::open(&data_root)
+                        .retry_later(&entry.item_id, unix_now());
+                    if attempts >= recv_retry::RECV_RETRY_MAX_ATTEMPTS {
+                        recv_retry::RecvRetryQueue::open(&data_root).remove(&entry.item_id);
+                        let _ = store
+                            .lock()
+                            .unwrap()
+                            .set_sync_state(&entry.item_id, SyncState::Failed);
+                        tracing::warn!(
+                            item_id = %entry.item_id,
+                            attempts,
+                            "接收端占用重试耗尽，条目转 Failed"
+                        );
+                        let _ = notify
+                            .send(AgentEvent::Warning {
+                                kind: AgentWarningKind::RetryExhausted,
+                                item_id: entry.item_id.clone(),
+                                detail: "目标文件被占用，重试 5 次仍未成功".into(),
+                            })
+                            .await;
+                    } else {
+                        tracing::info!(
+                            item_id = %entry.item_id,
+                            attempts,
+                            "接收端重试退避"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(item_id = %entry.item_id, error = %e, "接收端重试中止");
+                    recv_retry::RecvRetryQueue::open(&data_root).remove(&entry.item_id);
+                    let _ = store
+                        .lock()
+                        .unwrap()
+                        .set_sync_state(&entry.item_id, SyncState::Failed);
+                }
+            }
+        }
+    }
+}
+
+/// 尝试安装一条接收端重试内容：`Ok(true)` 成功 / `Ok(false)` 仍被占用 /
+/// `Err` 不可重试（内容缺失或哈希不符，调用方置 `Failed`）。
+fn try_install_recv(
+    data_root: &std::path::Path,
+    entry: &recv_retry::RecvRetryEntry,
+) -> anyhow::Result<bool> {
+    let final_path = data_root.join("repo").join(&entry.rel_path);
+    let part = data_root.join(&entry.part_rel);
+    if !part.exists() {
+        anyhow::bail!("重试内容缺失");
+    }
+    if !sha256_file(&part)?.eq_ignore_ascii_case(&entry.sha256) {
+        anyhow::bail!("重试内容哈希不符");
+    }
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // 内容已一致（重连重推等幂等场景）→ 视为成功
+    if final_path.exists()
+        && sha256_file(&final_path)
+            .map(|h| h.eq_ignore_ascii_case(&entry.sha256))
+            .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&part);
+        return Ok(true);
+    }
+    if final_path.exists() {
+        let mut bak = final_path.as_os_str().to_os_string();
+        bak.push(".bak");
+        match std::fs::rename(&final_path, PathBuf::from(bak)) {
+            Ok(()) => {}
+            Err(e) if classroom_store::retry::is_target_busy(&e) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    match std::fs::rename(&part, &final_path) {
+        Ok(()) => Ok(true),
+        Err(e) if classroom_store::retry::is_target_busy(&e) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// 推送待发队列状态（GUI 状态条「待发送 N 条」）。
 async fn notify_pending(notify: &mpsc::Sender<AgentEvent>, pending: &Arc<Mutex<PendingQueue>>) {
     let (count, bytes) = {
@@ -1042,6 +1179,13 @@ enum EvOutcome {
 ///
 /// 不持有 `&Store`（rusqlite 连接非 Sync，跨 await 会破坏 future 的 Send），
 /// 各方法同步执行、以参数借用 store。
+/// 单次安装结果（M2 #117）：正常完成 / 因目标被占用转入接收端重试队列。
+enum InstallOutcome {
+    /// 安装完成（内容一致或已落盘）。
+    Done,
+    /// 目标被占用：内容已持久到 `retry_recv/`，条目待重试。
+    RetryQueued,
+}
 struct Incoming {
     repo: PathBuf,
     incoming_dir: PathBuf,
@@ -1208,7 +1352,27 @@ impl Incoming {
             tracing::warn!("文件完成但对应事件缺失，丢弃");
             return Ok(None);
         };
-        self.install(&ev.item, &header, &path)?;
+        match self.install(&ev.item, &header, &path)? {
+            InstallOutcome::Done => {}
+            InstallOutcome::RetryQueued => {
+                // 内容已持久到 retry_recv；登记索引为 RetryLocked（不断连，
+                // 由 recv_retry_pump 自动完成；GUI 可显示「被占用重试」）
+                let applied = match store.apply_remote(&ev) {
+                    Ok(MergeDecision::Overwrite(applied)) => Some(*applied),
+                    _ => None,
+                };
+                if let Some(mut item) = applied {
+                    let _ = store.set_sync_state(&item.id, SyncState::RetryLocked);
+                    item.sync_state = SyncState::RetryLocked;
+                    tracing::info!(
+                        item_id = %item.id,
+                        "接收端目标被占用：已入重试队列（不阻塞会话）"
+                    );
+                    return Ok(Some(item));
+                }
+                return Ok(None);
+            }
+        }
         // E4（#14 TC-02 计时锚点）：收到（校验安装完成、即将入索引）
         // E6：size 用 item.size（PRD 3.5：文本 size=字符数、文件=字节数），
         // 与 broadcast 侧同源，证据表列自洽
@@ -1231,7 +1395,17 @@ impl Incoming {
     }
 
     /// 把校验通过的 `.part` 安装到 `rel_path` 指示的仓库位置。
-    fn install(&self, item: &ShareItem, header: &FileHeader, part: &Path) -> anyhow::Result<()> {
+    ///
+    /// M2 #117（PRD 5.7 / EX-06 接收侧）：目标被其他程序占用（Windows
+    /// `ERROR_SHARING_VIOLATION` / `ERROR_ACCESS_DENIED`）时**不抛错、不断连**
+    /// ——内容持久到 `data_root/retry_recv/`、条目入接收端重试队列，由
+    /// [`recv_retry_pump`] 退避重试（≤5 次）；成功 `Synced`，耗尽 `Failed`+告警。
+    fn install(
+        &self,
+        item: &ShareItem,
+        header: &FileHeader,
+        part: &Path,
+    ) -> anyhow::Result<InstallOutcome> {
         let rel = item
             .rel_path
             .as_deref()
@@ -1255,14 +1429,58 @@ impl Incoming {
                 .unwrap_or(false);
         if unchanged {
             let _ = std::fs::remove_file(part);
-            return Ok(());
+            return Ok(InstallOutcome::Done);
         }
         if final_path.exists() {
             let mut bak = final_path.as_os_str().to_os_string();
             bak.push(".bak");
-            std::fs::rename(&final_path, PathBuf::from(bak))?;
+            match std::fs::rename(&final_path, PathBuf::from(bak)) {
+                Ok(()) => {}
+                Err(e) if classroom_store::retry::is_target_busy(&e) => {
+                    self.enqueue_recv_retry(item, part, &header.sha256)?;
+                    return Ok(InstallOutcome::RetryQueued);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
-        std::fs::rename(part, &final_path)?;
+        match std::fs::rename(part, &final_path) {
+            Ok(()) => Ok(InstallOutcome::Done),
+            Err(e) if classroom_store::retry::is_target_busy(&e) => {
+                self.enqueue_recv_retry(item, part, &header.sha256)?;
+                Ok(InstallOutcome::RetryQueued)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 接收端占用：内容持久到 `data_root/retry_recv/`，条目入重试队列（M2 #117）。
+    ///
+    /// 覆盖语义（评审修正）：同一 item 连续被占用时（教师连续覆盖 v2→v3 且学员
+    /// 端持续锁定）→ **先移除旧队列项与旧内容，再写新内容与条目**，保证重试使用
+    /// **最新内容**（否则旧 sha 与新内容不符 → 重试中止 Failed）。
+    fn enqueue_recv_retry(
+        &self,
+        item: &ShareItem,
+        part: &Path,
+        sha256: &str,
+    ) -> anyhow::Result<()> {
+        let data_root = self.repo.parent().ok_or_else(|| anyhow!("repo 无父目录"))?;
+        std::fs::create_dir_all(recv_retry::retry_content_dir(data_root))?;
+        let mut q = recv_retry::RecvRetryQueue::open(data_root);
+        // 先移除同 item 旧条目（含旧内容），再落新内容
+        q.remove(&item.id);
+        let dest = recv_retry::retry_content_dir(data_root).join(format!("{}.part", item.id));
+        std::fs::rename(part, &dest)?;
+        let rel_path = item.rel_path.clone().unwrap_or_default();
+        q.push(recv_retry::RecvRetryEntry {
+            item_id: item.id.clone(),
+            rel_path,
+            part_rel: format!("retry_recv/{}.part", item.id),
+            sha256: sha256.to_string(),
+            attempts: 0,
+            next_at: unix_now(),
+            created_at: unix_now(),
+        });
         Ok(())
     }
 
