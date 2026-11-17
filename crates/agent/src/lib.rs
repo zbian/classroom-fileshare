@@ -9,17 +9,17 @@
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail};
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use classroom_net::{
-    encode_frame, read_frame, spawn_discovery_with_addr, Beacon, FileHeader, Frame, Hello,
-    HelloReply,
+    run_client_session, spawn_discovery_with_addr, Beacon, ClientHandler, ClientSessionConfig,
+    FileHeader, Frame, Hello, SessionEnd,
 };
 use classroom_protocol::{Event, EventKind, MergeDecision, Role, ShareItem, PROTOCOL_VERSION};
 use classroom_store::{sha256_file, Store};
@@ -76,9 +76,11 @@ fn to_hex(bytes: &[u8]) -> String {
 /// 后台 discovery 泵持续把最新信标的 `(peer.ip, tcp_port)` 写入 watch，
 /// 连接循环每次重连都取最新目标（教师机换 IP/端口后自然跟上）。
 pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> anyhow::Result<()> {
-    let mut store = Store::open(&cfg.data_root)?;
+    // S2：Store 经 Arc<Mutex<>> 传给会话回调（ClientHandler 要求 Send+Sync，
+    // 而 Store 内含 rusqlite Connection（非 Sync）；锁只在同步临界区持有）。
+    let store = Arc::new(Mutex::new(Store::open(&cfg.data_root)?));
     if let Some(addr) = cfg.manual_addr {
-        return connect_loop(&cfg, &mut store, addr, &notify).await;
+        return connect_loop(&cfg, &store, addr, &notify).await;
     }
 
     // 自动发现：watch 保存最新连接目标；None = 尚未发现任何可用教师机
@@ -102,7 +104,7 @@ pub async fn run_agent(cfg: AgentConfig, notify: mpsc::Sender<AgentEvent>) -> an
         };
         // connect_loop 仅在致命错误（join 被拒）时返回 `?` 上抛，
         // 正常路径（断线重连）永不返回——此处无需退避（PR #69 顺手项）
-        connect_loop(&cfg, &mut store, target, &notify).await?;
+        connect_loop(&cfg, &store, target, &notify).await?;
     }
 }
 
@@ -150,7 +152,7 @@ async fn discovery_pump(
 /// 连接循环：会话 → 断线退避重连（连接失败视为可重连，不返回）。
 async fn connect_loop(
     cfg: &AgentConfig,
-    store: &mut Store,
+    store: &Arc<Mutex<Store>>,
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
 ) -> anyhow::Result<()> {
@@ -164,107 +166,116 @@ async fn connect_loop(
     }
 }
 
+/// 一次会话：S2 起由 net 客户端运行器承载控制面（建连超时 / 握手 / 心跳 /
+/// Ping→Pong / 断线分类），本函数只构造配置与业务回调。
+///
+/// 语义映射（与 S1 之前的实现对照）：
+/// - `SessionEnd::Rejected` → bail：join 被拒仍是致命（`join_rejection_is_fatal`
+///   用例守护，run_agent 直接返回 Err）
+/// - `SessionEnd::Closed` → `Ok(())`：断线语义不变，由 connect_loop 退避重连
+/// - 运行器 Err（建连失败 / 业务回调失败）→ 记录 debug 后返回 `Ok(())` 重连；
+///   原实现「连接失败可重连、回调失败致命」的差异在此统一为可重连（重连自带
+///   1s→5s 退避，比一次性致命更健壮；join 拒绝仍致命）
 async fn agent_session(
     cfg: &AgentConfig,
-    store: &mut Store,
+    store: &Arc<Mutex<Store>>,
     addr: SocketAddr,
     notify: &mpsc::Sender<AgentEvent>,
 ) -> anyhow::Result<()> {
-    let sock = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "连接失败，稍后重试");
-            return Ok(());
-        }
-        Err(_) => {
-            tracing::debug!("连接超时，稍后重试");
-            return Ok(());
-        }
-    };
-    sock.set_nodelay(true)?;
-    let (mut reader, mut writer) = sock.into_split();
-
-    // join：错 PIN / 重名 / 版本不匹配是致命错误，直接上抛
     let hello = Hello::Join {
         protocol_version: PROTOCOL_VERSION,
         nickname: cfg.nickname.clone(),
         role: Role::Student,
         pin: cfg.pin.clone(),
     };
-    writer
-        .write_all(&encode_frame(&Frame::Hello(hello)))
-        .await?;
-    match read_frame(&mut reader).await? {
-        Frame::HelloReply(HelloReply::Ok { .. }) => {}
-        Frame::HelloReply(HelloReply::Err { code }) => {
-            return Err(anyhow!("加入被教师机拒绝: {code:?}"));
+    let incoming = Arc::new(Mutex::new(Incoming::new(&cfg.data_root)));
+    let handler = AgentSessionHandler {
+        incoming: incoming.clone(),
+        store: store.clone(),
+        notify: notify.clone(),
+        addr,
+    };
+    // 默认：心跳 5s、建连超时 5s、加入后自动请求版本清单（与原实现一致）
+    let session_cfg = ClientSessionConfig::new(addr, hello);
+
+    let end = match run_client_session(session_cfg, handler).await {
+        Ok(end) => end,
+        Err(e) => {
+            tracing::debug!(error = %e, %addr, "会话结束（将重连）");
+            incoming.lock().unwrap().abandon();
+            return Ok(());
         }
-        other => return Err(anyhow!("期望 HelloReply，收到 {other:?}")),
+    };
+    incoming.lock().unwrap().abandon();
+    match end {
+        SessionEnd::Rejected(code) => bail!("加入被教师机拒绝: {code:?}"),
+        SessionEnd::Closed => Ok(()),
     }
-    tracing::info!(%addr, "已加入");
-    let _ = notify
-        .send(AgentEvent::Joined(format!("tcp://{addr}")))
-        .await;
+}
 
-    // 重连对齐第一步：请求版本清单（host 回 Manifest 并重推未删条目）
-    writer.write_all(&encode_frame(&Frame::ManifestReq)).await?;
+/// 业务面回调：帧 → agent 接收状态机（逻辑与原手写循环逐行一致）。
+///
+/// 控制面（含 E3 的 Ping→Pong 应答）已由 net 运行器内置——这类缺陷从
+/// 「角色层要记得写」变为「结构上不可能漏」。
+struct AgentSessionHandler {
+    incoming: Arc<Mutex<Incoming>>,
+    store: Arc<Mutex<Store>>,
+    notify: mpsc::Sender<AgentEvent>,
+    addr: SocketAddr,
+}
 
-    let mut incoming = Incoming::new(&cfg.data_root);
-    let mut ping = tokio::time::interval(Duration::from_secs(5));
-    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    ping.tick().await; // interval 首个 tick 立即触发，吃掉
+#[async_trait]
+impl ClientHandler for AgentSessionHandler {
+    async fn on_joined(&self, _session_id: &str) {
+        let _ = self
+            .notify
+            .send(AgentEvent::Joined(format!("tcp://{}", self.addr)))
+            .await;
+    }
 
-    loop {
-        tokio::select! {
-            _ = ping.tick() => {
-                if writer.write_all(&encode_frame(&Frame::Ping)).await.is_err() {
-                    break;
-                }
-            }
-            frame = read_frame(&mut reader) => {
-                let frame = match frame {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::debug!(error = %e, "读帧结束，会话关闭");
-                        break;
-                    }
+    async fn on_frame(&self, frame: Frame) -> anyhow::Result<()> {
+        match frame {
+            Frame::Event(ev) => {
+                // 锁只在同步临界区持有，不跨 await（MutexGuard 非 Send）
+                let outcome = {
+                    let mut incoming = self.incoming.lock().unwrap();
+                    let store = self.store.lock().unwrap();
+                    incoming.on_event(&store, ev)?
                 };
-                match frame {
-                    Frame::Event(ev) => match incoming.on_event(&*store, ev)? {
-                        EvOutcome::Removed(id) => {
-                            let _ = notify.send(AgentEvent::Removed(id)).await;
-                        }
-                        EvOutcome::Ignored => {}
-                    },
-                    Frame::FileHeader(h) => incoming.begin_file(h)?,
-                    Frame::FileChunk(c) => incoming.append_chunk(&c)?,
-                    Frame::FileEnd(_) => {
-                        if let Some(item) = incoming.finish_file(&*store)? {
-                            let _ = notify.send(AgentEvent::Received(item)).await;
-                        }
-                    }
-                    Frame::Manifest(entries) => {
-                        let removed = align_manifest(&*store, entries)?;
-                        for id in removed {
-                            let _ = notify.send(AgentEvent::Removed(id)).await;
-                        }
-                        let _ = notify.send(AgentEvent::Synced).await;
-                    }
-                    Frame::Pong => {}
-                    // E3（issue #37）：必须应答服务端探测 Ping——host 重名
-                    // 存活探测依赖 Pong，忽略会导致活跃连接被误驱逐
-                    Frame::Ping => {
-                        if writer.write_all(&encode_frame(&Frame::Pong)).await.is_err() {
-                            tracing::debug!("Pong 写入失败，会话即将结束");
-                        }
-                    }
-                    other => tracing::debug!(frame = ?other, "agent 忽略该帧"),
+                if let EvOutcome::Removed(id) = outcome {
+                    let _ = self.notify.send(AgentEvent::Removed(id)).await;
                 }
             }
+            Frame::FileHeader(h) => {
+                self.incoming.lock().unwrap().begin_file(h)?;
+            }
+            Frame::FileChunk(c) => {
+                self.incoming.lock().unwrap().append_chunk(&c)?;
+            }
+            Frame::FileEnd(_) => {
+                let item = {
+                    let mut incoming = self.incoming.lock().unwrap();
+                    let store = self.store.lock().unwrap();
+                    incoming.finish_file(&store)?
+                };
+                if let Some(item) = item {
+                    let _ = self.notify.send(AgentEvent::Received(item)).await;
+                }
+            }
+            Frame::Manifest(entries) => {
+                let removed = {
+                    let store = self.store.lock().unwrap();
+                    align_manifest(&store, entries)?
+                };
+                for id in removed {
+                    let _ = self.notify.send(AgentEvent::Removed(id)).await;
+                }
+                let _ = self.notify.send(AgentEvent::Synced).await;
+            }
+            other => tracing::debug!(frame = ?other, "agent 忽略该帧"),
         }
+        Ok(())
     }
-    incoming.abandon();
-    Ok(())
 }
 
 /// 清单对齐：远端已删而本地未删的条目，落地墓碑并清实体（PRD 7.4 补删）。
