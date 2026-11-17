@@ -42,6 +42,11 @@ pub(crate) struct Hub {
     admitter: Admitter,
     notify: mpsc::Sender<HostEvent>,
     conns: Mutex<HashMap<String, Conn>>,
+    /// 学员回传的「已登记元数据、等待内容帧」状态（M2 #94）：
+    /// session_id → 学员上行 Event。文本/文件内容经随后的 FileHeader→Chunk→
+    /// End 分块流承载（与教师广播的 Event+文件帧模型对称）；内容到位后才
+    /// 入库，避免「元数据先落库、内容永远不来」的半成品条目。
+    uploads: Mutex<HashMap<String, Event>>,
     port: AtomicU16,
 }
 
@@ -100,6 +105,7 @@ impl Hub {
             admitter,
             notify,
             conns: Mutex::new(HashMap::new()),
+            uploads: Mutex::new(HashMap::new()),
             port: AtomicU16::new(0),
         })
     }
@@ -443,15 +449,20 @@ impl SessionHandler for Hub {
             );
             return;
         }
-        // ===== 通过身份校验 =====
-        // S3 只收紧不放宽：学员回传的落库链路在 S4（issue #89 之后的
-        // #17/#18）启用；此处保持 M1「学员回传未启用」语义，仅记录。
-        // 对比 M1：原 A2 过滤（仅接受 owner==teacher）在此收紧后不可达——
-        // 保留昵称 teacher 已在 join 层拒绝，故 socket 上不存在教师身份。
+        // ===== 通过身份校验：登记为待完成上传（M2 #94）=====
+        // 内容经随后的 FileHeader→Chunk→End 分块流承载（与教师广播的
+        // Event + 文件帧模型对称）；内容到位、哈希校验通过后才入库——
+        // 避免「元数据先落库、内容永远不来」的半成品条目。
+        let mut uploads = self.uploads.lock().unwrap();
+        if uploads.insert(session_id.to_string(), ev.clone()).is_some() {
+            tracing::warn!(%session_id, "上一个未完成的上传被新事件替换");
+        }
         tracing::info!(
             %session_id,
-            event_id = %ev.event_id,
-            "学员事件通过身份校验（回传入库在 S4 启用，暂不落库）"
+            owner = %expected_owner,
+            item_id = %ev.item.id,
+            kind = ?ev.item.kind,
+            "学员提交已登记，等待内容帧"
         );
     }
 
@@ -462,26 +473,170 @@ impl SessionHandler for Hub {
         mut chunks: mpsc::Receiver<FileChunk>,
         _expected_sha256: String,
     ) -> FileAck {
-        // M2 S3：仅已认证会话可发起文件流（net 层未 join 守卫之上再校验
-        // conns 身份源）。学员→教师文件回传在 M2 S4 启用（FR-S-03），
-        // 当前排空流并明确拒绝。
-        let known = self.conns.lock().unwrap().contains_key(session_id);
-        while chunks.recv().await.is_some() {}
-        if !known {
+        // M2 S3：仅已认证会话可发起文件流；M2 #94：学员上传的内容帧
+        // （文本正文或文件字节）在此落盘入库。隔离：不广播、不进 manifest。
+        let nickname = {
+            let conns = self.conns.lock().unwrap();
+            conns.get(session_id).map(|c| c.nickname.clone())
+        };
+        let Some(nickname) = nickname else {
+            drain_chunks_bounded(&mut chunks).await;
             tracing::warn!(%session_id, item_id = %header.item_id, "未注册会话的文件流，拒绝");
             return FileAck {
                 item_id: header.item_id,
                 sha256_ok: false,
             };
+        };
+        // 取出该会话登记的元数据事件（必须与内容帧 item_id 对应）
+        let pending = self.uploads.lock().unwrap().remove(session_id);
+        let Some(ev) = pending.filter(|e| e.item.id == header.item_id) else {
+            drain_chunks_bounded(&mut chunks).await;
+            tracing::warn!(
+                %session_id,
+                item_id = %header.item_id,
+                "内容帧缺少对应的已登记事件（或 item_id 不符），拒绝"
+            );
+            return FileAck {
+                item_id: header.item_id,
+                sha256_ok: false,
+            };
+        };
+
+        // 收到本机临时文件（跨卷安全：后续 put_* 内部 copy 到仓库）。
+        let tmp = std::env::temp_dir().join(format!(
+            "classshare-upload-{}.part",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut written: u64 = 0;
+        {
+            let mut out = match std::fs::File::create(&tmp) {
+                Ok(f) => f,
+                Err(e) => {
+                    drain_chunks_bounded(&mut chunks).await;
+                    tracing::warn!(error = %e, "上传临时文件创建失败");
+                    return FileAck {
+                        item_id: header.item_id,
+                        sha256_ok: false,
+                    };
+                }
+            };
+            use std::io::Write as _;
+            // 上限检查在**循环内**逐块进行（评审加固：不信任客户端——
+            // 原实现等循环结束才判，恶意客户端可先写满 %TEMP% 再被拒）。
+            // 每块先算累计再判，超限块本身不写盘，随即删临时文件 + 排空
+            // 剩余分块（避免发送端阻塞）并回失败 ack。
+            while let Some(chunk) = chunks.recv().await {
+                let next = written + chunk.bytes.len() as u64;
+                if next > classroom_protocol::MAX_FILE_SIZE {
+                    drop(out);
+                    let _ = std::fs::remove_file(&tmp);
+                    tracing::warn!(
+                        %session_id,
+                        bytes = next,
+                        "上传超过 100MB 上限（循环内检查，已中止写盘）"
+                    );
+                    drain_chunks_bounded(&mut chunks).await;
+                    return FileAck {
+                        item_id: header.item_id,
+                        sha256_ok: false,
+                    };
+                }
+                if let Err(e) = out.write_all(&chunk.bytes) {
+                    let _ = std::fs::remove_file(&tmp);
+                    tracing::warn!(error = %e, "上传写入失败");
+                    // 排空余下分块，避免发送端阻塞
+                    drain_chunks_bounded(&mut chunks).await;
+                    return FileAck {
+                        item_id: header.item_id,
+                        sha256_ok: false,
+                    };
+                }
+                written = next;
+            }
         }
-        tracing::warn!(%session_id, item_id = %header.item_id, "学员文件回传将在 M2 S4 启用，已拒绝");
-        FileAck {
-            item_id: header.item_id,
-            sha256_ok: false,
+
+        // 哈希校验（EX-07）；大小上限已在循环内保证（written ≤ MAX_FILE_SIZE）
+        let ok = classroom_store::sha256_file(&tmp)
+            .map(|h| h.eq_ignore_ascii_case(&header.sha256))
+            .unwrap_or(false);
+        if !ok {
+            tracing::warn!(%session_id, item_id = %header.item_id, "上传整体哈希校验失败（EX-07）");
+        }
+        if !ok {
+            let _ = std::fs::remove_file(&tmp);
+            return FileAck {
+                item_id: header.item_id,
+                sha256_ok: false,
+            };
+        }
+
+        // 入库：owner=会话昵称（服务端权威，学员无法伪造）、
+        // Student 角色、audience=Teacher（仅教师可见）。
+        let now = unix_now();
+        let put = if ev.item.kind == classroom_protocol::ItemKind::Text {
+            // 文本回传：内容帧承载正文（与教师广播同源），按 UTF-8 解出正文
+            match std::fs::read_to_string(&tmp) {
+                Ok(body) => self.store.lock().unwrap().put_text(
+                    &nickname,
+                    Role::Student,
+                    Audience::Teacher,
+                    &ev.item.title,
+                    &body,
+                    now,
+                ),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    tracing::warn!(error = %e, "文本正文 UTF-8 解码失败");
+                    return FileAck {
+                        item_id: header.item_id,
+                        sha256_ok: false,
+                    };
+                }
+            }
+        } else {
+            self.store.lock().unwrap().put_file_from_tmp(
+                &nickname,
+                Role::Student,
+                Audience::Teacher,
+                &header.file_name,
+                &tmp,
+                &header.sha256,
+                now,
+            )
+        };
+        let _ = std::fs::remove_file(&tmp);
+
+        match put {
+            Ok(outcome) => {
+                let item = latest_item(outcome);
+                tracing::info!(
+                    owner = %nickname,
+                    item_id = %item.id,
+                    title = %item.title,
+                    version = item.version,
+                    "学员提交入库"
+                );
+                let _ = self.notify.send(HostEvent::ReceivedUpsert(item)).await;
+                FileAck {
+                    item_id: header.item_id,
+                    sha256_ok: true,
+                }
+            }
+            Err(e) => {
+                tracing::warn!(owner = %nickname, error = %e, "学员提交入库失败");
+                FileAck {
+                    item_id: header.item_id,
+                    sha256_ok: false,
+                }
+            }
         }
     }
 
     async fn on_disconnect(&self, session_id: &str) {
+        // M2 #94：会话断开时丢弃未完成的上传登记（内容帧已不会再到达）
+        if self.uploads.lock().unwrap().remove(session_id).is_some() {
+            tracing::debug!(%session_id, "断开时丢弃未完成的学员上传");
+        }
         let removed = self.conns.lock().unwrap().remove(session_id);
         if let Some(conn) = removed {
             tracing::info!(nickname = %conn.nickname, "学员离线");
@@ -528,4 +683,13 @@ impl SessionHandler for Hub {
             self.push_file_to(&item, tx).await;
         }
     }
+}
+
+/// 有界排空分块流（M2 #94 加固）：失败路径必须继续读走已到达的分块，
+/// 但**不能无限等待**——恶意/异常客户端可能不发 `FileEnd`，广播式
+/// `while let Some(_) = recv().await` 会让会话任务永久挂起（资源泄漏）。
+/// 上限 3s 后放弃排空（此后连接照常由 net 层处理）。
+async fn drain_chunks_bounded(chunks: &mut mpsc::Receiver<FileChunk>) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while let Ok(Some(_)) = tokio::time::timeout_at(deadline, chunks.recv()).await {}
 }

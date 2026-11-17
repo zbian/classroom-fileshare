@@ -98,6 +98,12 @@ pub enum GuiRequest {
     },
     /// 查询服务状态。
     Status,
+    /// 列出**学员提交**（按学员昵称分组；M2 #94 教师端「学生提交」树）。
+    ///
+    /// 与 [`GuiRequest::List`] 并存、互不改变契约：List 仍返回原始条目
+    /// （含教师分享与学生提交，按 ListFilter 过滤）；Submissions 只返回
+    /// `audience=Teacher` 的学员上行条目分组，供教师端左树渲染。
+    Submissions,
     /// 暂停/恢复接收提醒（仅抑制 tips，不影响接收落盘）。
     PauseTips(bool),
     /// 退出 GUI 进程（服务继续运行，PRD FR-G-03）。
@@ -167,6 +173,22 @@ pub struct StatusSnapshot {
     pub pending_count: u32,
 }
 
+/// 学员提交分组（教师端「学生提交」左树：昵称 / 条目数 / 最新时间）。
+///
+/// M2 #94：学员提交落教师数据根、`owner_id=学员昵称`、`owner_role=Student`、
+/// `audience=Teacher`；本结构是其在 IPC 数据面的聚合视图（不暴露条目内容，
+/// 条目本身经 [`GuiRequest::List`] 按 `ListFilter { audience: Some(Teacher) }`
+/// 或 `owner` 过滤取出）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SubmissionGroup {
+    /// 学员昵称（提交的 owner_id）。
+    pub owner_id: String,
+    /// 该学员的提交条目数（不含墓碑）。
+    pub count: u32,
+    /// 该学员最近一次提交的时间（Unix 秒，取 updated_at 最大值）。
+    pub latest_at: i64,
+}
+
 /// 请求应答载荷（计划未定义 `SvcResult` 的 Ok 载荷，本 crate 定义）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum GuiReply {
@@ -174,6 +196,8 @@ pub enum GuiReply {
     Ok,
     /// List 的结果。
     Items(Vec<ShareItem>),
+    /// Submissions 的结果（按学员昵称分组，未读高亮等 UI 语义由 GUI 侧扩展）。
+    Submissions(Vec<SubmissionGroup>),
     /// Status 的结果（结构化快照，修订 #6④，替代原 StatusText 单轨）。
     Status(StatusSnapshot),
     /// OpenItem 的结果：条目文件实体绝对路径。GUI 在用户会话用系统默认

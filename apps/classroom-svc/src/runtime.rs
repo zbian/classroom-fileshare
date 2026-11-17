@@ -9,8 +9,8 @@ use tokio::sync::{mpsc, Notify};
 use classroom_agent::{run_agent, AgentConfig, AgentEvent};
 use classroom_host::{run_host, HostCommand, HostConfig, HostEvent};
 use classroom_ipc::{
-    serve_ipc, GuiReply, GuiRequest, ItemUpdatedPayload, ServiceState, StatusSnapshot, SvcNotify,
-    SvcResult,
+    serve_ipc, GuiReply, GuiRequest, ItemUpdatedPayload, ListFilter, ServiceState, StatusSnapshot,
+    SvcNotify, SvcResult,
 };
 use classroom_protocol::{Role, ShareItem};
 use classroom_store::Store;
@@ -239,8 +239,53 @@ pub fn make_ipc_handler(
             Err("M1 房间由安装脚本配置（svc.json），运行期修改在 M2 提供".into())
         }
         GuiRequest::Status => Ok(GuiReply::Status(status.snapshot())),
+        GuiRequest::Submissions => {
+            // M2 #94：教师端「学生提交」分组视图。仅 teacher 模式有 host
+            // 数据面（student 模式的 store 是学员端本地库，不含任何他人提交）。
+            let guard = store.lock().unwrap();
+            let items = guard
+                .list(ListFilter {
+                    audience: Some(classroom_protocol::Audience::Teacher),
+                    include_deleted: false,
+                    ..Default::default()
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(GuiReply::Submissions(group_submissions(&items)))
+        }
         GuiRequest::PauseTips(_) | GuiRequest::ShutdownGuiOnly => Ok(GuiReply::Ok),
     })
+}
+
+/// 按 `owner_id` 聚合学员提交（纯函数，便于单测）：
+/// 计数 + 最近 `updated_at`；输出按最新时间倒序（教师端左树默认顺序）。
+///
+/// 隔离说明：仅对传入条目聚合——调用方以 `audience=Teacher` 过滤，
+/// 教师自己的分享（`audience=All`）不会进入此视图。
+pub(crate) fn group_submissions(
+    items: &[classroom_protocol::ShareItem],
+) -> Vec<classroom_ipc::SubmissionGroup> {
+    let mut groups: std::collections::HashMap<&str, (u32, i64)> = std::collections::HashMap::new();
+    for item in items.iter().filter(|i| !i.deleted) {
+        let entry = groups.entry(item.owner_id.as_str()).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.max(item.updated_at);
+    }
+    let mut out: Vec<classroom_ipc::SubmissionGroup> = groups
+        .into_iter()
+        .map(
+            |(owner_id, (count, latest_at))| classroom_ipc::SubmissionGroup {
+                owner_id: owner_id.to_string(),
+                count,
+                latest_at,
+            },
+        )
+        .collect();
+    out.sort_by(|a, b| {
+        b.latest_at
+            .cmp(&a.latest_at)
+            .then_with(|| a.owner_id.cmp(&b.owner_id))
+    });
+    out
 }
 
 fn dispatch_teacher(
@@ -477,5 +522,90 @@ mod tests {
             allow_discovery: true
         })
         .is_err());
+    }
+    /// M2 #94：学员提交分组的纯函数——按 owner 计数 + 最新时间，
+    /// 按最新时间倒序；墓碑条目不计。
+    #[test]
+    fn group_submissions_aggregates_by_owner() {
+        use classroom_protocol::{Audience, ShareItem};
+        fn item(owner: &str, id: &str, at: i64, deleted: bool) -> ShareItem {
+            ShareItem {
+                id: id.into(),
+                kind: ItemKind::Text,
+                owner_id: owner.into(),
+                owner_role: Role::Student,
+                audience: Audience::Teacher,
+                title: format!("t-{id}"),
+                size: 1,
+                sha256: None,
+                rel_path: None,
+                created_at: at,
+                updated_at: at,
+                version: 1,
+                deleted,
+                sync_state: SyncState::Synced,
+            }
+        }
+        let items = vec![
+            item("alice", "a1", 100, false),
+            item("alice", "a2", 300, false),
+            item("alice", "a3", 900, true), // 墓碑不计
+            item("bob", "b1", 200, false),
+        ];
+        let groups = group_submissions(&items);
+        assert_eq!(groups.len(), 2, "按 owner 分组: {groups:?}");
+        // 最新时间倒序：alice(300) 在 bob(200) 之前
+        assert_eq!(groups[0].owner_id, "alice");
+        assert_eq!(groups[0].count, 2, "墓碑不计入 count");
+        assert_eq!(groups[0].latest_at, 300);
+        assert_eq!(groups[1].owner_id, "bob");
+        assert_eq!(groups[1].count, 1);
+
+        // 空输入
+        assert!(group_submissions(&[]).is_empty());
+    }
+
+    /// M2 #94：教师端 List 契约不变（`GuiRequest::List` 仍原样转发 filter），
+    /// Submissions 仅聚合 `audience=Teacher` 的条目（教师自己的分享不进入）。
+    #[test]
+    fn submissions_view_excludes_teacher_own_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(dir.path()).unwrap()));
+        {
+            let guard = store.lock().unwrap();
+            // 教师自己的分享（audience=All）
+            guard
+                .put_text("teacher", Role::Teacher, Audience::All, "通知", "正文", 1)
+                .unwrap();
+            // 学员提交（audience=Teacher）
+            guard
+                .put_text(
+                    "alice",
+                    Role::Student,
+                    Audience::Teacher,
+                    "作业",
+                    "学生正文",
+                    2,
+                )
+                .unwrap();
+        }
+        let handler = make_ipc_handler(
+            None,
+            store,
+            Arc::new(StatusBoard::new(Role::Teacher, String::new())),
+        );
+        match handler(GuiRequest::Submissions) {
+            Ok(GuiReply::Submissions(groups)) => {
+                assert_eq!(groups.len(), 1, "只有学员提交进入分组: {groups:?}");
+                assert_eq!(groups[0].owner_id, "alice");
+                assert_eq!(groups[0].count, 1);
+            }
+            other => panic!("期望 Submissions，实际 {other:?}"),
+        }
+        // 现有 List 契约不变：空 filter 仍返回全部条目（含教师分享）
+        match handler(GuiRequest::List(ListFilter::default())) {
+            Ok(GuiReply::Items(items)) => assert_eq!(items.len(), 2),
+            other => panic!("期望 Items，实际 {other:?}"),
+        }
     }
 }

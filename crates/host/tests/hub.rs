@@ -732,3 +732,367 @@ async fn teacher_reserved_nickname_rejected() {
         .await
         .expect("普通昵称可加入");
 }
+// ---------- M2 #94：学员回传（audience=Teacher 上行）----------
+
+/// 模拟学员 app 的上行：Event（元数据）+ 文件帧（内容；文本正文与文件字节
+/// 走同一条内容帧链路，与教师广播模型对称）。
+///
+/// `owner` 必须与已 join 的昵称一致（S3 三重校验要求），本 helper 不构造
+/// 伪身份——冒名/越权场景直接用 [`crafted_event`]。
+async fn student_upload(
+    agent: &MiniAgent,
+    item_id: &str,
+    kind: ItemKind,
+    title: &str,
+    owner: &str,
+    body: &[u8],
+) -> String {
+    use classroom_protocol::{Audience, EventKind, ShareItem, SyncState};
+    let sha = sha256_hex(body);
+    let size = body.len() as u64;
+    let size_field = match &kind {
+        ItemKind::File => size,
+        // PRD 3.5：文本条目 size = 字符数（教师端 put_text 会重算）
+        ItemKind::Text => String::from_utf8_lossy(body).chars().count() as u64,
+    };
+    let ev = classroom_protocol::Event {
+        event_id: format!("upload-{item_id}"),
+        kind: EventKind::Upsert,
+        item: ShareItem {
+            id: item_id.into(),
+            kind: kind.clone(),
+            owner_id: owner.into(),
+            owner_role: Role::Student,
+            audience: Audience::Teacher,
+            title: title.into(),
+            size: size_field,
+            sha256: match &kind {
+                ItemKind::File => Some(sha.clone()),
+                ItemKind::Text => None,
+            },
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::PendingSync,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: 9,
+    };
+    agent.send(&Frame::Event(ev)).await;
+    agent
+        .send(&Frame::FileHeader(FileHeader {
+            item_id: item_id.into(),
+            file_name: title.into(),
+            size,
+            sha256: sha.clone(),
+        }))
+        .await;
+    for (seq, part) in body.chunks(1024 * 1024).enumerate() {
+        agent
+            .send(&Frame::FileChunk(classroom_net::FileChunk {
+                item_id: item_id.into(),
+                seq: seq as u64,
+                bytes: part.to_vec(),
+            }))
+            .await;
+    }
+    agent
+        .send(&Frame::FileEnd(classroom_net::FileEnd {
+            item_id: item_id.into(),
+        }))
+        .await;
+    sha
+}
+
+/// 启动一个**真实 agent**（生产代码，非 mock），返回事件流与数据目录，
+/// 并消费掉加入后的对齐事件（Synced），使后续「无帧」断言干净。
+async fn spawn_real_agent(
+    port: u16,
+    nickname: &str,
+) -> (
+    mpsc::Receiver<classroom_agent::AgentEvent>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let cfg = classroom_agent::AgentConfig {
+        nickname: nickname.into(),
+        pin: None,
+        manual_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+        room_filter: None,
+        data_root: dir.path().to_path_buf(),
+    };
+    tokio::spawn(classroom_agent::run_agent(cfg, tx));
+    // 等 Joined，再等 Synced（Manifest 对齐完成）
+    loop {
+        let ev = tokio::time::timeout(TIMEOUT, rx.recv())
+            .await
+            .expect("agent 加入超时")
+            .expect("agent 事件通道关闭");
+        match ev {
+            classroom_agent::AgentEvent::Joined(_) => continue,
+            classroom_agent::AgentEvent::Synced => break,
+            other => panic!("agent 加入阶段意外事件: {other:?}"),
+        }
+    }
+    (rx, dir)
+}
+
+/// #94 用例 1：学员文本回传 → 教师端入库可查（owner=昵称、role=Student、
+/// audience=Teacher、kind=Text），正文可读。
+#[tokio::test]
+async fn student_upload_text_visible_to_teacher() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let alice = MiniAgent::join(port, "alice", None).await.expect("join");
+    let body = "老师，这是我的作业";
+    student_upload(
+        &alice,
+        "up-text-1",
+        ItemKind::Text,
+        "作业",
+        "alice",
+        body.as_bytes(),
+    )
+    .await;
+
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.owner_role, Role::Student);
+    assert_eq!(item.audience, classroom_protocol::Audience::Teacher);
+    assert_eq!(item.kind, ItemKind::Text);
+    assert_eq!(item.version, 1);
+
+    let store = Store::open(&host.data_root).unwrap();
+    let got = store.get(&item.id).unwrap().expect("教师端可查询到该提交");
+    assert_eq!(got.title, "作业");
+    assert_eq!(got.size, body.chars().count() as u64, "文本 size=字符数");
+    let body_path = store.file_body(&got).unwrap();
+    assert_eq!(std::fs::read_to_string(body_path).unwrap(), body);
+}
+
+/// #94 用例 2：学员文件回传（分块）→ 教师端落盘 + 索引正确（sha256/size/version）。
+#[tokio::test]
+async fn student_upload_file_persisted() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let alice = MiniAgent::join(port, "alice", None).await.expect("join");
+    // 1.5MB（2 块）验证分块内容链路
+    let payload: Vec<u8> = (0..1_572_864u32).map(|i| (i % 251) as u8).collect();
+    let sha = student_upload(
+        &alice,
+        "up-file-1",
+        ItemKind::File,
+        "作业.pdf",
+        "alice",
+        &payload,
+    )
+    .await;
+
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.kind, ItemKind::File);
+    assert_eq!(item.size, payload.len() as u64);
+    assert_eq!(item.sha256.as_deref(), Some(sha.as_str()));
+    assert_eq!(item.version, 1);
+
+    let store = Store::open(&host.data_root).unwrap();
+    let got = store.get(&item.id).unwrap().expect("索引存在");
+    assert!(got.rel_path.is_some(), "文件条目应有 rel_path");
+    let path = store.file_body(&got).unwrap();
+    assert_eq!(
+        sha256_hex(&std::fs::read(path).unwrap()),
+        sha,
+        "落盘字节与哈希一致"
+    );
+}
+
+/// #94 用例 3：同名覆盖——同一学员两次同名提交 → version+1、单条、`.bak` 1 份。
+#[tokio::test]
+async fn student_upload_same_name_overwrites() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let alice = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    student_upload(&alice, "up-ov-1", ItemKind::Text, "作业", "alice", b"v1").await;
+    let first = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(first.version, 1);
+
+    student_upload(&alice, "up-ov-2", ItemKind::Text, "作业", "alice", b"v2").await;
+    let second = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "alice" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(second.version, 2, "同名覆盖 version+1");
+    assert_eq!(second.id, first.id, "覆盖保持同一 id");
+
+    let store = Store::open(&host.data_root).unwrap();
+    let alice_items = store
+        .list(ListFilter {
+            owner: Some("alice".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(alice_items.len(), 1, "同一 scope 只保留一条");
+    assert_eq!(
+        std::fs::read_to_string(store.file_body(&alice_items[0]).unwrap()).unwrap(),
+        "v2",
+        "正文为最新版本"
+    );
+    let baks = std::fs::read_dir(host.data_root.join("repo/alice/texts"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+        .count();
+    assert_eq!(baks, 1, "仅保留 1 份 .bak");
+}
+
+/// #94 用例 4（验收硬指标）：**其他学员零感知**——用 **2 个真实 agent**
+/// （生产代码）验证：carol 的上行提交只落教师端，alice/bob 收不到任何帧、
+/// 各自 store 不含该条目。
+#[tokio::test]
+async fn student_upload_not_visible_to_other_students() {
+    let mut host = start_host(None).await;
+    let port = host.port;
+    // 两个真实 agent 加入（生产 agent 代码，非 mock）
+    let (mut a_ev, a_dir) = spawn_real_agent(port, "alice").await;
+    let (mut b_ev, b_dir) = spawn_real_agent(port, "bob").await;
+    // 定制客户端以 carol 身份上行（模拟学员 app 的发送侧）
+    let carol = MiniAgent::join(port, "carol", None).await.expect("join");
+    student_upload(
+        &carol,
+        "up-carol-1",
+        ItemKind::Text,
+        "只给老师",
+        "carol",
+        "秘密作业内容".as_bytes(),
+    )
+    .await;
+
+    let item = next_matching(&mut host.events, |e| match e {
+        HostEvent::ReceivedUpsert(i) if i.owner_id == "carol" => Some(i),
+        _ => None,
+    })
+    .await;
+    assert_eq!(item.audience, classroom_protocol::Audience::Teacher);
+    assert_eq!(item.owner_role, Role::Student);
+
+    // 其他学员零感知：两个真实 agent 均无任何事件（300ms 静默窗口）
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), a_ev.recv())
+            .await
+            .is_err(),
+        "alice 不应收到 carol 提交的任何通知"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), b_ev.recv())
+            .await
+            .is_err(),
+        "bob 不应收到 carol 提交的任何通知"
+    );
+    // 各自 store 不含他人提交
+    for dir in [&a_dir, &b_dir] {
+        let store = Store::open(dir.path()).unwrap();
+        let all = store.list(ListFilter::default()).unwrap();
+        assert!(
+            all.iter().all(|i| i.owner_id != "carol"),
+            "其他学员的本地库不得包含该提交: {all:?}"
+        );
+        assert!(all.is_empty(), "教师未广播任何内容时学员库应为空");
+    }
+}
+
+/// #94 加固用例（评审发现 1）：上传**超限在流式过程中**即被拒——100MB
+/// 上限检查在分块循环内逐块进行（不信任客户端，防止先写满磁盘再拒）。
+/// 构造 101 个 1MB 块（累计 101MB > 100MB），断言：
+/// 1) 第 101 块触发上限 → 回 `FileAck { sha256_ok: false }`；
+/// 2) 条目未入库、教师侧无 `ReceivedUpsert` 通知。
+#[tokio::test]
+async fn student_upload_over_limit_rejected_streaming() {
+    use classroom_protocol::{Audience, EventKind, ShareItem, SyncState};
+    let mut host = start_host(None).await;
+    let port = host.port;
+    let mut alice = MiniAgent::join(port, "alice", None).await.expect("join");
+
+    let total = MAX_FILE_SIZE + 1024 * 1024; // 101MB（超过上限 1MB）
+    let item_id = "up-too-big";
+    let ev = classroom_protocol::Event {
+        event_id: format!("upload-{item_id}"),
+        kind: EventKind::Upsert,
+        item: ShareItem {
+            id: item_id.into(),
+            kind: ItemKind::File,
+            owner_id: "alice".into(),
+            owner_role: Role::Student,
+            audience: Audience::Teacher,
+            title: "big.bin".into(),
+            size: total,
+            sha256: Some("0".repeat(64)),
+            rel_path: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            deleted: false,
+            sync_state: SyncState::PendingSync,
+        },
+        new_name: None,
+        acked_by: None,
+        ts: 9,
+    };
+    alice.send(&Frame::Event(ev)).await;
+    alice
+        .send(&Frame::FileHeader(FileHeader {
+            item_id: item_id.into(),
+            file_name: "big.bin".into(),
+            size: total,
+            sha256: "0".repeat(64),
+        }))
+        .await;
+
+    let chunk = vec![0u8; 1024 * 1024];
+    let blocks = total / (1024 * 1024); // 101
+    for seq in 0..blocks {
+        alice
+            .send(&Frame::FileChunk(classroom_net::FileChunk {
+                item_id: item_id.into(),
+                seq,
+                bytes: chunk.clone(),
+            }))
+            .await;
+    }
+    // 客户端正常结束流（真实协议行为）；host 在超限块处已中止写盘并回失败 ack
+    alice
+        .send(&Frame::FileEnd(classroom_net::FileEnd {
+            item_id: item_id.into(),
+        }))
+        .await;
+    let got = loop {
+        match alice.next().await {
+            Frame::FileAck(a) => break a,
+            _ => continue,
+        }
+    };
+    assert!(!got.sha256_ok, "超限上传必须回失败 ack");
+    assert_eq!(got.item_id, item_id);
+
+    assert_no_received_upsert(&mut host).await;
+    let store = Store::open(&host.data_root).unwrap();
+    assert!(
+        store.list(ListFilter::default()).unwrap().is_empty(),
+        "超限上传不得入库"
+    );
+}
