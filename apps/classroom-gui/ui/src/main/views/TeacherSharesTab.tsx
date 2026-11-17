@@ -5,6 +5,7 @@
 import { useMainStore } from '../store'
 import { filterItems, isFilterActive } from '../listFilter'
 import VirtualList from '../components/VirtualList'
+import SyncIssuesBanner from '../components/SyncIssuesBanner'
 import { COLS_TEACHER_SHARES as COLS, ROW_HEIGHT } from './columns'
 import type { ShareItem, SyncState } from '../../shared/ipc/types'
 
@@ -84,6 +85,7 @@ export default function TeacherSharesTab() {
       <div className="info" style={{ marginBottom: 10 }}>
         教师删除某条共享后，本机副本将同步移除；若当前离线，将在下次连上教师机时自动删除。
       </div>
+      <SyncIssuesBanner />
       <div className="list-meta">
         {filtering ? `筛选后 ${visible.length} / ${items.length} 条` : `共 ${items.length} 条`}
       </div>

@@ -119,3 +119,52 @@ body,
   background: var(--line);
   margin: 5px 2px;
 }
+
+/* ---- issue #20（A4）：投放态完整反馈与动效 ---- */
+.icon-root.drop .drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  animation: dropPop 160ms ease-out, dropPulse 1.1s ease-in-out 160ms infinite;
+}
+
+.icon-root.drop .drop-main {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.icon-root.drop .drop-sub {
+  font-size: var(--fs-12);
+  color: var(--primary);
+  opacity: 0.85;
+  line-height: 1.2;
+}
+
+.icon-root.drop .drop-sub.warn {
+  color: var(--amber);
+}
+
+/* 进入弹出 + 呼吸（不改变窗口尺寸，仅内容反馈；命中区仍由 Rust 统一控制） */
+@keyframes dropPop {
+  from {
+    transform: scale(0.82);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes dropPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}

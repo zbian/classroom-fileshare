@@ -25,6 +25,8 @@ export default function IconApp() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [layout, setLayout] = useState<MenuLayout>({ flipX: false, flipY: false })
   const [dragOver, setDragOver] = useState(false)
+  // A4：拖入内容数量（文件/目录），用于投放态反馈
+  const [dropCounts, setDropCounts] = useState({ files: 0, dirs: 0 })
   const [paused, setPaused] = useState(false)
   const [pasteAvailable, setPasteAvailable] = useState(false)
   const [pasteHint, setPasteHint] = useState('')
@@ -60,9 +62,13 @@ export default function IconApp() {
     const unlistenBlur = listen('gui://icon-blur', () => {
       void closeMenu()
     })
-    const unlistenDrag = listen<string>('gui://icon-drag', (e) => {
-      setDragOver(e.payload === 'enter')
-    })
+    const unlistenDrag = listen<{ active: boolean; files: number; dirs: number }>(
+      'gui://icon-drag',
+      (e) => {
+        setDragOver(e.payload.active)
+        setDropCounts({ files: e.payload.files, dirs: e.payload.dirs })
+      },
+    )
     void invoke<IconStateDto>('get_icon_state').then((s) => setPaused(s.pausedTips))
     // 前端就绪：通知 Rust 显示窗口（visible:false 创建，防白闪）
     void invoke('icon_ready')
@@ -138,12 +144,14 @@ export default function IconApp() {
   ]
 
   if (dragOver) {
+    const { files, dirs } = dropCounts
     return (
       <div className="icon-root drop">
-        <div className="float-circle" data-tauri-drag-region="">
-          松手
-          <br />
-          即共享
+        <div className="float-circle drop-zone" data-tauri-drag-region="">
+          <span className="drop-main">松手即共享</span>
+          {files > 0 ? <span className="drop-sub">{files} 个文件</span> : null}
+          {dirs > 0 ? <span className="drop-sub warn">{dirs} 个目录将跳过</span> : null}
+          {files === 0 && dirs === 0 ? <span className="drop-sub">文件 / 文本</span> : null}
         </div>
       </div>
     )

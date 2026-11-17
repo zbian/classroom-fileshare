@@ -239,7 +239,7 @@ function FooterHint() {
         <span style={{ flex: 1 }}>
           {role === 'student'
             ? '拖入文件 / 文本，或 Ctrl+V 粘贴一段文字直接共享给教师'
-            : '把文件拖到此处 / 拖到桌面浮动图标 · 文本可直接 Ctrl+V 粘贴后共享'}
+            : '把文件拖到桌面浮动图标即可共享 · 文本可直接 Ctrl+V 粘贴后共享'}
         </span>
         {role === 'teacher' ? (
           <button
