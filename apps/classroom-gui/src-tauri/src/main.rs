@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod ipc_client;
 mod state;
 mod tips;
@@ -14,20 +15,75 @@ mod windows;
 use classroom_ipc::GuiRequest;
 use ipc_client::IpcBridge;
 use state::{AppState, GuiConfig};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+/// 资源管理器右键/argv 携带的共享文件处理（T12）：
+/// 过滤目录（EX 提示）→ SendFiles 真链路（服务端做大小/风险类型校验）。
+/// 由 single-instance 回调与启动 argv 两条路径调用。
+fn share_files_from_argv(app: &tauri::AppHandle, argv: &[String]) {
+    let files: Vec<String> = argv
+        .iter()
+        .filter(|a| std::path::Path::new(a.as_str()).is_file())
+        .cloned()
+        .collect();
+    let dirs = argv
+        .iter()
+        .filter(|a| std::path::Path::new(a.as_str()).is_dir())
+        .count();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if !files.is_empty() {
+            let result = ipc_client::svc_request(
+                app.clone(),
+                GuiRequest::SendFiles {
+                    paths: files.into_iter().map(std::path::PathBuf::from).collect(),
+                },
+            )
+            .await;
+            let toast = match result {
+                Ok(_) => "已通过「课堂共享」发送".to_string(),
+                Err(e) => e,
+            };
+            let _ = app.emit_to(windows::ICON_LABEL, "gui://toast", toast);
+        }
+        if dirs > 0 {
+            let _ = app.emit_to(
+                windows::ICON_LABEL,
+                "gui://toast",
+                format!("目录暂不支持共享（{dirs} 个目录已跳过）"),
+            );
+        }
+    });
+}
+
+/// single-instance / 启动 argv 中的共享文件提取：形如 exe 文件路径的参数。
+fn file_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .filter(|a| {
+            std::path::Path::new(a.as_str()).is_file() || std::path::Path::new(a.as_str()).is_dir()
+        })
+        .cloned()
+        .collect()
+}
 
 fn main() {
     let config = GuiConfig::load();
+    let startup_files = file_args(&std::env::args().collect::<Vec<_>>());
     tauri::Builder::default()
-        // 单实例：重复启动聚焦既有实例（EX-12）；argv 转发（资源管理器右键多选）T12 接入
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            windows::focus_icon_or_main(app);
+        // 单实例：重复启动聚焦既有实例（EX-12）；argv 携带共享文件时经真实链路直发（T12）
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let files = file_args(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if files.is_empty() {
+                windows::focus_icon_or_main(app);
+            } else {
+                share_files_from_argv(app, &files);
+            }
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new(config))
         .manage(IpcBridge::new())
-        .setup(|app| {
+        .setup(move |app| {
             windows::ensure_icon_window(app.handle())?;
             // tips 预创建隐藏：首条到达才 show（避免到达时才建窗的延迟）
             tips::ensure_tips_window(app.handle())?;
@@ -35,6 +91,10 @@ fn main() {
             windows::ensure_main_window(app.handle())?;
             // IPC 桥后台连接（服务未起不阻塞启动；svc_request 惰性重连兜底）
             ipc_client::start_bridge(app.handle().clone());
+            // HKCU 右键/argv 携带的共享文件（首次启动路径；已运行实例走 single-instance 回调）
+            if !startup_files.is_empty() {
+                share_files_from_argv(app.handle(), &startup_files);
+            }
             // dev 演示入口：--demo-tips=N 连发 N 条（仅 debug）
             #[cfg(debug_assertions)]
             if let Some(n) = std::env::args().find_map(|a| {
@@ -75,6 +135,9 @@ fn main() {
             tips_dismissed,
             open_main_locate,
             set_nickname_done,
+            read_clipboard_state,
+            paste_and_share,
+            open_main_paste,
             svc_request,
             dev_demo_tips
         ])
@@ -163,6 +226,63 @@ fn set_nickname_done(app: tauri::AppHandle) -> Result<(), String> {
     };
     snapshot.save().map_err(|e| e.to_string())
 }
+
+/// 「粘贴并共享」剪贴板探测（CF_UNICODETEXT/CF_HDROP；EX-03 占用文案透传）。
+#[tauri::command]
+fn read_clipboard_state() -> Result<clipboard::ClipboardStateDto, String> {
+    clipboard::read_clipboard_state()
+}
+
+/// 「粘贴并共享」动作（icon 菜单）：文件→直发（toast 通知结果）；文本→开主窗
+/// 预填 E1 确认（gui://paste-text）；空→EX-03 文案。返回给菜单的提示文本。
+#[tauri::command]
+fn paste_and_share(app: tauri::AppHandle) -> Result<String, String> {
+    let st = clipboard::read_clipboard_state()?;
+    if !st.files.is_empty() {
+        let dirs = st.dirs;
+        let app2 = app.clone();
+        let files = st.files.clone();
+        tauri::async_runtime::spawn(async move {
+            let toast = match ipc_client::svc_request(
+                app2.clone(),
+                GuiRequest::SendFiles {
+                    paths: files.into_iter().map(std::path::PathBuf::from).collect(),
+                },
+            )
+            .await
+            {
+                Ok(_) => format!("已共享剪贴板中的 {} 个文件", st.files.len()),
+                Err(e) => e,
+            };
+            let _ = app2.emit_to(windows::ICON_LABEL, "gui://toast", toast);
+        });
+        if dirs > 0 {
+            let _ = app.emit_to(
+                windows::ICON_LABEL,
+                "gui://toast",
+                format!("目录暂不支持共享（{dirs} 个目录已跳过）"),
+            );
+        }
+        Ok(String::new())
+    } else if let Some(text) = st.text.filter(|t| !t.trim().is_empty()) {
+        windows::open_main(&app).map_err(|e| e.to_string())?;
+        app.emit_to(windows::MAIN_LABEL, "gui://paste-text", text)
+            .map_err(|e| e.to_string())?;
+        Ok(String::new())
+    } else {
+        // EX-03 文案（PRD 8.3）
+        Err("剪贴板中没有可共享的文本或文件".into())
+    }
+}
+
+/// 右键「粘贴并共享」文本路径：开主窗并预填 E1（gui://paste-text intent）。
+#[tauri::command]
+fn open_main_paste(app: tauri::AppHandle, body: String) -> Result<(), String> {
+    windows::open_main(&app).map_err(|e| e.to_string())?;
+    app.emit_to(windows::MAIN_LABEL, "gui://paste-text", body)
+        .map_err(|e| e.to_string())
+}
+
 /// dev 演示：连发 N 条 tips（tips.html#demo=N 触发；仅 debug 生效）。
 #[tauri::command]
 fn dev_demo_tips(app: tauri::AppHandle, n: u32) {

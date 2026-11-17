@@ -26,6 +26,8 @@ export default function IconApp() {
   const [layout, setLayout] = useState<MenuLayout>({ flipX: false, flipY: false })
   const [dragOver, setDragOver] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [pasteAvailable, setPasteAvailable] = useState(false)
+  const [pasteHint, setPasteHint] = useState('')
 
   const closeMenu = useCallback(async () => {
     setMenuOpen(false)
@@ -40,8 +42,17 @@ export default function IconApp() {
     try {
       setLayout(await invoke<MenuLayout>('open_icon_menu'))
       setMenuOpen(true)
-    } catch {
-      // icon 窗口异常时忽略
+      // T12「粘贴并共享」三态：探测剪贴板（EX-03 空置灰/占用提示）
+      const st = await invoke<{ text: string | null; files: string[]; dirs: number }>(
+        'read_clipboard_state',
+      )
+      const has = (st.files?.length ?? 0) > 0 || !!st.text?.trim()
+      setPasteAvailable(has)
+      setPasteHint(has ? '' : '剪贴板中没有可共享的文本或文件')
+    } catch (e) {
+      setMenuOpen(true)
+      setPasteAvailable(false)
+      setPasteHint(String(e).slice(0, 30))
     }
   }, [])
 
@@ -83,8 +94,18 @@ export default function IconApp() {
   }
 
   const items: MenuItem[] = [
-    // 「粘贴并共享」「粘贴为文本草稿」接剪贴板链路于 T12；「设置」面板在 T9/F1 —— 先占位禁用
-    { key: 'paste-share', label: '粘贴并共享', hint: 'Ctrl+V', disabled: true },
+    // T12：剪贴板三态接通（文件直发链路 / 文本 E1 预填确认；空/占用置灰带文案）
+    {
+      key: 'paste-share',
+      label: '粘贴并共享',
+      hint: pasteAvailable ? 'Ctrl+V' : pasteHint.slice(0, 14),
+      disabled: !pasteAvailable,
+      onSelect: () => {
+        void invoke('paste_and_share')
+          .then(() => void closeMenu())
+          .catch((e) => setPasteHint(String(e).slice(0, 14)))
+      },
+    },
     { key: 'paste-draft', label: '粘贴为文本草稿…', disabled: true },
     { key: 'sep-1', label: '', separator: true },
     {
