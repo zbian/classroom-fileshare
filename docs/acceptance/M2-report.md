@@ -91,12 +91,13 @@
 | --- | --- | --- |
 | O-A 删除即时清实体 | 教师端 `repo/teacher/锚点测试.bin` 与 `.bak` **均不存在**，repo 文件数 0 | ✅ 已修复 |
 | O-B 日志锚点 | `delete-request item_id=…`、`delete item_id=… owner_role=Teacher`、`delete-ack item_id=… from_session=…` 三类齐全；2 台离线重启补删后产生 **4 条 delete-ack**（2 台 × 2 条目），距 delete 约 **2088–2093 ms**（≤10 s） | ✅ 已修复 |
-| O-A2 状态不收敛 | 全部端补删完成/ack 后 `sync_state` 仍为 `DeleteDeferred` | ⚠️ **已知限制（S5 ack 聚合，Lead 裁定）** |
+| O-A2 状态不收敛 | 全部端补删完成/ack 后 `sync_state` 仍为 `DeleteDeferred` | ⚠️ **已知限制，issue #114（S5 ack 聚合）跟踪**（Lead 裁定不在本窗口修） |
 
 **本轮新增观察项**
 
-- **O-C 在线删除无 Ack**：Ack 仅在 agent 重连 `Manifest` 补删路径发送（`crates/agent/src/lib.rs` 的 Manifest 分支），**在线收到 delete 事件后不回 Ack**；实测 8 台在线删除 → `delete-ack` = 0。影响：PRD 5.8 的「同步进度（24/28 台已删除）」若依赖 ack 则无法统计在线完成数（只能按连接状态 + 离线待删推算）。建议 #106/#17 后续明确进度来源。
+- **O-C 在线删除无 Ack（已知限制，issue #114 / S5）**：Ack 仅在 agent 重连 `Manifest` 补删路径发送（`crates/agent/src/lib.rs` 的 Manifest 分支），**在线收到 delete 事件后不回 Ack**；实测 8 台在线删除 → `delete-ack` = 0。**因此「同步进度」按在线连接数估算**；完整的 ack 聚合（含在线删除 Ack）、`sync_state` 收敛、IPC 进度字段与 GUI 显示作为一条链路在 **#114 / S5** 跟踪（Lead 2026-11-18 裁定，本窗口不硬做）。
 - **O-D GUI 自动化环境阻塞**：桌面被「Windows 安全中心」`Shell_SystemDim` 模态遮罩覆盖（`PickerHost`），鼠标点击被吞掉；release 构建 WebView2 CDP 不可用。证据 `evidence/M2/gui-blocker.txt` + `gui-blocker-desktop.png`。**协作约定（Lead 2026-11-18）**：GUI 进程仅由 dev-gui 启动做 E2E，QA 只启 svc/agent/IPC 探针。
+- **#114 / S5（ack 聚合）**：在线删除 Ack、host 聚合、`sync_state` 收敛、IPC 进度字段、GUI 进度显示——统一在 #114 跟踪；本报告凡涉及「同步进度」均标注为**按在线连接数估算**。
 
 ### 3.4 TC-09 离线补发 —— 待执行
 
