@@ -353,10 +353,12 @@ impl Hub {
                 if let Err(e) = self.store.lock().unwrap().remove_item_bodies(&item) {
                     tracing::warn!(item_id = %item.id, error = %e, "删除实体失败");
                 }
-                // TC-08 观察项 O-B：删除广播日志锚点（回归/压测测量）
+                // TC-08 观察项 O-B：删除广播日志锚点（回归/压测测量）。
+                // PRD 9.6 隐私：条目 owner 可能是**学员昵称**（学员提交也可被
+                // 教师删除）→ 只记角色不记昵称；item_id 保留（条目标识非隐私）。
                 tracing::info!(
                     item_id = %item.id,
-                    owner = %item.owner_id,
+                    owner_role = ?item.owner_role,
                     "delete"
                 );
                 // M2 #17：惰性清理过期墓碑（不引入常驻定时器）——墓碑在
@@ -462,10 +464,13 @@ impl SessionHandler for Hub {
                 );
                 return;
             }
-            // TC-08 观察项 O-B：补删 Ack 日志锚点（字段名稳定供 qa/M3 压测解析）
+            // TC-08 观察项 O-B：补删 Ack 日志锚点（字段名稳定供 qa/M3 压测解析）。
+            // PRD 9.6 隐私：**不打印学员昵称**——用会话 id 前 8 位做可关联标识，
+            // item_id 保留（条目标识非隐私）。
+            let session_tag = &session_id[..session_id.len().min(8)];
             tracing::info!(
                 item_id = %ev.item.id,
-                from = %expected,
+                from_session = %session_tag,
                 "delete-ack"
             );
             let _ = self
