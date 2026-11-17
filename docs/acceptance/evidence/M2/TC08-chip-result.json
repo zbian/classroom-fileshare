@@ -1,0 +1,10 @@
+{
+    "chip_observed":  false,
+    "open_copy_disabled_observed":  false,
+    "events":  [
+
+               ],
+    "final_innerText":  "课堂共享\n学员端\n已连接 tcp://127.0.0.1:47821\n已连接 教师机 tcp://127.0.0.1:47821\n·\n本地缓存 已同步\n刷新\n教师共享 (0)\n我共享的\n全部类型\n文件\n文本\n发送对象：仅教师\n+ 添加文件\n+ 粘贴文本\n重命名\n删除\n暂无共享内容：点击「+ 粘贴文本」，或把文件拖到桌面浮动图标。\n把文件拖到桌面浮动图标即可发送给教师 · 文本可直接 Ctrl+V 粘贴后共享",
+    "final_file_exists":  false,
+    "screenshot":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\tc08stu-003520\\chip.png"
+}

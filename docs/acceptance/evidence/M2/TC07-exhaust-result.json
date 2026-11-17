@@ -1,0 +1,12 @@
+{
+    "exhausted_state":  true,
+    "final_state":  "Failed",
+    "retry_count_shown":  "5",
+    "exhaust_log":  true,
+    "backoff_entries":  4,
+    "item":  "ITEM id=50b7211c-fcf1-4cf1-9518-12fbc12a9cda kind=File owner=teacher role=Teacher audience=All title=耗尽测试.bin size=65536 version=2 deleted=false sync=Failed rel=5",
+    "after_release_state":  "Failed",
+    "backoff_after_release":  4,
+    "no_more_retry_after_exhaust":  true,
+    "iso":  "C:\\Users\\Bian\\Documents\\开发\\classroom-fileshare\\.wt\\acc-m1\\evidence\\M2\\tc07ex-003957"
+}
