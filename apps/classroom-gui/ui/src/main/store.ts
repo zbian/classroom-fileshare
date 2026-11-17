@@ -5,7 +5,7 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { getClient, type GuiClient, type LocalRole, type UiShareItem } from '../shared/ipc/client'
-import type { ListFilter, ServiceStatus, SvcNotify } from '../shared/ipc/types'
+import type { ListFilter, ServiceStatus, SubmissionGroup, SvcNotify } from '../shared/ipc/types'
 import { EMPTY_FILTER, type KindFilter, type TabFilter } from './listFilter'
 
 export type TabKey = 'mine' | 'submissions' | 'records' | 'teacher'
@@ -38,6 +38,14 @@ interface MainStore {
   tabFilters: Record<TabKey, TabFilter>
   /** 已查看条目（D1「新」标记消除，客户端态） */
   seenIds: string[]
+  /** #16：教师端「学生提交」分组（左树：昵称/条数/最新时间；latest_at 倒序） */
+  groups: SubmissionGroup[]
+  /** 当前选中的学员昵称（右表过滤键） */
+  selectedOwner: string | null
+  /** 选中学员的提交条目（只读展示；来源 ListFilter{audience:Teacher, owner}） */
+  submissionItems: UiShareItem[]
+  /** #16：本地已读水位（owner → 已读到的 latest_at）。后端无未读字段，前端本地维护 */
+  seenOwners: Record<string, number>
   dialog: DialogState
   pasteBody: string
   toast: string | null
@@ -48,6 +56,12 @@ interface MainStore {
   setActiveTab(t: TabKey): void
   select(id: string | null): void
   markSeen(id: string): void
+  /** #16：拉取学员提交分组（左树），默认选中最新提交的学员并加载其右表 */
+  loadSubmissions(): Promise<void>
+  /** #16：选中某学员（右表加载 + 本地已读水位推进） */
+  selectOwner(owner: string): Promise<void>
+  /** #16：加载某学员的提交条目（只读） */
+  loadSubmissionItems(owner: string): Promise<void>
   setKeyword(kw: string): void
   setKindFilter(k: 'all' | 'Text' | 'File'): void
   openDialog<K extends keyof DialogState>(key: K, id?: string): void
@@ -60,6 +74,9 @@ interface MainStore {
   showToast(msg: string): void
   applyNotify(n: SvcNotify): void
 }
+
+/** 学员提交本地已读水位的存储键（#16：后端无未读字段，GUI 本地维护） */
+const SUBMISSION_SEEN_KEY = 'classshare.submissions.seen'
 
 /** 学员当前 Tab 对应的列表过滤 */
 function studentFilter(tab: TabKey): ListFilter {
@@ -82,10 +99,15 @@ export const useMainStore = create<MainStore>((set, get) => ({
   tabFilters: {
     mine: { ...EMPTY_FILTER },
     teacher: { ...EMPTY_FILTER },
+    // 预留：#16 B（学员发送 UI）/后续搜索接线前不使用；先保留与 Tab 对齐的结构
     submissions: { ...EMPTY_FILTER },
     records: { ...EMPTY_FILTER },
   },
   seenIds: [],
+  groups: [],
+  selectedOwner: null,
+  submissionItems: [],
+  seenOwners: {},
   dialog: { pasteText: false, createRoom: false, nickname: false, deleteConfirm: null },
   pasteBody: '',
   toast: null,
@@ -115,11 +137,23 @@ export const useMainStore = create<MainStore>((set, get) => ({
     } catch {
       set({ role: 'teacher' })
     }
+    // 学生提交：本地已读水位（后端无未读字段；#16 约定 GUI 本地维护，跨重启保留）
+    try {
+      const raw = localStorage.getItem(SUBMISSION_SEEN_KEY)
+      if (raw) set({ seenOwners: JSON.parse(raw) as Record<string, number> })
+    } catch {
+      // localStorage 不可用（隐私模式/配额）时忽略：仅未读高亮失效，不影响功能
+    }
     await get().refresh()
   },
 
   async refresh() {
     const { client, role, activeTab } = get()
+    // #16：「学生提交」Tab 数据源是分组聚合（Submissions），不走 List
+    if (activeTab === 'submissions' && role === 'teacher') {
+      await get().loadSubmissions()
+      return
+    }
     // 一次拉全量，搜索/类型筛选在客户端完成（即时、无 IPC 抖动；issue #90）
     const filter: ListFilter =
       role === 'student'
@@ -142,7 +176,12 @@ export const useMainStore = create<MainStore>((set, get) => ({
     // 恢复该 Tab 自己的筛选（issue #90：筛选状态按 Tab 独立）
     const filter = get().tabFilters[activeTab]
     set({ activeTab, selectedId: null, keyword: filter.keyword, kindFilter: filter.kind })
-    void get().refresh()
+    if (activeTab === 'submissions') {
+      // #16：进入「学生提交」→ 拉分组并默认选中最新学员
+      void get().loadSubmissions()
+    } else {
+      void get().refresh()
+    }
   },
   select(selectedId) {
     set({ selectedId })
@@ -150,6 +189,57 @@ export const useMainStore = create<MainStore>((set, get) => ({
   },
   markSeen(id) {
     if (!get().seenIds.includes(id)) set({ seenIds: [...get().seenIds, id] })
+  },
+
+  /** #16：拉取分组；保留当前选中（仍存在时），否则默认最新提交的学员 */
+  async loadSubmissions() {
+    try {
+      const groups = await get().client.submissions()
+      const current = get().selectedOwner
+      const owner =
+        current && groups.some((g) => g.owner_id === current)
+          ? current
+          : (groups[0]?.owner_id ?? null)
+      set({ groups })
+      if (owner) {
+        // 默认选中同样视为「已查看」：右表已展示其内容，未读点不应停留
+        await get().selectOwner(owner)
+      } else {
+        set({ selectedOwner: null, submissionItems: [] })
+      }
+    } catch {
+      set({ groups: [], submissionItems: [], serviceDown: true })
+    }
+  },
+
+  /** #16：选中学生 → 加载其提交（只读）+ 推进本地已读水位 */
+  async selectOwner(owner) {
+    set({ selectedOwner: owner, selectedId: null })
+    const group = get().groups.find((g) => g.owner_id === owner)
+    if (group) {
+      const seenOwners = { ...get().seenOwners, [owner]: group.latest_at }
+      set({ seenOwners })
+      try {
+        localStorage.setItem(SUBMISSION_SEEN_KEY, JSON.stringify(seenOwners))
+      } catch {
+        // 本地持久化失败不影响本次会话的高亮
+      }
+    }
+    await get().loadSubmissionItems(owner)
+  },
+
+  /** #16：契约口径——条目内容经 List 取，audience=Teacher + owner=昵称 */
+  async loadSubmissionItems(owner) {
+    try {
+      const items = await get().client.list({
+        audience: 'Teacher',
+        owner,
+        include_deleted: false,
+      })
+      set({ submissionItems: items })
+    } catch {
+      set({ submissionItems: [] })
+    }
   },
   setKeyword(keyword) {
     const activeTab = get().activeTab
@@ -246,6 +336,24 @@ export const useMainStore = create<MainStore>((set, get) => ({
           const rest = s.items.filter((i) => i.id !== n.payload.item.id)
           return { items: [{ ...n.payload.item }, ...rest] }
         })
+        // #16：学生提交（audience=Teacher 且 owner 为学员）→ 刷新分组树计数/最新时间
+        if (
+          get().role === 'teacher' &&
+          n.payload.item.audience === 'Teacher' &&
+          n.payload.item.owner_role === 'Student'
+        ) {
+          void get().loadSubmissions()
+        }
+        break
+      case 'ShareReceived':
+        // #16：同上（服务端对 upsert 会同时下发 ShareReceived 与 ItemUpdated）
+        if (
+          get().role === 'teacher' &&
+          n.item.audience === 'Teacher' &&
+          n.item.owner_role === 'Student'
+        ) {
+          void get().loadSubmissions()
+        }
         break
       case 'ItemRemoved':
         set((s) => ({ items: s.items.filter((i) => i.id !== n.id) }))
