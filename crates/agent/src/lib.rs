@@ -279,6 +279,7 @@ fn upload_event(
             version: 1,
             deleted: false,
             sync_state: SyncState::PendingSync,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,

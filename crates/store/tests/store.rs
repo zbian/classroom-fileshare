@@ -46,6 +46,7 @@ fn remote_upsert(tag: &str, title: &str, version: u64) -> Event {
             version,
             deleted: false,
             sync_state: SyncState::Synced,
+            retry_count: 0,
         },
         new_name: None,
         acked_by: None,
