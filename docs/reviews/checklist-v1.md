@@ -143,3 +143,18 @@
   1. **主要理由（硬）**：门禁/取证跑的是旧树，数字与证据对当前 main **无效**（「取证环境 ≠ 发布环境」，与本项目反复出现的「测试形态 ≠ 真实形态」同型）；
   2. 次要理由：rebase 后 diff 收敛、便于评审，并让 B.2-2 的叠加风险显形（冲突或口径不一致）。
 - **禁止**写「合并会回退 main」作为阻塞理由（除非 three-dot 实测确实包含对 main 已存在文件的删除/倒退——这种情况须在记录里给出 `git diff main...<head> --stat` 的具体行）。
+
+## 附录 C local-ci 在 worktree 中的正确用法（2026-11-18 增补）
+
+`scripts/local-ci.ps1` 用 `$PSScriptRoot` 定位仓库根（内部 `Set-Location`）。**因此从 `.wt/<分支>` worktree 内执行时，必须调用该 worktree 自己的脚本副本**：
+
+- ✅ `pwsh -File "<worktree>\scripts\local-ci.ps1"`，或先 `Set-Location <worktree>` 再 `.\scripts\local-ci.ps1`
+- ❌ `..\..\scripts\local-ci.ps1`（**会测主检出**——数字与结论对当前分支无效）
+
+**踩坑实例**：PR #111 修正版 dev 报 `161 passed`（误测主检出），评审方用 worktree 内脚本实测为 **165 passed**。
+
+**自检**：对比输出中的工作树路径 / `git rev-parse --abbrev-ref HEAD` 是否为目标分支；数字与「main 实测基数 + 本 PR 新增」是否自洽。
+
+**与计划呼应**：M2 实施计划 §4.1「从 worktree 跑必须用该 worktree 内的 `.\scripts\local-ci.ps1`」。
+
+> 注意：`local-ci.ps1` 依赖真实 `ui/dist`；`-SkipWeb` 时会连带跳过 GUI release clippy（需 `-ForceReleaseClippy` 用临时占位），这也是「只跑部分门禁」时结论必须注明范围的原因。
