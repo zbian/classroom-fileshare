@@ -26,7 +26,7 @@
 | A1 | 真实双机发现并入班 | **PASS** | 教师日志 `学员加入 session_id=a5f3c581-4fa5-4b72-a16c-95637d998e15`；B 侧 `JOINED=True`、`session_id` 相同、`epoch=1`；`A1-teacher-20261118-215849.json` |
 | A4 | EX-11 教师端口冲突自动换端口 | **PASS**（教师侧） | 先占用 47821 → 启动日志 `指定端口被占用，自动更换（EX-11）` → 实际端口 **3717**；`A4-teacher-20261118-220016.json` |
 | A2 | 重名昵称拒绝 | **PASS** | S1 `session_id=740c5df5-...` 入班；S2 `加入被拒（致命，不重试） code=DupNickname`；教师侧 `旧连接存活，拒绝重名加入（EX-02）`；`A2-dual-20261118.json` |
-| A3 | PIN 校验 | ⏳ 待执行 | — |
+| A3 | PIN 校验 | **PASS** | 错误 PIN：`加入被拒（致命，不重试） code=WrongPin`；正确 PIN：`session_id=a407c7e0-...`，教师侧同名 session_id 匹配；`A3-dual-20261118.json` |
 | B1/B4/C4/C5/C7 | 内容分发 / GUI 退出 / 删除 / 离线补发 / 占用重试 | ⏳ 未实现学生侧断言 | — |
 
 ## 4 过程中发现与修复
