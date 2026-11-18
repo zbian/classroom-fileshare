@@ -1,0 +1,38 @@
+{
+    "case":  "A1",
+    "machine":  "BIAN-小白机",
+    "role":  "teacher",
+    "room":  "XK-204",
+    "startedAt":  "2026-11-18T21:58:18.7457661+08:00",
+    "finishedAt":  "2026-11-18T21:58:49.6410440+08:00",
+    "verdict":  "pass",
+    "reason":  "学生机已加入（教师端日志确认）",
+    "steps":  [
+                  {
+                      "name":  "svc-start",
+                      "status":  "ok",
+                      "detail":  "pid=22492 room=XK-204",
+                      "at":  "2026-11-18T21:58:18.8023370+08:00"
+                  },
+                  {
+                      "name":  "log-wait",
+                      "status":  "ok",
+                      "detail":  "pattern=教师端启动|IPC 服务监听中 line=2026-11-18T13:58:18.830922Z  INFO 教师端启动 room=XK-204 port=47821",
+                      "at":  "2026-11-18T21:58:19.0243317+08:00"
+                  },
+                  {
+                      "name":  "log-wait",
+                      "status":  "ok",
+                      "detail":  "pattern=student joined|学员加入 line=2026-11-18T13:58:49.461096Z  INFO 学员加入 nickname= session_id=a5f3c581-4fa5-4b72-a16c-95637d998e15",
+                      "at":  "2026-11-18T21:58:49.6390334+08:00"
+                  }
+              ],
+    "dataRoot":  "C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher",
+    "svcLogTail":  [
+                       "2026-11-18T13:58:18.805069Z  INFO 鍓嶅彴闄嶇骇妯″紡鍚姩锛?-console锛?mode=Teacher data_root=C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher\\localappdata\\ClassShare\\data",
+                       "2026-11-18T13:58:18.823242Z  WARN svc.json 缂哄皯 user_sid锛氭湇鍔℃ā寮忎护鐗屼粎 LocalSystem 鍙锛孏UI 灏嗘棤娉曡繛鎺ワ紱璇峰崌绾у畨瑁呮垨绛夊緟鐧诲綍浼氳瘽鑷剤锛圫essionChange锛?2026-11-18T13:58:18.828721Z  INFO 鏈嶅姟鏍稿績灏辩华 mode=Teacher data_root=C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher\\localappdata\\ClassShare\\data",
+                       "2026-11-18T13:58:18.828777Z  INFO IPC 鏈嶅姟鐩戝惉涓?pipe=\\\\.\\pipe\\classshare-svc-teacher",
+                       "2026-11-18T13:58:18.830922Z  INFO 鏁欏笀绔惎鍔?room=XK-204 port=47821",
+                       "2026-11-18T13:58:49.461096Z  INFO 瀛﹀憳鍔犲叆 nickname= session_id=a5f3c581-4fa5-4b72-a16c-95637d998e15"
+                   ]
+}

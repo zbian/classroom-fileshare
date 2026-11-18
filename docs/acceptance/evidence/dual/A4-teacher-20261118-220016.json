@@ -1,0 +1,38 @@
+{
+    "case":  "A4",
+    "machine":  "BIAN-小白机",
+    "role":  "teacher",
+    "room":  "XK-204",
+    "startedAt":  "2026-11-18T22:00:16.1786815+08:00",
+    "finishedAt":  "2026-11-18T22:00:16.4549460+08:00",
+    "verdict":  "pass",
+    "reason":  "EX-11 自动换端口日志命中",
+    "steps":  [
+                  {
+                      "name":  "port-occupy",
+                      "status":  "ok",
+                      "detail":  "47821 已占用",
+                      "at":  "2026-11-18T22:00:16.1856870+08:00"
+                  },
+                  {
+                      "name":  "svc-start",
+                      "status":  "ok",
+                      "detail":  "pid=52096 room=XK-204",
+                      "at":  "2026-11-18T22:00:16.2292381+08:00"
+                  },
+                  {
+                      "name":  "log-wait",
+                      "status":  "ok",
+                      "detail":  "pattern=指定端口被占用|自动更换 line=2026-11-18T14:00:16.252508Z  WARN 指定端口被占用，自动更换（EX-11） port=47821 error=通常每个套接字地址(协议/网络地址/端口)只允许使用一次。 (os error 10048)",
+                      "at":  "2026-11-18T22:00:16.4534470+08:00"
+                  }
+              ],
+    "dataRoot":  "C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher",
+    "svcLogTail":  [
+                       "2026-11-18T14:00:16.232809Z  INFO 鍓嶅彴闄嶇骇妯″紡鍚姩锛?-console锛?mode=Teacher data_root=C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher\\localappdata\\ClassShare\\data",
+                       "2026-11-18T14:00:16.246088Z  WARN svc.json 缂哄皯 user_sid锛氭湇鍔℃ā寮忎护鐗屼粎 LocalSystem 鍙锛孏UI 灏嗘棤娉曡繛鎺ワ紱璇峰崌绾у畨瑁呮垨绛夊緟鐧诲綍浼氳瘽鑷剤锛圫essionChange锛?2026-11-18T14:00:16.250965Z  INFO 鏈嶅姟鏍稿績灏辩华 mode=Teacher data_root=C:\\Users\\Bian\\AppData\\Local\\Temp\\classshare-dual\\teacher\\localappdata\\ClassShare\\data",
+                       "2026-11-18T14:00:16.251006Z  INFO IPC 鏈嶅姟鐩戝惉涓?pipe=\\\\.\\pipe\\classshare-svc-teacher",
+                       "2026-11-18T14:00:16.252508Z  WARN 鎸囧畾绔彛琚崰鐢紝鑷姩鏇存崲锛圗X-11锛?port=47821 error=閫氬父姣忎釜濂楁帴瀛楀湴鍧€(鍗忚/缃戠粶鍦板潃/绔彛)鍙厑璁镐娇鐢ㄤ竴娆°€?(os error 10048)",
+                       "2026-11-18T14:00:16.252993Z  INFO 鏁欏笀绔惎鍔?room=XK-204 port=3717"
+                   ]
+}
