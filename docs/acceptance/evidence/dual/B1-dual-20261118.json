@@ -1,0 +1,43 @@
+{
+  "case": "B1",
+  "title": "跨机 10MB 文件分发（sha256 一致，真实双机）",
+  "runAt": "2026-11-18T14:25:28Z",
+  "verdict": "pass",
+  "source": {
+    "machine": "BIAN-小白机",
+    "file": "src-b1.bin",
+    "size": 10485760,
+    "sha256": "E5B844CC57F57094EA4585E235F36C78C1CD222262BB89D53C94DCB4D6B3E55D"
+  },
+  "aSide": {
+    "role": "teacher",
+    "version": "v0.2.0-rc.1-9-gc472711",
+    "sendPath": "IPC（scripts/dual/ipc-client.ps1 → GuiRequest::SendFiles），回复 {\"Ok\":\"Ok\"}",
+    "logLines": [
+      "2026-11-18T14:25:28.909330Z INFO broadcast item_id=07d01f64-fda3-4ccd-8967-d0c018cd04fe file=src-b1.bin size=10485760 audience=\"all\"",
+      "2026-11-18T14:25:33.057643Z INFO 学员加入 nickname=s1 session_id=be40298a-bccd-411f-939d-0623f881dd19"
+    ]
+  },
+  "bSide": {
+    "machine": "ZHEN-LPD",
+    "svcSha256Prefix": "8E06B6EAF3D4",
+    "dataRoot": "会话工作目录\\cs-b1",
+    "logLines": [
+      "2026-11-18T14:25:37.355383Z INFO 已加入房间 session_id=be40298a-bccd-411f-939d-0623f881dd19",
+      "2026-11-18T14:25:37.355588Z INFO 会话已就绪（Joined） epoch=1",
+      "2026-11-18T14:25:37.659528Z INFO received item_id=07d01f64-fda3-4ccd-8967-d0c018cd04fe file=src-b1.bin size=10485760 from=teacher",
+      "2026-11-18T14:25:37.662081Z INFO applied item_id=07d01f64-fda3-4ccd-8967-d0c018cd04fe version=1"
+    ],
+    "repoFile": {
+      "name": "src-b1.bin",
+      "size": 10485760,
+      "sha256": "E5B844CC57F57094EA4585E235F36C78C1CD222262BB89D53C94DCB4D6B3E55D"
+    }
+  },
+  "crossCheck": "源文件、B 侧落盘文件 sha256 完全一致；item_id 双侧一致；session_id 双侧一致",
+  "notes": [
+    "发送发生在学生入班前（14:25:28 vs 14:25:33），学生入班后由同步逻辑补齐并落盘（received/applied），符合设计",
+    "B 侧实测 ACL 加固失败（WIN32_ERROR(5)）后按 console 降级模式继续（PR #150 生效），不影响收文件",
+    "发送通道为最小 IPC 客户端（scripts/dual/ipc-client.ps1），无 GUI 依赖"
+  ]
+}
