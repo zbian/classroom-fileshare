@@ -1,4 +1,4 @@
-# 开发协作流程（GitHub Flow）
+﻿# 开发协作流程（Gitee 为主仓，GitHub 保留历史）
 
 本文件是团队的强制工作规范。所有成员（含 Lead）开发类变更一律走 issue → 分支 → PR → Review → Merge 流程。
 
@@ -14,7 +14,8 @@
 
 ## 环境备忘
 
-- 仓库：`git@github.com:zbian/classroom-fileshare.git`（SSH 推拉已验证）
+- 主仓库（origin）：`git@gitee.com:zbian/classroom-fileshare.git`（SSH 推拉已验证）
+- 镜像（可选）：`github` 远端保留 GitHub 历史（`git@github.com:zbian/classroom-fileshare.git`）；日常以 Gitee 为准
 - Rust：用户级安装，命令在 `$env:USERPROFILE\.cargo\bin\`；新进程若找不到 cargo，先执行
   `$env:Path += ";$env:USERPROFILE\.cargo\bin"`
 - rustfmt / clippy 组件缺失（报 `'cargo-fmt.exe' is not installed` 之类）时执行
@@ -47,7 +48,7 @@ git push -u origin feat/<issue号>-<短名>
 
 ## Issue 规范
 
-- **每个任务一个 GitHub issue**，由 Lead 按实施计划（`docs/plans/`）创建
+- **每个任务一个 issue**（Gitee；历史 # 编号记录仍在 GitHub），由 Lead 按实施计划（`docs/plans/`）创建
 - Issue 模板字段：背景与目标 / PRD 引用（章节+FR 编号）/ 验收标准（可勾选）/ 依赖 issue
 - 标签体系：`P0` `P1` `P2`；`area/protocol` `area/net` `area/store` `area/host` `area/agent` `area/ipc` `area/gui` `area/service` `area/docs`；`type/feature` `type/bug` `type/chore` `type/test`；`role/dev` `role/review` `role/qa`
 - 里程碑：`M1-P0`（能上一节课的最小闭环）→ `M2-P1`（回传/删除同步/离线）→ `M3-release`
@@ -60,7 +61,7 @@ git push -u origin feat/<issue号>-<短名>
 4. Lead 执行 **squash merge**，保留 `Closes #<issue>` 于合并提交信息
 5. 涉及用户可见行为的 PR 合并后由 `qa-acceptance` 按 issue 验收标准复核，通过后在 issue 留言关闭验收
 
-## 本机 CI（门禁，2026-11-17 用户指令：停用 GitHub Actions）
+## 本机 CI（门禁，2026-11-17 用户指令：停用 GitHub Actions；迁移 Gitee 后同样不使用任何托管 CI）
 
 GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，git 历史可追溯），改由
 **`scripts/local-ci.ps1`** 作为门禁权威实现（与 qa 的 `docs/acceptance/local-ci.md` 同口径）。
@@ -103,3 +104,11 @@ GitHub Actions 已停用（`.github/workflows/ci.yml` 移除，git 历史可追�
 | 正式发布 | `v1.0.0` | M3 验收 + 全部 13 个 TC 通过 |
 
 Tag 一律 annotated tag 并推送 origin。
+
+## 版本控制迁移（2026-11-19）
+
+- 主仓库切到 Gitee：`git@gitee.com:zbian/classroom-fileshare.git`（origin）
+- GitHub 保留为 `github` 远端：`git@github.com:zbian/classroom-fileshare.git`（历史 PR/issue 与旧记录仍可查）
+- 已推送：`main` + 8 个标签（`v0.1.0`、`v0.1.0-rc.1..4`、`v0.1.1`、`v0.2.0-rc.1`、`docs-v1.0`）
+- 迁移脚本：`scripts/migrate-to-gitee.ps1`（可重复执行；`-MirrorAll` 可推送全部本地分支）
+- 未迁移项：GitHub 上的 issue/PR 讨论正文（Gitee 侧从迁移日起新建 issue）；CI 本来就不使用托管 Actions

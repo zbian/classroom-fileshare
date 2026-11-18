@@ -1,4 +1,4 @@
-# 双机测试方案（TC-01 真实双机 / TC-11 / TC-13 管理员 / E7 服务模式 / 跨机链路）
+﻿# 双机测试方案（TC-01 真实双机 / TC-11 / TC-13 管理员 / E7 服务模式 / 跨机链路）
 
 > 关联 issue：#91（双机/管理员环境补验）、#15（M1 验收）、#21（M2 验收）
 > 目的：**只补单机无法验证的延后项**，单机已通过的 40+ 项不重做。
@@ -34,7 +34,7 @@
 ## 3 构建与安装（两台各一次）
 
 ```powershell
-git clone git@github.com:zbian/classroom-fileshare.git; cd classroom-fileshare
+git clone git@gitee.com:zbian/classroom-fileshare.git; cd classroom-fileshare
 git checkout v0.2.0-rc.1
 .\scripts\build-gui.ps1                        # 生产构建（禁止裸 cargo build --release）
 cargo build --release -p classroom-svc

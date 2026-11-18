@@ -51,7 +51,11 @@ function Invoke-Git {
     param([string[]]$Arguments)
     $shown = $Arguments -join ' '
     if ($DryRun) { Write-Host "[dry-run] git $shown"; return }
-    & git @Arguments
+    # PS 5.1 + EAP=Stop 下，原生命令 stderr（Gitee 推送横幅）会变成
+    # NativeCommandError 终止脚本——临时放宽并捕获，按退出码判定成败。
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & git @Arguments 2>&1 | ForEach-Object { Write-Host $_ } } finally { $ErrorActionPreference = $prev }
     if ($LASTEXITCODE -ne 0) { throw "git $shown 失败（exit $LASTEXITCODE）" }
 }
 
