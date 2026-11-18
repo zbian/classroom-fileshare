@@ -28,8 +28,9 @@
 | A2 | 重名昵称拒绝 | **PASS** | S1 `session_id=740c5df5-...` 入班；S2 `加入被拒（致命，不重试） code=DupNickname`；教师侧 `旧连接存活，拒绝重名加入（EX-02）`；`A2-dual-20261118.json` |
 | A3 | PIN 校验 | **PASS** | 错误 PIN：`加入被拒（致命，不重试） code=WrongPin`；正确 PIN：`session_id=a407c7e0-...`，教师侧同名 session_id 匹配；`A3-dual-20261118.json` |
 | B1 | 跨机 10MB 文件分发 | **PASS** | 源/B 落盘 sha256 `E5B844CC...` 完全一致；item_id `07d01f64...` 双侧一致；session `be40298a...`；`B1-dual-20261118.json` |
-| B2+C4 | 文本同步 + 删除同步 | ⏳ 执行中 | — |
-| B4/C5/C7 | GUI 退出 / 离线补发 / 占用重试 | ⏳ 待执行 | — |
+| B2 | 跨机文本共享 | **PASS** | item_id `0876fd5a...` 双侧一致；B 侧落盘 `t2fa29ca7b797.txt` 内容 `dual-text-sync-2026-11-18`（25B 逐字节一致）；`B2-dual-20261118.json` |
+| C4 | TC-08 删除同步 | **PASS** | 教师 delete → delete-ack（session `eb156a1e`）→ `done=1 total=1`（约 1s）；B 侧 `src-c4.bin` 从 repo 移除；`C4-dual-20261118.json` |
+| B4/C5/C7 | GUI 退出 / 离线补发 / 占用重试 | ⏭ 未执行 | 需 B 机桌面会话（GUI）或可控网络断开；受限沙箱下不可行，留待人工环境 |
 
 ## 4 过程中发现与修复
 
