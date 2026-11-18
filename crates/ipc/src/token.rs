@@ -44,6 +44,28 @@ pub fn load_or_create_token(root: &Path) -> anyhow::Result<String> {
     load_or_create_token_for(root, None)
 }
 
+/// ACL 加固（console 降级模式允许软失败）。
+///
+/// 服务模式（`user_sid=Some`）保持 fail-closed（E7 安全语义不变）；
+/// console 降级模式（`user_sid=None`）可能运行在受限沙箱/AppContainer
+/// 令牌下，`SetNamedSecurityInfoW` 会返回 ACCESS_DENIED（B 机 mesh 会话
+/// workspace-write 即此类）——此时降级为警告并沿用默认 DACL：令牌仍是
+/// 当前用户可读（GUI 可用），不阻断功能验证。
+fn restrict_acl_or_degrade(path: &Path, user_sid: Option<&str>) -> anyhow::Result<()> {
+    match restrict_acl(path, user_sid) {
+        Ok(()) => Ok(()),
+        Err(e) if user_sid.is_none() => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "IPC 令牌 ACL 加固失败：console 降级模式继续（默认 DACL，服务模式仍 fail-closed）"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// 服务模式变体（E7 追加，令牌分发机制）：`user_sid` 为主登录用户 SID
 /// （install.ps1 写入 svc.json）——限权为「SYSTEM/管理员（管理可达）+
 /// 当前用户 (R,W) + 双授予 `*<user_sid>:(R,W)`」，用户会话 GUI 才能读到
@@ -58,7 +80,7 @@ pub fn load_or_create_token_for(root: &Path, user_sid: Option<&str>) -> anyhow::
     };
     let root_canon = std::path::PathBuf::from(root_canon);
     let path = root_canon.join("ipc.token");
-    let restrict = |p: &Path| restrict_acl(p, user_sid);
+    let restrict = |p: &Path| restrict_acl_or_degrade(p, user_sid);
     if path.exists() {
         let token = std::fs::read_to_string(&path)?;
         let token = token.trim().to_string();
@@ -559,5 +581,24 @@ mod tests {
                 "Everyone 缺席: {entries:?}"
             );
         }
+    }
+
+    /// console 降级模式：ACL 加固失败时降级为警告（不阻断启动）；
+    /// 服务模式（user_sid=Some）必须保持 fail-closed。
+    ///
+    /// 用「不存在的路径」稳定复现 restrict 失败，不依赖 ACL 写入能力。
+    #[test]
+    fn acl_hardening_degrades_only_in_console_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("not-exists.token");
+
+        assert!(
+            restrict_acl_or_degrade(&missing, None).is_ok(),
+            "console 模式（user_sid=None）应降级为 Ok"
+        );
+        assert!(
+            restrict_acl_or_degrade(&missing, Some("S-1-5-18")).is_err(),
+            "服务模式（user_sid=Some）必须 fail-closed"
+        );
     }
 }
