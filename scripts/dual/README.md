@@ -12,6 +12,11 @@
 | `syncthing-setup.ps1` | A/B 各一次 | 安装/配置/启动 Syncthing，共享证据目录（点对点，无 SMB/SFTP） |
 | `syncthing-status.ps1` | A/B 均可 | 查看设备 ID/对端连接/文件夹状态；`-WaitConnectedSec` 等对端上线 |
 | `syncthing-stop.ps1` | A/B 均可 | 停止本套件启动的 Syncthing 进程 |
+| `export-artifacts.ps1` | A | 导出「被测环境包」：bin + scripts + cases.json + 哈希 manifest |
+| `bootstrap-student.ps1` | B（首次） | 无人值守引导：Syncthing(student)、证据目录、环境自检 |
+| `student-runner.ps1` | B | 按 `cases.json` 批量执行用例（子进程+超时），输出 `dual-report-<RunId>.json` |
+| `remote-driver.ps1` | A | 导出 → 生成 mesh 派发文本 → 等待证据回流 → 校验汇总 |
+| `cases.json` | 共享 | 用例清单（id/title/mode/script/args/timeout/evidenceGlob） |
 
 ## 证据信封（JSON）
 
@@ -80,6 +85,27 @@ mesh 派发只有文本通道，截图/日志/JSON 用 Syncthing 点对点同步
 - 不要把整个仓库共享给 Syncthing（只共享 `docs/acceptance/evidence/dual`）
 - 冲突文件 `sync-conflict-*` 已 gitignore；出现冲突说明两端同时写了同一文件（Send Only/Receive Only 配置下不应发生）
 - 停止：`.\scripts\dual\syncthing-stop.ps1 -All`（只停本套件的进程）
+
+## 无人值守远程执行（B 机只有 DSH，无人工）
+
+设计见 [docs/acceptance/dual-machine-remote-framework.md](../../docs/acceptance/dual-machine-remote-framework.md)。
+
+```powershell
+# A 机：导出环境包 + 生成派发文本（不等待）
+.\scripts\dual\remote-driver.ps1 -Cases SELFCHECK,A1 -PeerDeviceId <B deviceId> -DispatchOnly
+
+# A 机（Lead）：用上面打印的 peer/thread/task 调用 mesh_run 派发给 B
+#   B 机 agent 收到后执行：
+#     bootstrap-student.ps1 -TeacherDeviceId <A deviceId>        # 首次
+#     student-runner.ps1 -Cases SELFCHECK,A1 -RunId <RunId>      # 本轮
+
+# A 机：等待证据回流并汇总（B 机跑完后）
+.\scripts\dual\remote-driver.ps1 -Cases SELFCHECK,A1 -PeerDeviceId <B deviceId> -SkipExport
+```
+
+- 证据经 Syncthing 自动回流；mesh 只负责「派发任务」，**结论以证据文件为准**
+- 本地自测（无需第二台机器）：`remote-driver.ps1 -Cases SELFCHECK -PeerDeviceId <B sim id> -LocalStudent`
+- 已验证（2026-11-18 本机双实例）：导出环境包 → A/B Syncthing 互连 → runner 产出报告 → 证据回流 A → merged 报告生成，SELFCHECK = pass
 
 ## mesh 派发（由 Lead agent 执行）
 

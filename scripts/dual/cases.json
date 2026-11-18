@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "description": "双机测试用例清单（remote-driver / student-runner 共用）；evidenceGlob 相对证据目录。",
+  "cases": [
+    {
+      "id": "SELFCHECK",
+      "group": "0",
+      "title": "B 机环境自检（无人工）",
+      "mode": "inline",
+      "timeoutSec": 90,
+      "evidenceGlob": "dual-case-*SELFCHECK*.json"
+    },
+    {
+      "id": "A1",
+      "group": "A",
+      "title": "真实双机发现并自动入班",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "A1" ],
+      "timeoutSec": 180,
+      "evidenceGlob": "dual-case-*A1*.json",
+      "requires": { "teacher": "教师 svc 已启动并在广播", "student": "学生 svc 能收到 becon" }
+    },
+    {
+      "id": "A4",
+      "group": "A",
+      "title": "EX-11 教师端口冲突自动换端口（学生仍入班）",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "A4" ],
+      "timeoutSec": 180,
+      "evidenceGlob": "dual-case-*A4*.json",
+      "requires": { "teacher": "教师机先占用 47821 后启动", "student": "同 A1" }
+    },
+    {
+      "id": "B1",
+      "group": "B",
+      "title": "跨机 10MB 文件分发（sha256 一致）",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "B1" ],
+      "timeoutSec": 240,
+      "evidenceGlob": "dual-case-*B1*.json"
+    },
+    {
+      "id": "B4",
+      "group": "B",
+      "title": "学生端退出 GUI 后服务/数据完整",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "B4" ],
+      "timeoutSec": 120,
+      "evidenceGlob": "dual-case-*B4*.json"
+    },
+    {
+      "id": "C4",
+      "group": "C",
+      "title": "TC-08 删除同步（在线立即消失 / 断网端上线 ≤10s 补删）",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "C4" ],
+      "timeoutSec": 300,
+      "evidenceGlob": "dual-case-*C4*.json"
+    },
+    {
+      "id": "C5",
+      "group": "C",
+      "title": "TC-09 离线补发（断网 2 条 → 恢复 ≤10s 无重复）",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "C5" ],
+      "timeoutSec": 300,
+      "evidenceGlob": "dual-case-*C5*.json"
+    },
+    {
+      "id": "C7",
+      "group": "C",
+      "title": "TC-07 接收端占用重试（锁定 → 自动完成）",
+      "mode": "script",
+      "script": "student-case.ps1",
+      "args": [ "-Case", "C7" ],
+      "timeoutSec": 300,
+      "evidenceGlob": "dual-case-*C7*.json"
+    }
+  ]
+}
