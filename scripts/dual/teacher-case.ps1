@@ -45,7 +45,7 @@ function Add-Step([string]$name, [string]$status, [string]$detail) {
 }
 
 function Save-Evidence([string]$verdict, [string]$reason) {
-    $env = [ordered]@{
+    $evidence = [ordered]@{
         case = $Case
         machine = $env:COMPUTERNAME
         role = 'teacher'
@@ -58,11 +58,11 @@ function Save-Evidence([string]$verdict, [string]$reason) {
         dataRoot = $DataRoot
         svcLogTail = @()
     }
-    $log = Join-Path $DataRoot 'logs\svc.log'
-    if (Test-Path $log) { $env.svcLogTail = @(Get-Content $log -Tail 40) }
+    $log = Join-Path $DataRoot 'localappdata\ClassShare\data\logs\svc.log'
+    if (Test-Path $log) { $evidence.svcLogTail = @(Get-Content $log -Tail 40 | ForEach-Object { [string]$_ }) }
     $file = Join-Path $OutDir ("{0}-teacher-{1}.json" -f $Case, (Get-Date).ToString('HHmmss'))
-    [System.IO.File]::WriteAllText($file, ($env | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Output ($env | ConvertTo-Json -Depth 6)
+    [System.IO.File]::WriteAllText($file, ($evidence | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output ($evidence | ConvertTo-Json -Depth 6)
     Write-Host "evidence: $file"
 }
 
@@ -70,7 +70,7 @@ function Start-IsoTeacher {
     if (-not (Test-Path $SvcExe)) { throw "svc exe 不存在: $SvcExe（先 cargo build --release -p classroom-svc）" }
     $cfg = [ordered]@{ version = 1; mode = 'teacher'; room_code = $Room }
     if ($Pin) { $cfg.pin = $Pin }
-    $cfgDir = Join-Path $DataRoot 'config'
+    $cfgDir = Join-Path $DataRoot 'localappdata\ClassShare'
     New-Item -ItemType Directory -Force $cfgDir | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $cfgDir 'svc.json'), ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
@@ -86,12 +86,15 @@ function Start-IsoTeacher {
     New-Item -ItemType Directory -Force $psi.EnvironmentVariables['LOCALAPPDATA'] | Out-Null
     New-Item -ItemType Directory -Force $psi.EnvironmentVariables['APPDATA'] | Out-Null
     New-Item -ItemType Directory -Force $psi.EnvironmentVariables['PROGRAMDATA'] | Out-Null
+    # 姣忔鐢ㄤ緥鍚姩鍓嶆竻绌烘棫鏃ュ織锛岄伩鍏?Wait-SvcLog 鍛戒腑涓婁竴杞畫鐣欒锛堝亣闃虫€э級
+    $logFile = Join-Path $psi.EnvironmentVariables['LOCALAPPDATA'] 'ClassShare\data\logs\svc.log'
+    if (Test-Path $logFile) { Remove-Item $logFile -Force -ErrorAction SilentlyContinue }
     $script:Proc = [System.Diagnostics.Process]::Start($psi)
     Add-Step 'svc-start' 'ok' ("pid={0} room={1}" -f $script:Proc.Id, $Room)
 }
 
 function Wait-SvcLog([string]$pattern, [int]$timeoutSec = 20) {
-    $log = Join-Path $DataRoot 'logs\svc.log'
+    $log = Join-Path $DataRoot 'localappdata\ClassShare\data\logs\svc.log'
     $deadline = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $log) {
