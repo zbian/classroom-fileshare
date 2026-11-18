@@ -46,6 +46,7 @@ param(
     [string]$ArtifactsDir = '',
     [string]$EvidenceDir = '',
     [string]$LocalEvidenceDir = '',
+    [string]$LocalArtifactsDir = '',
     [int]$WaitSec = 600,
     [switch]$LocalStudent,
     [switch]$SkipExport,
@@ -76,7 +77,7 @@ else {
 
 Write-Host '=== [2/4] 启动/确认 A 机 Syncthing ===' -ForegroundColor Cyan
 if (Test-Path (Join-Path $PSScriptRoot 'syncthing-setup.ps1')) {
-    $setArgs = @{ Role = 'teacher'; StHome = $stHome; EvidenceDir = $EvidenceDir; LocalOnly = $true }
+    $setArgs = @{ Role = 'teacher'; StHome = $stHome; EvidenceDir = $EvidenceDir; ArtifactsDir = $ArtifactsDir; LocalOnly = $true }
     if ($PeerDeviceId) { $setArgs['PeerDeviceId'] = $PeerDeviceId; $setArgs['PeerName'] = 'B-Student'; $setArgs['PeerAddresses'] = $PeerAddresses }
     & (Join-Path $PSScriptRoot 'syncthing-setup.ps1') @setArgs 6>&1 | ForEach-Object { Write-Host $_ }
     Write-Host "[ok] A device id=$aDeviceId"
@@ -111,10 +112,17 @@ if ($DispatchOnly) {
 
 Write-Host '=== [4/4] 等待 B 机报告回流 ===' -ForegroundColor Cyan
 if ($LocalStudent) {
-    Write-Host '[sim] 本机模拟 B 机执行 student-runner ...'
-    $runner = Join-Path $ArtifactsDir 'scripts\student-runner.ps1'
+    $simArtifacts = if ($LocalArtifactsDir) { $LocalArtifactsDir } else { $ArtifactsDir }
+    Write-Host "[sim] 本机模拟 B 机执行 student-runner（artifacts=$simArtifacts）..."
+    if ($LocalArtifactsDir) {
+        $need = Join-Path $simArtifacts 'bin\classroom-svc.exe'
+        $deadline0 = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline0 -and -not (Test-Path $need)) { Start-Sleep -Seconds 1 }
+        Write-Host ("[sim] artifacts synced={0}" -f (Test-Path $need))
+    }
+    $runner = Join-Path $simArtifacts 'scripts\student-runner.ps1'
     if (-not (Test-Path $runner)) { $runner = Join-Path $PSScriptRoot 'student-runner.ps1' }
-    $simArgs = @{ Cases = $Cases; ArtifactsDir = $ArtifactsDir; EvidenceDir = $LocalEvidenceDir; RunId = $RunId; TeacherAddr = '127.0.0.1:47821' }
+    $simArgs = @{ Cases = $Cases; ArtifactsDir = $simArtifacts; EvidenceDir = $LocalEvidenceDir; RunId = $RunId; TeacherAddr = '127.0.0.1:47821' }
     & $runner @simArgs 6>&1 | ForEach-Object { Write-Host $_ }
 }
 

@@ -74,7 +74,7 @@ if (-not $SkipSyncthing) {
     $setup = Join-Path $PSScriptRoot 'syncthing-setup.ps1'
     if (-not (Test-Path $setup)) { throw "缺少 syncthing-setup.ps1：$setup" }
     Write-Host '[bootstrap] 配置 Syncthing（student）...'
-    & $setup -Role student -PeerDeviceId $TeacherDeviceId -PeerName $TeacherName -PeerAddresses $TeacherAddresses -StHome $SyncthingHome -EvidenceDir $EvidenceDir -GuiPort $GuiPort -SyncPort $SyncPort -LocalDiscoveryPort $LocalDiscoveryPort -LocalOnly 6>&1 | ForEach-Object { Write-Host $_ }
+    & $setup -Role student -PeerDeviceId $TeacherDeviceId -PeerName $TeacherName -PeerAddresses $TeacherAddresses -StHome $SyncthingHome -EvidenceDir $EvidenceDir -ArtifactsDir $ArtifactsDir -GuiPort $GuiPort -SyncPort $SyncPort -LocalDiscoveryPort $LocalDiscoveryPort -LocalOnly 6>&1 | ForEach-Object { Write-Host $_ }
     Add-Step 'syncthing-setup' 'ok' $SyncthingHome
 } else {
     Add-Step 'syncthing-setup' 'skipped' 'SkipSyncthing'
