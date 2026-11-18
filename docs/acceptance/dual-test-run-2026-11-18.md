@@ -25,7 +25,7 @@
 | --- | --- | --- | --- |
 | A1 | 真实双机发现并入班 | **PASS** | 教师日志 `学员加入 session_id=a5f3c581-4fa5-4b72-a16c-95637d998e15`；B 侧 `JOINED=True`、`session_id` 相同、`epoch=1`；`A1-teacher-20261118-215849.json` |
 | A4 | EX-11 教师端口冲突自动换端口 | **PASS**（教师侧） | 先占用 47821 → 启动日志 `指定端口被占用，自动更换（EX-11）` → 实际端口 **3717**；`A4-teacher-20261118-220016.json` |
-| A2 | 重名昵称拒绝 | ⏳ 执行中 | — |
+| A2 | 重名昵称拒绝 | **PASS** | S1 `session_id=740c5df5-...` 入班；S2 `加入被拒（致命，不重试） code=DupNickname`；教师侧 `旧连接存活，拒绝重名加入（EX-02）`；`A2-dual-20261118.json` |
 | A3 | PIN 校验 | ⏳ 待执行 | — |
 | B1/B4/C4/C5/C7 | 内容分发 / GUI 退出 / 删除 / 离线补发 / 占用重试 | ⏳ 未实现学生侧断言 | — |
 
@@ -37,6 +37,8 @@
 4. **证据 JSON 膨胀（35–71 MB）**：`Get-Content` 返回对象带 `PSPath/PSDrive` NoteProperty，被 `ConvertTo-Json` 序列化 → 改为 `[string]$_` 后证据约 2.5 KB。
 5. **B 端回执排队**：mesh 回执以会话消息排队到达，不即时；测试以证据文件/日志为准，不以轮询为准。
 6. 用例结束即关闭教师 svc，学生端日志出现「与教师机断开，稍后自动重连」属预期。
+7. **ACL 加固与受限沙箱**：B 机 mesh 会话（workspace-write）无法写 DACL，svc 启动即失败（`SetNamedSecurityInfoW WIN32_ERROR(5)`）→ 新增 console 降级模式软失败（服务模式仍 fail-closed，PR #150），数据可放会话工作区。
+8. **同机多实例管道名冲突**：`\\.\pipe\classshare-svc-student` 固定，第二实例报「创建管道实例失败」（不影响入班拒绝判定）——候选 issue：按实例/用户隔离管道名。
 
 ## 5 复跑命令
 
