@@ -40,6 +40,7 @@ param(
     [string]$PeerName = 'Peer',
     [string[]]$PeerAddresses = @('dynamic'),
     [string]$EvidenceDir = '',
+    [string]$ArtifactsDir = '',
     [string]$StHome = '',
     [int]$GuiPort = 8384,
     [int]$SyncPort = 22000,
@@ -167,6 +168,19 @@ if (-not $NoStart) {
         devices = $devices; rescanIntervalS = 10; fsWatcherEnabled = $true; ignorePerms = $true
     }
     Invoke-St 'PUT' "/rest/config/folders/$folderId" $folder | Out-Null
+
+    # optional second folder: teacher SendOnly -> student ReceiveOnly
+    if ($ArtifactsDir) {
+        New-Item -ItemType Directory -Force $ArtifactsDir | Out-Null
+        $artFolderId = 'classshare-dual-artifacts'
+        $artType = if ($Role -eq 'teacher') { 'sendonly' } else { 'receiveonly' }
+        $artFolder = [ordered]@{
+            id = $artFolderId; label = 'ClassShare Dual Artifacts'; path = $ArtifactsDir; type = $artType
+            devices = $devices; rescanIntervalS = 30; fsWatcherEnabled = $true; ignorePerms = $true
+        }
+        Invoke-St 'PUT' "/rest/config/folders/$artFolderId" $artFolder | Out-Null
+        Write-Host "[cfg] artifacts folder=$artFolderId type=$artType path=$ArtifactsDir"
+    }
     Write-Host "[cfg] folder=$folderId type=$type path=$EvidenceDir"
 }
 

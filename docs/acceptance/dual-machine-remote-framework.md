@@ -103,24 +103,26 @@ mesh_run(
 ```powershell
 # 1) A 机 Syncthing（teacher）+ B 模拟实例（student）——用第二套端口/目录
 .\scripts\dual\syncthing-setup.ps1 -Role student -PeerDeviceId <A> -StHome $env:LOCALAPPDATA\ClassShareDual\syncthing-home-b `
-    -GuiPort 8385 -SyncPort 22001 -LocalDiscoveryPort 21028 -EvidenceDir $env:LOCALAPPDATA\ClassShareDual\evidence-b -LocalOnly
-# 2) 框架自测：driver 在本机模拟 B 执行并等待证据回流
-.\scripts\dual\remote-driver.ps1 -Cases SELFCHECK -PeerDeviceId <B sim id> -LocalStudent
+    -GuiPort 8385 -SyncPort 22001 -LocalDiscoveryPort 21028 -EvidenceDir $env:LOCALAPPDATA\ClassShareDual\evidence-b `
+    -ArtifactsDir $env:LOCALAPPDATA\ClassShareDual\artifacts-b -LocalOnly
+# 2) 框架自测：driver 在本机模拟 B 执行（含 artifacts 同步）并等待证据回流
+.\scripts\dual\remote-driver.ps1 -Cases SELFCHECK -PeerDeviceId <B sim id> -LocalStudent `
+    -LocalArtifactsDir $env:LOCALAPPDATA\ClassShareDual\artifacts-b
 ```
 
 自测验证点：artifacts 导出 → A/B Syncthing 互连 → student-runner 产出报告 → 证据回流 A → merged 报告生成。
 
-**已验证（2026-11-18 12:39，本机双实例模拟）**：
+**已验证（2026-11-18 12:42，本机双实例模拟）**：
 
 ```
 [1/4] 导出环境包（svc 5.3MB + gui 12.4MB + 10 脚本 + cases.json + manifest 哈希）
-[2/4] A Syncthing(8384/22000) 就绪，peer B 已添加
+[2/4] A Syncthing(8384/22000) 就绪，peer B 已添加；artifacts 文件夹 SendOnly
 [3/4] 生成 mesh 派发文本（peer/thread/task）
-[4/4] 本机模拟 B：student-runner SELFCHECK => pass
+[4/4] 本机模拟 B：artifacts 同步成功 → student-runner SELFCHECK => pass
       报告经 Syncthing 回流 A → dual-report-merged-<RunId>.json overall=pass
 ```
 
-即：**除 mesh 派发这一段（需要真实 B 机）外，其余链路已端到端验证**。
+即：**除 mesh 派发这一段（需要真实 B 机）外，其余链路（环境包同步 → 用例执行 → 证据回流 → 汇总）已端到端验证**。
 
 ## 9 待办（依赖 B 机）
 

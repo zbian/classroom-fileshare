@@ -104,8 +104,9 @@ mesh 派发只有文本通道，截图/日志/JSON 用 Syncthing 点对点同步
 ```
 
 - 证据经 Syncthing 自动回流；mesh 只负责「派发任务」，**结论以证据文件为准**
-- 本地自测（无需第二台机器）：`remote-driver.ps1 -Cases SELFCHECK -PeerDeviceId <B sim id> -LocalStudent`
-- 已验证（2026-11-18 本机双实例）：导出环境包 → A/B Syncthing 互连 → runner 产出报告 → 证据回流 A → merged 报告生成，SELFCHECK = pass
+- 环境包与证据各用一个 Syncthing 文件夹（`syncthing-setup.ps1 -ArtifactsDir` 自动创建：A=SendOnly / B=ReceiveOnly）
+- 本地自测（无需第二台机器）：`remote-driver.ps1 -Cases SELFCHECK -PeerDeviceId <B sim id> -LocalStudent -LocalArtifactsDir <模拟B的artifacts目录>`
+- 已验证（2026-11-18 本机双实例）：导出环境包 → A/B Syncthing 互连 → **artifacts 同步到 B** → runner 产出报告 → 证据回流 A → merged 报告生成，SELFCHECK = pass
 
 ## mesh 派发（由 Lead agent 执行）
 

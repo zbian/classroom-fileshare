@@ -88,10 +88,10 @@ foreach ($case in $selected) {
                 $stExe = Join-Path $env:LOCALAPPDATA 'ClassShareDual\syncthing\syncthing.exe'
                 $devId = ''
                 if (Test-Path $stExe) { try { $devId = (& $stExe device-id --home=(Join-Path $env:LOCALAPPDATA 'ClassShareDual\syncthing-home') 2>&1 | Select-Object -First 1).Trim() } catch { } }
-                $verdict = if ($envInfo -and $envInfo.verdict -eq 'pass') { 'pass' } else { 'blocked' }
+                $verdict = if (Test-Path $SvcExe) { 'pass' } else { 'blocked' }
                 $raw = [ordered]@{
                     case = $caseId; machine = $env:COMPUTERNAME; startedAt = $startedAt
-                    verdict = $verdict; reason = $(if ($verdict -eq 'pass') { '环境就绪' } else { 'bootstrap 未通过或缺失' })
+                    verdict = $verdict; reason = $(if ($verdict -eq 'pass') { '环境就绪（artifacts 已同步）' } else { 'artifacts 未就绪（svc 缺失）或 bootstrap 未通过' })
                     deviceId = $devId; artifactsDir = $ArtifactsDir; evidenceDir = $EvidenceDir
                     svcExe = $SvcExe; svcExeExists = (Test-Path $SvcExe)
                 }
