@@ -38,6 +38,7 @@ param(
     [ValidateSet('teacher', 'student')][string]$Role = 'teacher',
     [string]$PeerDeviceId = '',
     [string]$PeerName = 'Peer',
+    [string[]]$PeerAddresses = @('dynamic'),
     [string]$EvidenceDir = '',
     [string]$StHome = '',
     [int]$GuiPort = 8384,
@@ -76,7 +77,7 @@ function Ensure-Syncthing {
 
 function Get-ProcessForHome {
     Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$StHome*" }
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match ('--home=' + [regex]::Escape($StHome) + '($|[\s"])')) }
 }
 
 function Get-ApiKey {
@@ -151,7 +152,7 @@ if (-not $NoStart) {
     Write-Host "[cfg] options: sync=$SyncPort discovery=$LocalDiscoveryPort localOnly=$([bool]$LocalOnly)"
 
     if ($PeerDeviceId) {
-        $peer = [ordered]@{ deviceID = $PeerDeviceId; name = $PeerName; addresses = @('dynamic'); paused = $false }
+        $peer = [ordered]@{ deviceID = $PeerDeviceId; name = $PeerName; addresses = $PeerAddresses; paused = $false }
         try { Invoke-St 'PUT' "/rest/config/devices/$PeerDeviceId" $peer | Out-Null; Write-Host "[cfg] peer device=$PeerDeviceId ($PeerName)" }
         catch { Write-Warning "添加对端设备失败（Device ID 格式？）：$($_.Exception.Message)" }
     } else {

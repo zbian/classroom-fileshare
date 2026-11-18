@@ -27,7 +27,8 @@ param(
     [string]$TeacherAddr = '',
     [string]$SvcExe = '',
     [string]$DataRoot = (Join-Path $env:TEMP 'classshare-dual\student'),
-    [string]$OutDir = ''
+    [string]$OutDir = '',
+    [string]$JsonPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,7 +62,9 @@ function Save-Evidence([string]$verdict, [string]$reason) {
     }
     $log = Join-Path $DataRoot 'logs\svc.log'
     if (Test-Path $log) { $env.svcLogTail = @(Get-Content $log -Tail 40) }
-    $file = Join-Path $OutDir ("{0}-{1}.json" -f $Case, (Get-Date).ToString('HHmmss'))
+    $file = if ($JsonPath) { $JsonPath } else { Join-Path $OutDir ("{0}-{1}.json" -f $Case, (Get-Date).ToString('HHmmss')) }
+    $dir = Split-Path $file -Parent
+    if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
     [System.IO.File]::WriteAllText($file, ($env | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
     Write-Output ($env | ConvertTo-Json -Depth 6)
     Write-Host "evidence: $file"

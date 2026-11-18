@@ -202,6 +202,15 @@ mesh 只有文本通道；截图/日志/JSON 用 **Syncthing 点对点同步**�
 
 **注意**：只共享 `docs/acceptance/evidence/dual`，不要共享整个仓库；`.stfolder/`、`.stversions/`、`sync-conflict-*` 已 gitignore。
 
+### 6.7 无人值守远程执行框架（B 机只有 DSH、无人工）
+
+当 B 机无人值守时，用 mesh 派发固定脚本任务、Syncthing 回流证据、A 机自动汇总：
+见 [双机远程执行框架](dual-machine-remote-framework.md)。
+
+- A 机：`scripts/dual/remote-driver.ps1`（导出环境包 → 生成派发文本 → 等待证据 → 汇总）
+- B 机：`scripts/dual/bootstrap-student.ps1`（首次引导）→ `scripts/dual/student-runner.ps1`（批量跑用例）
+- 前提：B 机 mesh 可达、会话可执行 PowerShell 且能写 artifacts/evidence 目录、审批不阻塞
+
 ## 7 证据规范
 
 - 日志：服务模式 `%PROGRAMDATA%\ClassShare\data\logs\svc.log`；降级 `%LOCALAPPDATA%\ClassShare\data\logs\svc.log`

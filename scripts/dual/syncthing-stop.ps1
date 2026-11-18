@@ -27,7 +27,7 @@ $procs = Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" -ErrorActi
 if ($All) {
     $procs = $procs | Where-Object { $_.CommandLine -and $_.CommandLine -like "*$baseDir*" }
 } else {
-    $procs = $procs | Where-Object { $_.CommandLine -and $_.CommandLine -like "*$StHome*" }
+    $procs = $procs | Where-Object { $_.CommandLine -and ($_.CommandLine -match ('--home=' + [regex]::Escape($StHome) + '($|[\s"])')) }
 }
 
 if (-not $procs) {
