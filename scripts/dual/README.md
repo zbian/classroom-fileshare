@@ -9,6 +9,9 @@
 | `teacher-case.ps1` | 教师机（A） | 起隔离教师 svc、等待就绪/学生加入、输出 JSON 证据 |
 | `student-case.ps1` | 学生机（B） | 起隔离学生 svc、等待入班、输出 JSON 证据（时序在脚本内测） |
 | `run-dual.ps1` | 教师机（A） | 前置检查 + 生成执行计划与 mesh 派发文本 + 本机预演 |
+| `syncthing-setup.ps1` | A/B 各一次 | 安装/配置/启动 Syncthing，共享证据目录（点对点，无 SMB/SFTP） |
+| `syncthing-status.ps1` | A/B 均可 | 查看设备 ID/对端连接/文件夹状态；`-WaitConnectedSec` 等对端上线 |
+| `syncthing-stop.ps1` | A/B 均可 | 停止本套件启动的 Syncthing 进程 |
 
 ## 证据信封（JSON）
 
@@ -37,12 +40,54 @@
 .\scripts\dual\run-dual.ps1 -Cases A1,B1,C4,C5 -StudentMachine <学生机mesh名>
 ```
 
+## 证据自动回流（Syncthing，推荐）
+
+mesh 派发只有文本通道，截图/日志/JSON 用 Syncthing 点对点同步（不需要 SMB/SFTP）。
+
+### 快速开始（首次两台各跑一次，顺序可任意）
+
+```powershell
+# A 机（教师）
+.\scripts\dual\syncthing-setup.ps1 -Role teacher
+#   → 记下输出的 deviceId（形如 4YXJBRJ-...），然后：
+.\scripts\dual\syncthing-setup.ps1 -Role teacher -PeerDeviceId <B 的 deviceId> -PeerName 'B-学生机' -WaitPeerSec 60
+
+# B 机（学生）
+.\scripts\dual\syncthing-setup.ps1 -Role student -PeerDeviceId <A 的 deviceId> -PeerName 'A-教师机' -WaitPeerSec 60
+```
+
+- 证据目录：`<repo>\docs\acceptance\evidence\dual`（A=Receive Only，B=Send Only）
+- 脚本幂等：重复跑只更新配置；`-Stop` 停；`-NoStart` 只配置不起进程
+- 端口：同步 `TCP/UDP 22000`、本地发现 `UDP 21027`（需防火墙放行或同一网段直连）
+- 纯内网：加 `-LocalOnly`（关闭全局发现/中继/NAT）
+- 本机多实例预演：`-StHome <另一目录> -GuiPort 8385 -SyncPort 22001 -LocalDiscoveryPort 21028`
+
+### 状态与等待
+
+```powershell
+.\scripts\dual\syncthing-status.ps1 -PeerDeviceId <对端DeviceId> -WaitConnectedSec 60
+```
+
+### 已验证（本机双实例预演，2026-11-18）
+
+- 两个实例（A 8384 / B 8385）互连成功：`connected=true`、TLS1.3、`isLocal=true`
+- B（Send Only）写入证据 → A（Receive Only）收到，**SHA-256 一致**，延迟 < 1s
+- 发现并规避一个坑：**PS 5.1 的 `Invoke-RestMethod -Body` 字符串按 ANSI 发送，含中文的仓库路径会变成 `??`**（Syncthing 报 `filename syntax incorrect`）→ 脚本已改为 UTF-8 字节 + `charset=utf-8`
+
+### 注意
+
+- 证据目录内 `.stfolder/`、`.stversions/` 等为 Syncthing 标记，已在 `.gitignore` 忽略
+- 不要把整个仓库共享给 Syncthing（只共享 `docs/acceptance/evidence/dual`）
+- 冲突文件 `sync-conflict-*` 已 gitignore；出现冲突说明两端同时写了同一文件（Send Only/Receive Only 配置下不应发生）
+- 停止：`.\scripts\dual\syncthing-stop.ps1 -All`（只停本套件的进程）
+
 ## mesh 派发（由 Lead agent 执行）
 
 ```
 mesh_run(peer: "<学生机mesh名>", thread: "dual-test-<日期>",
   task: "在 B 机执行 <repo>\scripts\dual\student-case.ps1 -Case <id> -TeacherAddr <A:47821>；
-         只回传脚本 stdout 的 JSON 与 evidence 文件路径，不要改写 verdict。")
+         证据写入 docs/acceptance/evidence/dual/（Syncthing 自动回流）；
+         只回传脚本 stdout 的 JSON，不要改写 verdict。")
 ```
 
 ## 当前实现状态（v1 骨架）

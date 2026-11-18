@@ -28,3 +28,9 @@ rustc-ice-*.txt
 logs/
 *.log
 ipc.token
+
+# Syncthing 双机测试同步标记（证据文件入库，标记/临时文件不入库）
+.stfolder/
+.stversions/
+.syncthing.*
+sync-conflict-*

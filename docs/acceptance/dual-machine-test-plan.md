@@ -104,7 +104,7 @@ Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 47821
 | 需求 | mesh 是否满足 | 说明 |
 | --- | --- | --- |
 | 发现/派发/回收文本 | ✅ | `mesh_run` 派任务 → 对端 agent 执行 → 文本结果回传 |
-| 二进制证据（截图/产物） | ❌ | 无附件通道；走 GitHub 分支或 SMB 共享 |
+| 二进制证据（截图/产物） | ❌ | 无附件通道；走 **Syncthing 证据同步**（§6.6）或 GitHub 分支 |
 | 管理员操作（TC-13/E7） | ❌ | 对端 agent 默认 `workspace-write`，不提权 |
 | 毫秒级时序 | ❌ | 跨机调度延迟 10 s 级；时序必须在 B 机脚本内测 |
 | 证据可信度 | ⚠️ | 对端是 LLM agent；只信固定脚本的原始输出 + 哈希 |
@@ -130,6 +130,9 @@ Lead 会话                           DSH + mesh
 | `teacher-case.ps1` | A 机 | 教师侧动作 + 断言 + JSON 证据信封 |
 | `student-case.ps1` | B 机 | 学生侧动作 + 断言 + JSON 证据信封（时序在脚本内测） |
 | `run-dual.ps1` | A 机 | 校验前置条件、生成本地执行计划与 mesh 派发任务模板 |
+| `syncthing-setup.ps1` | A/B 各一次 | 安装/配置/启动 Syncthing，共享证据目录（点对点，无 SMB/SFTP） |
+| `syncthing-status.ps1` | A/B 均可 | 查看设备 ID/对端连接/文件夹状态；`-WaitConnectedSec` 等对端上线 |
+| `syncthing-stop.ps1` | A/B 均可 | 停止本套件启动的 Syncthing 进程 |
 
 证据信封格式（JSON）：`{ case, startedAt, finishedAt, steps[], rawOutput, hashes{}, verdict }`；
 **`verdict` 只允许 `pass/fail/blocked/not_implemented`，不允许 agent 主观改写。**
@@ -161,14 +164,50 @@ Lead 会话                           DSH + mesh
    - 权限：对端任务默认 `workspace-write`；不要为测试放开 `danger-full-access`
 6. **能力确认**：A 机 `mesh_peers` 查看 B 机 capabilities 是否含 `node`/`rust`（需在 B 机构建）
 7. **桌面会话**：GUI 用例要求 B 机已登录桌面（锁屏可以，未登录不行——TC-11 相反：验证未登录时服务仍收文件）
-8. **仓库与凭证**（B 机）：`git clone` + `gh auth login`（证据回传用）；或配置 SMB 共享目录
+8. **仓库与凭证**（B 机）：`git clone` + `gh auth login`（可选）；**证据回传用 Syncthing（§6.6）**，不需要 SMB/SFTP
 9. **自检**：A 机 `mesh_peers` 能看到 B；A 机派发 `echo ok` 类任务能在 B 执行并回传结果
+
+### 6.6 证据自动回流（Syncthing，推荐）
+
+mesh 只有文本通道；截图/日志/JSON 用 **Syncthing 点对点同步**，不需要 SMB/SFTP/任何文件服务器。
+
+**架构**：A（教师）与 B（学生）各跑一个 Syncthing 进程，共享同一个文件夹 ID（`classshare-dual-evidence`）：
+- B → A：证据目录 `Send Only` → `Receive Only`（测试证据自动回流）
+- 可选反向：A 的构建产物 `Send Only` → B `Receive Only`（mesh 无法传二进制）
+
+**首次配置（A/B 各跑一次，顺序可任意）**：
+
+```powershell
+# A 机（教师）
+.\scripts\dual\syncthing-setup.ps1 -Role teacher
+#   记下输出的 deviceId，然后带对端 ID 再跑：
+.\scripts\dual\syncthing-setup.ps1 -Role teacher -PeerDeviceId <B 的 deviceId> -PeerName 'B-学生机' -WaitPeerSec 60
+
+# B 机（学生）
+.\scripts\dual\syncthing-setup.ps1 -Role student -PeerDeviceId <A 的 deviceId> -PeerName 'A-教师机' -WaitPeerSec 60
+```
+
+**网络**：同步 `TCP/UDP 22000`、本地发现 `UDP 21027`（防火墙放行或同网段直连）；纯内网加 `-LocalOnly` 关闭全局发现/中继/NAT。
+
+**状态/停止**：
+
+```powershell
+.\scripts\dual\syncthing-status.ps1 -PeerDeviceId <对端DeviceId> -WaitConnectedSec 60
+.\scripts\dual\syncthing-stop.ps1 -All
+```
+
+**已验证（本机双实例预演，2026-11-18）**：两实例互连 `connected=true`（TLS1.3、isLocal）、B 写证据 → A 收到且 **SHA-256 一致**、延迟 <1s。
+
+**已知坑（脚本已处理）**：PS 5.1 `Invoke-RestMethod -Body` 字符串按 ANSI 发送，含中文的仓库路径会变成 `??`（Syncthing 报 `filename syntax incorrect`）→ 脚本改为 UTF-8 字节 + `charset=utf-8`。
+
+**注意**：只共享 `docs/acceptance/evidence/dual`，不要共享整个仓库；`.stfolder/`、`.stversions/`、`sync-conflict-*` 已 gitignore。
 
 ## 7 证据规范
 
 - 日志：服务模式 `%PROGRAMDATA%\ClassShare\data\logs\svc.log`；降级 `%LOCALAPPDATA%\ClassShare\data\logs\svc.log`
 - 时延：两侧日志时间戳 Δ（NTP 已同步）
 - 归档：`docs/acceptance/evidence/M1/dual/`、`M2/dual/`，每用例 ≥2 类证据
+- 双机证据回流：B 机写入 `docs/acceptance/evidence/dual/`（Send Only），由 Syncthing 自动同步到 A 机（Receive Only）；用 `scripts/dual/syncthing-status.ps1` 确认同步状态
 - 结论回写：M1/M2 报告「延后」行改为实测结论；#91 逐条勾选关闭
 
 ## 8 执行顺序与时间（约 3 小时）
