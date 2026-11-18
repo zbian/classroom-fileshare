@@ -1,0 +1,27 @@
+{
+  "case": "B2",
+  "title": "跨机文本共享（内容逐字节一致，真实双机）",
+  "runAt": "2026-11-18T14:28:26Z",
+  "verdict": "pass",
+  "aSide": {
+    "role": "teacher",
+    "sendPath": "IPC GuiRequest::SendText(title=\"b2-text\", body=\"dual-text-sync-2026-11-18\")",
+    "logLines": [
+      "2026-11-18T14:28:26.224841Z INFO broadcast item_id=0876fd5a-2971-4f7d-a4dc-b331279d680e file=b2-text size=25 audience=\"all\""
+    ]
+  },
+  "bSide": {
+    "machine": "ZHEN-LPD",
+    "session": "42ced008-3726-42e2-995f-5b5cd40bdb39",
+    "logLines": [
+      "2026-11-18T14:28:30.540154Z INFO received item_id=0876fd5a-2971-4f7d-a4dc-b331279d680e file=b2-text size=25 from=teacher",
+      "2026-11-18T14:28:30.541905Z INFO applied item_id=0876fd5a-2971-4f7d-a4dc-b331279d680e version=1"
+    ],
+    "repoFile": { "name": "t2fa29ca7b797.txt", "size": 25, "content": "dual-text-sync-2026-11-18" }
+  },
+  "crossCheck": "item_id 双侧一致；正文与发送内容逐字节一致（25 字节）",
+  "notes": [
+    "文本条目落盘文件名为内容哈希命名（t2fa29ca7b797.txt），不是标题名；用标题 glob 断言会假阴性",
+    "B 侧 ACL 降级警告按 PR #150 继续，不影响功能"
+  ]
+}

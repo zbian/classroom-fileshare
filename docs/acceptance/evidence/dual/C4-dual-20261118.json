@@ -1,0 +1,38 @@
+{
+  "case": "C4",
+  "title": "TC-08 删除同步（教师删除 → 学生侧文件移除 + 删除 ack 收敛，真实双机）",
+  "runAt": "2026-11-18T14:31:32Z",
+  "verdict": "pass",
+  "item": {
+    "item_id": "ce6b3d65-48fb-4a04-93da-cb0b26ddbd01",
+    "file": "src-c4.bin",
+    "size": 2097152
+  },
+  "aSide": {
+    "role": "teacher",
+    "logLines": [
+      "2026-11-18T14:31:32.774417Z INFO broadcast item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 file=src-c4.bin size=2097152 audience=\"all\"",
+      "2026-11-18T14:31:53.005506Z INFO delete-request item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01",
+      "2026-11-18T14:31:53.011932Z INFO delete item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 owner_role=Teacher",
+      "2026-11-18T14:31:53.017323Z INFO delete-ack item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 from_session=eb156a1e",
+      "2026-11-18T14:31:53.026586Z INFO 删除进度收敛（全部 ack） item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 done=1 total=1"
+    ]
+  },
+  "bSide": {
+    "machine": "ZHEN-LPD",
+    "session": "eb156a1e-3894-4d88-afde-003b0969690d",
+    "logLines": [
+      "2026-11-18T14:31:37.175784Z INFO received item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 file=src-c4.bin size=2097152 from=teacher",
+      "2026-11-18T14:31:37.177761Z INFO applied item_id=ce6b3d65-48fb-4a04-93da-cb0b26ddbd01 version=1"
+    ],
+    "repoChecks": {
+      "afterSend": "src-c4.bin 存在（2097152 字节）",
+      "afterDelete": "src-c4.bin 已移除"
+    }
+  },
+  "crossCheck": "教师 delete-request → delete-ack 收敛 done=1 total=1（约 1s 内），B 侧 repo 文件同步移除",
+  "notes": [
+    "删除 ack 来自学生会话 eb156a1e（与 join session 一致）",
+    "B 侧日志末尾的「与教师机断开」发生在测试窗口结束后（教师 svc 已停），不影响结论"
+  ]
+}
