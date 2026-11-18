@@ -1,0 +1,32 @@
+{
+  "case": "A2",
+  "title": "重名昵称拒绝（真实双机）",
+  "runAt": "2026-11-18T14:15:11Z",
+  "verdict": "pass",
+  "aSide": {
+    "machine": "BIAN-小白机",
+    "role": "teacher",
+    "version": "v0.2.0-rc.1-9-gc472711",
+    "logLines": [
+      "2026-11-18T14:15:24.731124Z INFO 学员加入 nickname=alice session_id=740c5df5-6c06-4ff0-9e3e-86175621f148",
+      "2026-11-18T14:15:34.864375Z INFO 旧连接存活，拒绝重名加入（EX-02） nickname=alice",
+      "2026-11-18T14:15:48.704245Z INFO 学员离线 nickname=alice"
+    ]
+  },
+  "bSide": {
+    "machine": "ZHEN-LPD",
+    "svcSha256Prefix": "8E06B6EAF3D4",
+    "dataRoot": "D:\\dsh\\profiles\\desktop\\mesh\\mesh-receive-task\\cs-a2d（会话工作区内）",
+    "logLines": [
+      "2026-11-18T14:15:28.985051Z INFO 已加入房间 session_id=740c5df5-6c06-4ff0-9e3e-86175621f148",
+      "2026-11-18T14:15:28.985310Z INFO 会话已就绪（Joined） epoch=1",
+      "2026-11-18T14:15:39.108832Z INFO 加入被拒（致命，不重试） code=DupNickname",
+      "2026-11-18T14:15:39.109091Z ERROR agent 核心致命错误，驻留等待人工处理 error=加入被老师机拒绝: DupNickname"
+    ]
+  },
+  "crossCheck": "A 侧 session_id 740c5df5-6c06-4ff0-9e3e-86175621f148 与 B 侧一致；第二实例被 DupNickname 致命拒绝且不重试",
+  "notes": [
+    "B 侧数据根置于 mesh 会话工作区内（workspace-write 沙箱），svc 的 ACL 加固失败已按 console 降级模式降级为警告（PR #150）",
+    "附加发现：两实例 IPC 管道名固定为 \\\\.\\pipe\\classshare-svc-student，第二实例报「创建管道实例失败」——多实例同机场景建议按实例/用户隔离管道名（候选 issue）"
+  ]
+}
