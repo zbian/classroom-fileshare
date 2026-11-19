@@ -221,6 +221,11 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI" "$\"$INSTDIR\classroom-gui.exe$\" --role=$Role"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareSvc"
 
+  ; 6b) 资源管理器右键「课堂共享」（HKCU，无需额外权限；verb 名与 scripts/register-context-menu.ps1 一致）
+  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享" "" "课堂共享"
+  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享" "Icon" "$INSTDIR\classroom-gui.exe"
+  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享\command" "" "$\"$INSTDIR\classroom-gui.exe$\" %*"
+
   ; 7) 卸载信息 + 卸载器
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKLM "Software\ClassShare" "InstallDir" "$INSTDIR"
@@ -257,6 +262,7 @@ Section "Uninstall"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareSvc"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassShare"
   DeleteRegKey HKLM "Software\ClassShare"
+  DeleteRegKey HKCU "Software\Classes\*\shell\课堂共享"
 
   Delete "$INSTDIR\classroom-svc.exe"
   Delete "$INSTDIR\classroom-gui.exe"

@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "classroom-gui"
 description = "课堂共享 GUI（Tauri 2：浮动图标 / 主界面 / tips 三窗）"
 version.workspace = true
@@ -15,6 +15,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = "0.22"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 windows = { version = "0.62", features = [

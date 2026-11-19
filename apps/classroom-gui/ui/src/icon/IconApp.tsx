@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useCallback, useEffect, useState } from 'react'
 import ContextMenu, { type MenuItem } from './ContextMenu'
+import { droppedFilesPayload } from '../shared/dnd'
 
 /** 右键菜单展开方向（Rust open_icon_menu 依屏幕工作区计算） */
 interface MenuLayout {
@@ -85,6 +86,57 @@ export default function IconApp() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [closeMenu])
+
+  // HTML5 拖放（原生 drag-drop 已关闭）：文件 → 落盘后发送；文本 → 打开主窗粘贴对话框
+  useEffect(() => {
+    let depth = 0
+    const onDragEnter = (e: DragEvent) => {
+      e.preventDefault()
+      depth += 1
+      setDragOver(true)
+    }
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    const onDragLeave = () => {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDragOver(false)
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      depth = 0
+      setDragOver(false)
+      const dt = e.dataTransfer
+      if (!dt) return
+      const files = dt.files
+      if (files && files.length > 0) {
+        void (async () => {
+          try {
+            const payload = await droppedFilesPayload(files)
+            await invoke<number>('send_dropped_files', { files: payload })
+          } catch (err) {
+            setPasteHint(String(err).slice(0, 20))
+          }
+        })()
+        return
+      }
+      const text = dt.getData('text/plain')
+      if (text.trim()) {
+        void invoke('open_main_paste', { body: text })
+      }
+    }
+    document.addEventListener('dragenter', onDragEnter)
+    document.addEventListener('dragover', onDragOver)
+    document.addEventListener('dragleave', onDragLeave)
+    document.addEventListener('drop', onDrop)
+    return () => {
+      document.removeEventListener('dragenter', onDragEnter)
+      document.removeEventListener('dragover', onDragOver)
+      document.removeEventListener('dragleave', onDragLeave)
+      document.removeEventListener('drop', onDrop)
+    }
+  }, [])
 
   const onCircleMouseDown = (e: React.MouseEvent) => {
     // drag-region 下原生 dblclick 不可靠，用 mousedown 的 detail 判定双击（FR-G-04）
