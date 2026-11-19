@@ -8,7 +8,7 @@
 //! - M3：发送结束（成功或失败）删除临时目录；启动时清理历史残留
 //! - M4：目录名含原子自增，先全部解码再统一写盘，失败回滚
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use classroom_ipc::GuiRequest;
@@ -106,16 +106,6 @@ fn unique_dir_name() -> String {
 const TEMP_TTL_SECS: u64 = 10 * 60;
 /// 启动时 TTL：只清 1 小时前的残留（进程崩溃/升级遗留）。
 const STARTUP_TTL_SECS: u64 = 60 * 60;
-
-fn dir_age_secs(path: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let now = std::time::SystemTime::now();
-    Some(
-        now.duration_since(modified)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-    )
-}
 
 fn is_stale(now: std::time::SystemTime, modified: std::time::SystemTime, ttl_secs: u64) -> bool {
     now.duration_since(modified)

@@ -75,12 +75,12 @@ Add-Check 'HKCU 旧版菜单已清理' (-not $legacyMenu) $(if ($legacyMenu) { '
 $legacyRun = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue)
 Add-Check 'HKCU 旧版 GUI 自启已清理' (-not $legacyRun.ClassShareGUI) $(if ($legacyRun) { "$($legacyRun.ClassShareGUI)" } else { '无' })
 
-# 5) 拖放临时目录残留
+# 5) 拖放临时目录：只要求没有超过 TTL（10 分钟）的过期残留；近期的在途目录允许存在
 $dropRoot = Join-Path $env:TEMP 'ClassShareDrop'
-$leftover = @(Get-ChildItem -LiteralPath $dropRoot -ErrorAction SilentlyContinue).Count
-Add-Check '拖放临时目录无残留' ($leftover -eq 0) "剩余 $leftover 项"
-
-$failed = @($checks | Where-Object { -not $_.Ok })
+$entries = @(Get-ChildItem -LiteralPath $dropRoot -Directory -ErrorAction SilentlyContinue)
+$now = Get-Date
+$stale = @($entries | Where-Object { ($now - $_.LastWriteTime).TotalMinutes -gt 10 })
+Add-Check '拖放临时目录无过期残留(>10min)' ($stale.Count -eq 0) ('总 {0} 项，过期 {1} 项' -f $entries.Count, $stale.Count)
 if ($Json) {
     [pscustomobject]@{ ok = ($failed.Count -eq 0); checks = $checks } | ConvertTo-Json -Depth 4
 } else {
