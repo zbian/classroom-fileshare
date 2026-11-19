@@ -6,6 +6,7 @@
 
 【安装包】
 下载地址：https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.2/ClassShare-Teacher-Setup.exe
+备用下载（GitHub）：https://github.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.2/ClassShare-Teacher-Setup.exe
 SHA-256：96b3238ed1ffc7a3539fac435c14a1696f173fd07b9a19e51de06a42df352cdf
 
 【步骤】

@@ -49,5 +49,5 @@
 - 附件（9 个）：教师端/学生端 Setup.exe + ZIP、README-teacher/student、AI 安装提示词 ×3、SHA256SUMS.txt
 - 校验值见 Release 附件 `SHA256SUMS.txt`（同时入库 `docs/install-prompts/SHA256SUMS.txt`）
 - 标签：`v0.2.0-rc.2`（本地/双远端已推）
-- **注意**：仓库当前为私有，Release 附件对未登录用户 403；需在「管理 → 仓库信息」把可见性改为公开后，AI 提示词中的下载链接才对学员/教师生效
-- 已知小瑕疵：Release 附件里 `SHA256SUMS.txt` 有一条重复记录（Gitee API 不支持删除附件，网页可手动删）
+- 仓库已改为**公开**（2026-11-19），Gitee Release 附件匿名下载已验证：教师端/学生端 exe、zip、AI 提示词、校验文件全部可下载且 SHA-256 一致
+- 已知小瑕疵：Release 附件里旧 `SHA256SUMS.txt` 为早期空文件（113 B 重复项），已改用新附件 `SHA256SUMS-v0.2.0-rc.2.txt`（637 B，内容正确）；旧空附件可在 Gitee 网页手动删除
