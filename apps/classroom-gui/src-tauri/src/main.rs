@@ -426,6 +426,21 @@ fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O-1 防呆判定：仅「release + dev 模式（未启用 custom-protocol）」需要提示。
+    #[test]
+    fn build_warning_only_for_dev_mode_release() {
+        assert!(needs_build_warning(true, false));
+        assert!(!needs_build_warning(false, false));
+        assert!(!needs_build_warning(true, true));
+        assert!(!needs_build_warning(false, true));
+    }
+
+    /// 当前测试构建为 debug，判定必须为 false（保证不影响开发流）。
+    #[test]
+    fn current_build_does_not_warn_here() {
+        assert!(!needs_build_warning(cfg!(dev), cfg!(debug_assertions)));
+    }
     /// E13：argv[0]（本进程 exe）不得被当成共享文件。
     #[test]
     fn file_args_excludes_self_exe() {

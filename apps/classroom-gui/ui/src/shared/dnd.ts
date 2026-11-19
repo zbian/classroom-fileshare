@@ -10,10 +10,14 @@
  */
 export const MAX_DROP_FILE_BYTES = 100 * 1024 * 1024
 export const MAX_DROP_TOTAL_BYTES = 200 * 1024 * 1024
+export const MAX_DROP_FILES = 50
 
 /** 拖放前置校验：返回错误文案；null 表示可发送。 */
 export function validateDroppedFiles(files: FileList | File[]): string | null {
   const list = Array.from(files)
+  if (list.length > MAX_DROP_FILES) {
+    return `单次最多拖放 ${MAX_DROP_FILES} 个文件`
+  }
   let total = 0
   for (const f of list) {
     if (f.size > MAX_DROP_FILE_BYTES) {

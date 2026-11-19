@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   校验 ClassShare 安装结果（评审 B1/M5/M6 回归检查）。
@@ -14,13 +14,36 @@
   .\scripts\verify-installer-registry.ps1 -Json
 #>
 [CmdletBinding()]
-param([switch]$Json)
+param([switch]$Json, [switch]$AfterUninstall)
 
 $ErrorActionPreference = 'Continue'
 $checks = New-Object System.Collections.ArrayList
 
 function Add-Check([string]$Name, [bool]$Ok, [string]$Detail = '') {
     [void]$checks.Add([pscustomobject]@{ Name = $Name; Ok = $Ok; Detail = $Detail })
+}
+
+if ($AfterUninstall) {
+    $svc = Get-Service -Name 'ClassShareSvc' -ErrorAction SilentlyContinue
+    Add-Check '服务已卸载' ($null -eq $svc)
+    Add-Check 'HKLM 菜单键已删除' (-not (Test-Path -LiteralPath 'HKLM:\Software\Classes\*\shell\课堂共享'))
+    $run = Get-ItemProperty -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'ClassShareGUI' -ErrorAction SilentlyContinue
+    Add-Check 'HKLM Run 已删除' ($null -eq $run)
+    Add-Check 'HKCU 旧菜单已删除' (-not (Test-Path -LiteralPath 'HKCU:\Software\Classes\*\shell\课堂共享'))
+    $legacy = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue)
+    Add-Check 'HKCU Run 已删除' (-not $legacy.ClassShareGUI)
+    $failed = @($checks | Where-Object { -not $_.Ok })
+    if ($Json) {
+        [pscustomobject]@{ ok = ($failed.Count -eq 0); checks = $checks } | ConvertTo-Json -Depth 4
+    } else {
+        $checks | ForEach-Object {
+            $mark = if ($_.Ok) { 'PASS' } else { 'FAIL' }
+            Write-Host ("[{0}] {1}{2}" -f $mark, $_.Name, $(if ($_.Detail) { " — $($_.Detail)" } else { '' }))
+        }
+        Write-Host ''
+        if ($failed.Count -eq 0) { Write-Host '结果: ALL PASS'; exit 0 } else { Write-Host "结果: $($failed.Count) 项失败"; exit 1 }
+    }
+    return
 }
 
 # 1) 服务
@@ -39,7 +62,7 @@ if ($shellExists) {
     $multi = (Get-ItemProperty -LiteralPath $shellKey -Name 'MultiSelectModel' -ErrorAction SilentlyContinue).MultiSelectModel
     Add-Check 'MultiSelectModel=Player（多选）' ($multi -eq 'Player') "$multi"
     $cmd = (Get-ItemProperty -LiteralPath "$shellKey\command" -Name '(default)' -ErrorAction SilentlyContinue).'(default)'
-    Add-Check '菜单命令含 gui.exe 且传 %*' (($cmd -like '*classroom-gui.exe*') -and ($cmd -like '*%*')) "$cmd"
+    Add-Check '菜单命令含 gui.exe 且传 %*' (($cmd -like '*classroom-gui.exe*') -and $cmd.Contains('%*')) "$cmd"
 }
 
 # 3) HKLM Run 自启

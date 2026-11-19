@@ -13,7 +13,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !define PRODUCT_NAME "课堂共享 ClassShare"
-!define PRODUCT_VERSION "0.2.0-rc.7"
+!define PRODUCT_VERSION "0.2.0-rc.11"
 !define PRODUCT_PUBLISHER "ClassShare"
 !define SERVICE_NAME "ClassShareSvc"
 
@@ -27,7 +27,7 @@ XPStyle on
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "0.2.0.7"
+VIProductVersion "0.2.0.11"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "Publisher" "${PRODUCT_PUBLISHER}"

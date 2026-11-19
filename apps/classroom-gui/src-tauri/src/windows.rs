@@ -304,6 +304,10 @@ fn on_moved(app: &AppHandle) {
         if state.move_gen.load(Ordering::SeqCst) != gen {
             return;
         }
+        // 投放态（72↔124）的位移由投放动画引起，不参与吸附/持久化（评审 M1）
+        if state.drop_active.load(Ordering::SeqCst) {
+            return;
+        }
         // 菜单展开期间的窗口位移不参与吸附/持久化
         if state.menu_base.lock().map(|m| m.is_some()).unwrap_or(false) {
             return;

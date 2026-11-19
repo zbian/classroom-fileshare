@@ -17,6 +17,12 @@ test('普通文件通过校验', () => {
   assert.equal(validateDroppedFiles([fakeFile('a.txt', 1024)]), null)
 })
 
+test('超过 50 个文件被前端拒绝', () => {
+  const files = Array.from({ length: 51 }, (_, i) => fakeFile(`${i}.txt`, 1))
+  const err = validateDroppedFiles(files)
+  assert.ok(err && err.includes('50'))
+})
+
 test('单文件超过 100MB 被拒绝并带文件名', () => {
   const err = validateDroppedFiles([fakeFile('big.zip', MAX_DROP_FILE_BYTES + 1)])
   assert.ok(err && err.includes('big.zip') && err.includes('100 MB'))

@@ -19,8 +19,8 @@ Lead 未直接采信结论，逐条对照代码核对后修复；对「`send_dro
 | --- | --- | --- | --- | --- |
 | #IKWO9P | Blocker | release 下投放态 124px 无入口 | 新增 release 命令 `set_icon_drop_state`，前端 dragenter/leave 驱动 | 命令双表注册；安装后手动拖拽复核（见下方限制） |
 | #IKWO9Q | Major | 文件名被 `0-` 前缀污染，破坏同名覆盖 | 每文件独立子目录 `dir/{i}/{原名}`，标题保持原名 | 单测 `sanitize_strips_path_and_illegal_chars`；同名覆盖走既有服务端语义 |
-| #IKWO9R | Major | base64 无上限，100MB 峰值约 700MB | 前端 `validateDroppedFiles`（100MB/文件、200MB/总量、50 个/次）+ Rust `validate` 编码长度估算 | 前端 14 用例（node:test）；Rust `validate_*` 单测 |
-| #IKWO9S | Major | 拖放临时文件永不清理 | 发送后（成功/失败）删除本次目录；启动清理历史残留 | `%TEMP%\ClassShareDrop` 校验脚本项 |
+| #IKWO9R | Major | base64 无上限，100MB 峰值约 700MB | 前端 `validateDroppedFiles`（100MB/文件、200MB/总量、50 个/次）+ Rust `validate` padding 修正后的精确长度估算 | 前端 15 用例（node:test）；Rust `decoded_len_*`/`validate_*` 单测 |
+| #IKWO9S | Major | 拖放临时文件永不清理 | TTL 清理：发送前清 10 分钟前、启动清 1 小时前（不立即删，避免与服务端异步消费竞争） | `%TEMP%\ClassShareDrop` 校验脚本项；`stale_detection_honours_ttl` 单测 |
 | #IKWO9T | Major | 目录名同毫秒冲突/部分写盘 | 目录名加原子自增；先全量解码再写盘，失败回滚 | `unique_dir_names_differ` 单测 |
 | #IKWO9U | Major | NSIS 缺 MultiSelectModel | 注册 `MultiSelectModel=Player` | `verify-installer-registry.ps1` 检查 |
 | #IKWO9V | Major | UAC 提权时 HKCU 落到管理员 hive | 菜单与 Run 改 HKLM；卸载清理 HKLM + 旧 HKCU | 同上脚本检查 |

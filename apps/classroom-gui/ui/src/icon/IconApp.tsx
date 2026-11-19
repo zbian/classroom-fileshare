@@ -112,6 +112,8 @@ export default function IconApp() {
     const onDragOver = (e: DragEvent) => {
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+      // 静止拖拽时规范不保证持续派发 dragover；每次都重申投放态（Rust 侧幂等）
+      setDropState(true, e.dataTransfer?.files?.length ?? 0)
       if (resetTimer) window.clearTimeout(resetTimer)
       // 拖拽源取消（ESC/拖回）时 WebView2 可能不派发 dragleave：定时兜底复位
       resetTimer = window.setTimeout(reset, 1200)
