@@ -5,7 +5,7 @@
  */
 import { useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { droppedFilesPayload } from '../shared/dnd'
+import { droppedFilesPayload, isEditableTarget, validateDroppedFiles } from '../shared/dnd'
 import './main.css'
 import { useMainStore, type TabKey } from './store'
 import { isItemLocked, LOCKED_HINT } from './lockedState'
@@ -368,13 +368,22 @@ export default function App() {
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
+    let busy = false
     const onDrop = (e: DragEvent) => {
+      // 输入框/可编辑区域内拖放交给浏览器原生处理（评审 M1：避免覆盖编辑内容）
+      if (isEditableTarget(e.target)) return
       e.preventDefault()
       const dt = e.dataTransfer
-      if (!dt) return
+      if (!dt || busy) return
       const s = useMainStore.getState()
       const files = dt.files
       if (files && files.length > 0) {
+        const sizeErr = validateDroppedFiles(files)
+        if (sizeErr) {
+          s.showToast(sizeErr)
+          return
+        }
+        busy = true
         void (async () => {
           try {
             const payload = await droppedFilesPayload(files)
@@ -382,6 +391,8 @@ export default function App() {
             s.showToast(`已共享 ${n} 个文件`)
           } catch (err) {
             s.showToast(err instanceof Error ? err.message : String(err))
+          } finally {
+            busy = false
           }
         })()
         return
@@ -393,8 +404,7 @@ export default function App() {
       }
     }
     const onPaste = (e: ClipboardEvent) => {
-      const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (isEditableTarget(e.target)) return
       const text = e.clipboardData?.getData('text/plain') ?? ''
       if (!text.trim()) return
       e.preventDefault()

@@ -218,13 +218,19 @@ Section "Install"
   nsExec::ExecToLog '"$SYSDIR\sc.exe" start ${SERVICE_NAME}'
 
   ; 6) GUI 登录自启（带 --role，保证手动启动角色也正确）
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI" "$\"$INSTDIR\classroom-gui.exe$\" --role=$Role"
+  ; 评审 M6：UAC 输管理员凭据时 HKCU 会落到管理员 hive，改用 HKLM（全机生效）
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI" "$\"$INSTDIR\classroom-gui.exe$\" --role=$Role"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareSvc"
 
-  ; 6b) 资源管理器右键「课堂共享」（HKCU，无需额外权限；verb 名与 scripts/register-context-menu.ps1 一致）
-  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享" "" "课堂共享"
-  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享" "Icon" "$INSTDIR\classroom-gui.exe"
-  WriteRegStr HKCU "Software\Classes\*\shell\课堂共享\command" "" "$\"$INSTDIR\classroom-gui.exe$\" %*"
+  ; 6b) 资源管理器右键「课堂共享」（HKLM，全机生效；verb 名与 scripts/register-context-menu.ps1 一致）
+  ; 评审 M5：MultiSelectModel=Player 让多选一次调用并传全部路径（%* 裸露展开）
+  WriteRegStr HKLM "Software\Classes\*\shell\课堂共享" "" "课堂共享"
+  WriteRegStr HKLM "Software\Classes\*\shell\课堂共享" "Icon" "$INSTDIR\classroom-gui.exe"
+  WriteRegStr HKLM "Software\Classes\*\shell\课堂共享" "MultiSelectModel" "Player"
+  WriteRegStr HKLM "Software\Classes\*\shell\课堂共享\command" "" "$\"$INSTDIR\classroom-gui.exe$\" %*"
+  ; 清理旧版本写入 HKCU 的菜单（rc.9 及更早）
+  DeleteRegKey HKCU "Software\Classes\*\shell\课堂共享"
 
   ; 7) 卸载信息 + 卸载器
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -258,10 +264,12 @@ Section "Uninstall"
   nsExec::ExecToLog '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="ClassShare Discovery UDP"'
   nsExec::ExecToLog '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="ClassShare Service TCP"'
 
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareGUI"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClassShareSvc"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassShare"
   DeleteRegKey HKLM "Software\ClassShare"
+  DeleteRegKey HKLM "Software\Classes\*\shell\课堂共享"
   DeleteRegKey HKCU "Software\Classes\*\shell\课堂共享"
 
   Delete "$INSTDIR\classroom-svc.exe"

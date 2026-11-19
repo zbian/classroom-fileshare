@@ -10,7 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useCallback, useEffect, useState } from 'react'
 import ContextMenu, { type MenuItem } from './ContextMenu'
-import { droppedFilesPayload } from '../shared/dnd'
+import { droppedFilesPayload, validateDroppedFiles } from '../shared/dnd'
 
 /** 右键菜单展开方向（Rust open_icon_menu 依屏幕工作区计算） */
 interface MenuLayout {
@@ -87,36 +87,63 @@ export default function IconApp() {
     return () => window.removeEventListener('keydown', onKey)
   }, [closeMenu])
 
-  // HTML5 拖放（原生 drag-drop 已关闭）：文件 → 落盘后发送；文本 → 打开主窗粘贴对话框
+  // HTML5 拖放（原生 drag-drop 已关闭）：文件 → 落盘后发送；文本 → 打开主窗粘贴对话框。
+  // 投放态窗口放大由 Rust 命令 set_icon_drop_state 驱动（release 可用）。
   useEffect(() => {
     let depth = 0
+    let busy = false
+    let resetTimer: number | undefined
+    const setDropState = (active: boolean, files = 0) => {
+      void invoke('set_icon_drop_state', { active, files, dirs: 0 }).catch(() => {})
+    }
+    const reset = () => {
+      depth = 0
+      setDragOver(false)
+      setDropState(false)
+      if (resetTimer) window.clearTimeout(resetTimer)
+    }
     const onDragEnter = (e: DragEvent) => {
       e.preventDefault()
       depth += 1
       setDragOver(true)
+      setDropState(true, e.dataTransfer?.files?.length ?? 0)
+      if (resetTimer) window.clearTimeout(resetTimer)
     }
     const onDragOver = (e: DragEvent) => {
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+      if (resetTimer) window.clearTimeout(resetTimer)
+      // 拖拽源取消（ESC/拖回）时 WebView2 可能不派发 dragleave：定时兜底复位
+      resetTimer = window.setTimeout(reset, 1200)
     }
     const onDragLeave = () => {
       depth = Math.max(0, depth - 1)
-      if (depth === 0) setDragOver(false)
+      if (depth === 0) {
+        setDragOver(false)
+        setDropState(false)
+      }
     }
     const onDrop = (e: DragEvent) => {
       e.preventDefault()
-      depth = 0
-      setDragOver(false)
+      reset()
       const dt = e.dataTransfer
-      if (!dt) return
+      if (!dt || busy) return
       const files = dt.files
       if (files && files.length > 0) {
+        const err = validateDroppedFiles(files)
+        if (err) {
+          setPasteHint(err)
+          return
+        }
+        busy = true
         void (async () => {
           try {
             const payload = await droppedFilesPayload(files)
             await invoke<number>('send_dropped_files', { files: payload })
           } catch (err) {
-            setPasteHint(String(err).slice(0, 20))
+            setPasteHint(err instanceof Error ? err.message : String(err))
+          } finally {
+            busy = false
           }
         })()
         return
@@ -130,14 +157,16 @@ export default function IconApp() {
     document.addEventListener('dragover', onDragOver)
     document.addEventListener('dragleave', onDragLeave)
     document.addEventListener('drop', onDrop)
+    document.addEventListener('dragend', reset)
     return () => {
+      reset()
       document.removeEventListener('dragenter', onDragEnter)
       document.removeEventListener('dragover', onDragOver)
       document.removeEventListener('dragleave', onDragLeave)
       document.removeEventListener('drop', onDrop)
+      document.removeEventListener('dragend', reset)
     }
   }, [])
-
   const onCircleMouseDown = (e: React.MouseEvent) => {
     // drag-region 下原生 dblclick 不可靠，用 mousedown 的 detail 判定双击（FR-G-04）
     if (e.button === 0 && e.detail >= 2) {

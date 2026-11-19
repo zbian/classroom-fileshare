@@ -28,7 +28,7 @@ export default function PasteTextDialog() {
 
   // intent 预填：gui://paste-text 携带的剪贴板内容（右键/拖放/粘贴路径）
   useEffect(() => {
-    if (open && pasteBody) setBody(pasteBody)
+    if (open) setBody(pasteBody ?? '')
   }, [open, pasteBody])
 
   if (!open) return null

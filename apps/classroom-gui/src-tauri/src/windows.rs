@@ -1,4 +1,4 @@
-﻿//! icon / main 窗口的创建、事件与几何逻辑（Task 8：FR-G-01/03/04）。
+//! icon / main 窗口的创建、事件与几何逻辑（Task 8：FR-G-01/03/04）。
 //!
 //! 设计要点：
 //! - 命中区 = 可见区：icon 窗常态 72×72；拖拽悬停放大 124×124（投放态，中心不动）；
@@ -8,11 +8,10 @@
 //! - 全程 Logical 坐标，抗多显示器 DPI 差异。
 
 use crate::state::{AppState, IconPlacement};
-use classroom_ipc::GuiRequest;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::{
-    AppHandle, DragDropEvent, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, WebviewUrl,
     WebviewWindowBuilder, Window,
 };
 
@@ -281,7 +280,6 @@ fn handle_icon_event(window: &Window, event: &tauri::WindowEvent) {
         }
         // 图标常驻：Alt+F4/系统关闭请求一律阻止，退出只走菜单
         tauri::WindowEvent::CloseRequested { api, .. } => api.prevent_close(),
-        tauri::WindowEvent::DragDrop(dd) => handle_drag_drop(&app, dd),
         // 下划线前缀：仅供 debug 日志使用（release clippy 守卫：M1 收尾修复
         // unused variable 盲区）
         tauri::WindowEvent::Resized(_size) => {
@@ -358,74 +356,9 @@ fn snap_and_persist(app: &AppHandle) -> tauri::Result<()> {
 // 拖拽投放态（72 ↔ 124，中心不动；文件拖入即放大，文本 OLE 在 T12 接入）
 // ---------------------------------------------------------------------------
 
-fn handle_drag_drop(app: &AppHandle, dd: &DragDropEvent) {
-    match dd {
-        // A4 投放态：进入即放大并携带「拖入文件/目录数量」，前端据此展示反馈
-        DragDropEvent::Enter { paths, .. } => {
-            let (files, dirs) = count_paths(paths);
-            set_drop_state(app, true, Some((files, dirs)));
-        }
-        DragDropEvent::Leave => set_drop_state(app, false, None),
-        DragDropEvent::Drop { paths, .. } => {
-            set_drop_state(app, false, None);
-            // T12：接入 SendFiles 真链路；目录过滤并提示（EX：目录暂不支持共享）
-            let mut files = Vec::new();
-            let mut dirs = 0u32;
-            for p in paths {
-                let path = p.to_string_lossy().to_string();
-                if std::path::Path::new(&path).is_dir() {
-                    dirs += 1;
-                } else {
-                    files.push(path);
-                }
-            }
-            let app2 = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut toasts: Vec<String> = Vec::new();
-                if !files.is_empty() {
-                    match crate::ipc_client::svc_request(
-                        app2.clone(),
-                        GuiRequest::SendFiles {
-                            paths: files.into_iter().map(std::path::PathBuf::from).collect(),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(_) => toasts.push("已通过拖放共享".into()),
-                        Err(e) => toasts.push(e),
-                    }
-                }
-                if dirs > 0 {
-                    toasts.push(format!("目录暂不支持共享（{dirs} 个目录已跳过）"));
-                }
-                for t in toasts {
-                    let _ = app2.emit_to(ICON_LABEL, "gui://toast", t);
-                }
-            });
-        }
-        DragDropEvent::Over { .. } => {}
-        _ => {}
-    }
-}
-
-/// 拖入内容数量统计（文件 / 目录），供投放态反馈展示（A4）
-fn count_paths(paths: &[std::path::PathBuf]) -> (usize, usize) {
-    let mut files = 0;
-    let mut dirs = 0;
-    for p in paths {
-        if p.is_dir() {
-            dirs += 1;
-        } else {
-            files += 1;
-        }
-    }
-    (files, dirs)
-}
-
-/// 仅调试用：直接进入/退出投放态并下发数量（供 A4 视觉验证/QA 截图；
-/// release 下不编译，命令注册处有 cfg 处理）。
-#[cfg(debug_assertions)]
-pub fn dev_drop_preview(app: &AppHandle, active: bool, files: usize, dirs: usize) {
+/// 图标窗投放态（72↔124，中心不动）：由前端 dragenter/dragleave 经 Tauri 命令驱动。
+/// 关闭原生 drag-drop 后（WebView 接管 HTML5 DnD），这是 release 下唯一的投放态入口。
+pub fn set_icon_drop_state(app: &AppHandle, active: bool, files: usize, dirs: usize) {
     set_drop_state(app, active, Some((files, dirs)));
 }
 fn set_drop_state(app: &AppHandle, active: bool, counts: Option<(usize, usize)>) {

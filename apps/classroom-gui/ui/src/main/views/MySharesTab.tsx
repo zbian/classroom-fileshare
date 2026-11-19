@@ -87,15 +87,22 @@ function Op({
     <span
       className={`op${disabled ? ' disabled' : ''}`}
       title={title}
+      role="button"
+      tabIndex={disabled ? -1 : 0}
       aria-disabled={disabled || undefined}
-      onClick={
-        disabled
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onClick?.()
-            }
-      }
+      onClick={(e) => {
+        // 禁用态也要吞掉点击，避免冒泡到行选择
+        e.stopPropagation()
+        if (!disabled) onClick?.()
+      }}
+      onKeyDown={(e) => {
+        if (disabled) return
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          e.stopPropagation()
+          onClick?.()
+        }
+      }}
     >
       {label}
     </span>
