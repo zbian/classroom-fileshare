@@ -42,3 +42,12 @@
 - 附件：4 个安装包/压缩包 + 2 个 README + 2 个 AI 提示词
 - **仓库可见性**：Release 附件对未登录用户可下载要求仓库为公开；若为私有需先在
   Gitee 仓库「管理 → 仓库信息」切换公开。
+
+## v0.2.0-rc.2 发布记录（2026-11-19）
+
+- Gitee Release：`https://gitee.com/zbian/classroom-fileshare/releases/tag/v0.2.0-rc.2`（pre-release）
+- 附件（9 个）：教师端/学生端 Setup.exe + ZIP、README-teacher/student、AI 安装提示词 ×3、SHA256SUMS.txt
+- 校验值见 Release 附件 `SHA256SUMS.txt`（同时入库 `docs/install-prompts/SHA256SUMS.txt`）
+- 标签：`v0.2.0-rc.2`（本地/双远端已推）
+- **注意**：仓库当前为私有，Release 附件对未登录用户 403；需在「管理 → 仓库信息」把可见性改为公开后，AI 提示词中的下载链接才对学员/教师生效
+- 已知小瑕疵：Release 附件里 `SHA256SUMS.txt` 有一条重复记录（Gitee API 不支持删除附件，网页可手动删）

@@ -1,4 +1,4 @@
-# 课堂共享 · AI 安装提示词
+﻿# 课堂共享 · AI 安装提示词
 
 把对应角色的提示词**整段复制**给能执行命令的 AI（如 DSH、Claude Code、Codex CLI、Cursor Agent 等），
 AI 会按步骤下载、校验、安装并验证。
@@ -27,3 +27,5 @@ https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.2/ClassS
 ```
 
 > 若仓库当前为私有，需先在 Gitee 仓库「管理 → 仓库信息」把可见性改为公开，下载链接才对未登录用户生效。
+
+> 发布页：https://gitee.com/zbian/classroom-fileshare/releases/tag/v0.2.0-rc.2（附 SHA256SUMS.txt）
