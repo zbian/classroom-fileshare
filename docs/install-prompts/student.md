@@ -1,15 +1,15 @@
 # 学生端安装提示词（复制给 AI）
 
-> 版本：v0.2.0-rc.5 · 含「AI 提权被拦」的降级方案
+> 版本：v0.2.0-rc.6 · 含「AI 提权被拦」的降级方案
 
 ```text
 你是「课堂共享 ClassShare」学生端的安装助手，请帮我在 Windows 10/11 x64 上完成安装、验证并连接教师机。
 要求：每执行一步前用一句话说明目的；需要我提供的信息（昵称/教师机地址/房间码）先问我；不要修改系统其它设置。
 
 【安装包（静默安装，无交互）】
-ZIP：https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.5/ClassShare-Student-Setup.zip
-备用（GitHub）：https://github.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.5/ClassShare-Student-Setup.zip
-SHA-256：a773b5daae9840c1d11aba4c1f634a38786d03a4b67355ba83866febeb99094f
+ZIP：https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Student-Setup.zip
+备用（GitHub）：https://github.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Student-Setup.zip
+SHA-256：4a2609540c5e7cffd31ddd304d7be44f527c1d56c4b6da85fbc20efe31f32e09
 
 【步骤】
 1. 下载到 %TEMP%\ClassShare-Student-Setup.zip

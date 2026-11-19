@@ -13,20 +13,20 @@ AI 会下载、校验、**静默安装**、验证并指导连接。
 | 教师端 | [teacher.md](teacher.md) | `ClassShare-Teacher-Setup.zip` / `.exe` |
 | 学生端 | [student.md](student.md) | `ClassShare-Student-Setup.zip` / `.exe` |
 
-## 版本与校验值（v0.2.0-rc.5）
+## 版本与校验值（v0.2.0-rc.6）
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `ClassShare-Teacher-Setup.exe` | `908cd731fa2d491e389b0792693b16e6ae1b94e3b19ebd23a5aa717753b9d638` |
-| `ClassShare-Teacher-Setup.zip` | `4efae880be22a43bd581c5cdbce3b9963a0b8e0a14d5220bddd2612c94adad5b` |
-| `ClassShare-Student-Setup.exe` | `8194b752becf2e54c86a51fa878503e2386ed9c0f111e1a36db55700585e17a6` |
-| `ClassShare-Student-Setup.zip` | `a773b5daae9840c1d11aba4c1f634a38786d03a4b67355ba83866febeb99094f` |
+| `ClassShare-Teacher-Setup.exe` | `b6b5fbfc57ead712365362f25ec4a375b46e21eae3936a0f2ac1aae8f2dd30af` |
+| `ClassShare-Teacher-Setup.zip` | `6ed8aeee316864a162f976bf679fe295ec2d042b73efbf3302cbf5e170ab9c58` |
+| `ClassShare-Student-Setup.exe` | `40ec6d38ff883bbe0f40ba20869820e0fe6729417fcefa6301b6d583f17b00b6` |
+| `ClassShare-Student-Setup.zip` | `4a2609540c5e7cffd31ddd304d7be44f527c1d56c4b6da85fbc20efe31f32e09` |
 
 ## 下载地址（Gitee Release；GitHub 备用）
 
 ```
-https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.5/ClassShare-Teacher-Setup.zip
-https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.5/ClassShare-Student-Setup.zip
+https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Teacher-Setup.zip
+https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Student-Setup.zip
 ```
 
 ## 为什么 AI 用 ZIP + 静默脚本
