@@ -370,13 +370,16 @@ export default function App() {
     }
     let busy = false
     const onDrop = (e: DragEvent) => {
-      // 输入框/可编辑区域内拖放交给浏览器原生处理（评审 M1：避免覆盖编辑内容）
-      if (isEditableTarget(e.target)) return
-      e.preventDefault()
       const dt = e.dataTransfer
+      const files = dt?.files
+      // 可编辑区域：文件拖放仍阻止默认（避免 WebView 打开/导航），文本交给浏览器原生处理
+      if (isEditableTarget(e.target)) {
+        if (files && files.length > 0) e.preventDefault()
+        return
+      }
+      e.preventDefault()
       if (!dt || busy) return
       const s = useMainStore.getState()
-      const files = dt.files
       if (files && files.length > 0) {
         const sizeErr = validateDroppedFiles(files)
         if (sizeErr) {

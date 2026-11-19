@@ -8,7 +8,7 @@
 //! - M3：发送结束（成功或失败）删除临时目录；启动时清理历史残留
 //! - M4：目录名含原子自增，先全部解码再统一写盘，失败回滚
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use classroom_ipc::GuiRequest;
@@ -53,9 +53,11 @@ pub fn sanitize_name(raw: &str) -> String {
     classroom_protocol::sanitize_file_name(&replaced).unwrap_or_else(|_| "dropped".into())
 }
 
-/// 估算 base64 解码后的字节数（用于不分配内存的前置校验）。
-pub fn approx_decoded_len(encoded_len: usize) -> u64 {
-    (encoded_len as u64) * 3 / 4
+/// base64 解码后的精确字节数（含 `=` padding 修正，避免 100MB 边界误拒）。
+pub fn decoded_len(encoded: &str) -> u64 {
+    let len = encoded.len() as u64;
+    let pad = encoded.chars().rev().take_while(|c| *c == '=').count() as u64;
+    (len / 4) * 3 - pad
 }
 
 /// 拖放前置校验：数量、单文件、总量。返回错误文案，Ok 表示可继续。
@@ -65,7 +67,7 @@ pub fn validate(files: &[DroppedFileDto]) -> Result<(), String> {
     }
     let mut total = 0u64;
     for f in files {
-        let size = approx_decoded_len(f.data_base64.len());
+        let size = decoded_len(&f.data_base64);
         if size > MAX_FILE_SIZE {
             return Err(format!(
                 "「{}」超过单文件 100 MB 上限，请改用「添加文件」或压缩后发送",
@@ -100,20 +102,65 @@ fn unique_dir_name() -> String {
     format!("{nanos}-{}-{seq}", std::process::id())
 }
 
-/// 启动时清理历史拖放临时目录（单实例 GUI，删除安全）。
-pub fn cleanup_root() {
+/// 发送时的 TTL：超过 10 分钟的旧目录才清理，避免删掉服务端仍在读取的在途文件。
+const TEMP_TTL_SECS: u64 = 10 * 60;
+/// 启动时 TTL：只清 1 小时前的残留（进程崩溃/升级遗留）。
+const STARTUP_TTL_SECS: u64 = 60 * 60;
+
+fn dir_age_secs(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let now = std::time::SystemTime::now();
+    Some(
+        now.duration_since(modified)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    )
+}
+
+fn is_stale(now: std::time::SystemTime, modified: std::time::SystemTime, ttl_secs: u64) -> bool {
+    now.duration_since(modified)
+        .map(|d| d.as_secs() > ttl_secs)
+        .unwrap_or(false)
+}
+
+/// 清理超过 `max_age_secs` 的拖放临时目录。
+///
+/// 不在 send 应答后立即删：服务端 `SendFiles` 应答仅表示命令已入队
+/// （runtime.rs 的 `try_send`），host/agent 之后才读取文件；立即删会让
+/// 多文件拖放的后几个文件读取失败且前端假成功。改为 TTL 清理。
+pub fn cleanup_stale(max_age_secs: u64) {
     let root = temp_root();
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = std::fs::remove_dir_all(&path);
-            }
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if is_stale(now, modified, max_age_secs) {
+            let _ = std::fs::remove_dir_all(&path);
         }
     }
 }
 
-/// 落盘并通过既有 IPC 链路发文件；无论成功失败都清理本次临时目录。
+/// 启动时清理历史拖放临时目录（只清 1 小时前的残留，避免误删在途文件）。
+pub fn cleanup_root() {
+    cleanup_stale(STARTUP_TTL_SECS);
+}
+
+/// 落盘并通过既有 IPC 链路发文件。
+///
+/// 不在这里立刻删除临时目录：服务端 `SendFiles` 应答只代表命令已入队
+///（runtime 的 `try_send`），host/agent 随后才读取文件；立即删会造成
+/// 多文件拖放的后几个文件读取失败（且前端误报成功）。改为 TTL 清理。
 pub async fn save_and_send(
     app: tauri::AppHandle,
     files: Vec<DroppedFileDto>,
@@ -122,6 +169,8 @@ pub async fn save_and_send(
         return Ok(0);
     }
     validate(&files)?;
+    // 发送前顺带清掉 10 分钟前的旧目录（含历史失败残留）
+    cleanup_stale(TEMP_TTL_SECS);
 
     // 先全部解码：任一失败则不落盘（避免部分成功）
     let mut decoded: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
@@ -155,8 +204,7 @@ pub async fn save_and_send(
 
     let count = paths.len();
     let send = ipc_client::svc_request(app, GuiRequest::SendFiles { paths }).await;
-    // 服务端在应答前已复制进仓库，应答后即可清理临时副本（M3）
-    let _ = std::fs::remove_dir_all(&dir);
+    // 失败也保留文件：TTL 清理会兜底，便于用户重试时文件仍在
     send?;
     Ok(count)
 }
@@ -187,9 +235,29 @@ mod tests {
     }
 
     #[test]
-    fn approx_len_is_ceil_three_quarters() {
-        assert_eq!(approx_decoded_len(4), 3);
-        assert_eq!(approx_decoded_len(8), 6);
+    fn decoded_len_handles_padding() {
+        assert_eq!(decoded_len("AAAA"), 3);
+        assert_eq!(decoded_len("aGVsbG8="), 5);
+        assert_eq!(decoded_len("aGVsbG8h"), 6);
+    }
+
+    #[test]
+    fn decoded_len_accepts_exact_100mb_boundary() {
+        // 100MB = 104857600B，base64 长度 139810136，末尾补 2 个 '='
+        let encoded_len = ((MAX_FILE_SIZE as f64 / 3.0).ceil() * 4.0) as usize;
+        let encoded = format!("{}{}", "A".repeat(encoded_len - 2), "==");
+        assert_eq!(decoded_len(&encoded), MAX_FILE_SIZE);
+        let files = vec![dto("edge.bin", &encoded)];
+        assert!(validate(&files).is_ok(), "恰好 100MB 不应被拒绝");
+    }
+
+    #[test]
+    fn stale_detection_honours_ttl() {
+        let now = std::time::SystemTime::now();
+        let old = now - std::time::Duration::from_secs(3600);
+        let fresh = now - std::time::Duration::from_secs(10);
+        assert!(is_stale(now, old, 600));
+        assert!(!is_stale(now, fresh, 600));
     }
 
     #[test]

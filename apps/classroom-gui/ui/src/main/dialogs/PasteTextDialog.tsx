@@ -4,17 +4,10 @@
  */
 import { useEffect, useState } from 'react'
 import Modal from '../../shared/components/Modal'
+import { effectiveTitle } from '../../shared/pasteTitle'
 import { useMainStore } from '../store'
 
 const MAX_CHARS = 10_000
-const TITLE_FALLBACK_CHARS = 10
-
-/** 标题回退规则（纯函数，便于评审/单测）：留空时取正文前 10 个字符（按 Unicode 字符计）。 */
-export function effectiveTitle(title: string, body: string): string {
-  const t = title.trim()
-  if (t) return t
-  return Array.from(body.trim()).slice(0, TITLE_FALLBACK_CHARS).join('')
-}
 
 export default function PasteTextDialog() {
   const open = useMainStore((s) => s.dialog.pasteText)
