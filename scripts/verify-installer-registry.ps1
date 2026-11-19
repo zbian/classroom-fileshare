@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   校验 ClassShare 安装结果（评审 B1/M5/M6 回归检查）。
