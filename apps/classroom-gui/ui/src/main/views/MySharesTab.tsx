@@ -72,6 +72,36 @@ function fmtTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+function Op({
+  label,
+  title,
+  disabled,
+  onClick,
+}: {
+  label: string
+  title?: string
+  disabled?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <span
+      className={`op${disabled ? ' disabled' : ''}`}
+      title={title}
+      aria-disabled={disabled || undefined}
+      onClick={
+        disabled
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onClick?.()
+            }
+      }
+    >
+      {label}
+    </span>
+  )
+}
+
 function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' }) {
   const selectedId = useMainStore((s) => s.selectedId)
   const select = useMainStore((s) => s.select)
@@ -98,62 +128,36 @@ function Row({ item, flavor }: { item: ShareItem; flavor: 'teacher' | 'student' 
       <span>
         <span className={`chip ${st.cls}`}>{st.label}</span>
       </span>
-      <span className="ops">
+            <span className="ops">
         {locked ? (
-          // PRD 7.4「待删除」：打开/复制入口一律禁用（保留位置，样式置灰）
           <>
-            <span className="disabled" title={LOCKED_HINT} aria-disabled="true">
-              打开
-            </span>
-            <span className="disabled" title={LOCKED_HINT} aria-disabled="true">
-              复制
-            </span>
+            <Op label="打开" title={LOCKED_HINT} disabled />
+            <Op label="复制" title={LOCKED_HINT} disabled />
           </>
         ) : isFile ? (
           <>
-            <span
-              onClick={(e) => {
-                e.stopPropagation()
-                void client.openItem(item.id)
-              }}
-            >
-              打开
-            </span>
+            <Op label="打开" onClick={() => void client.openItem(item.id)} />
             {flavor === 'teacher' ? (
-              <span
-                onClick={(e) => {
-                  e.stopPropagation()
-                  openDialog('rename', item.id)
-                }}
+              <Op
+                label="重命名"
                 title="重命名（广播给学员端，学员端 2 秒内同步）"
-              >
-                重命名
-              </span>
+                onClick={() => openDialog('rename', item.id)}
+              />
             ) : (
-              <span className="disabled" title="学员端重命名在 M2 未提供">
-                更多
-              </span>
+              <Op label="更多" title="学员端重命名在 M2 未提供" disabled />
             )}
           </>
         ) : (
           <>
-            <span className="disabled" title="T12 接剪贴板">
-              复制
-            </span>
+            <Op label="复制" title="T12 接剪贴板" disabled />
             {flavor === 'teacher' ? (
-              <span
-                onClick={(e) => {
-                  e.stopPropagation()
-                  openDialog('rename', item.id)
-                }}
+              <Op
+                label="重命名"
                 title="重命名（广播给学员端，学员端 2 秒内同步）"
-              >
-                重命名
-              </span>
+                onClick={() => openDialog('rename', item.id)}
+              />
             ) : (
-              <span className="disabled" title="M2 重命名/编辑（学员端重命名未提供）">
-                编辑
-              </span>
+              <Op label="编辑" title="M2 重命名/编辑（学员端重命名未提供）" disabled />
             )}
           </>
         )}

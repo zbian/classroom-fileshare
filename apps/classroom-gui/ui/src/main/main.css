@@ -249,6 +249,35 @@
   color: #b6c2d2;
   cursor: default;
 }
+/* 行内操作（.grow 网格行）：独立按钮 + 分隔线，避免「复制重命名」连在一起 */
+.grow .ops {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  color: var(--primary);
+}
+.grow .ops .op {
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--primary);
+  user-select: none;
+}
+.grow .ops .op:hover {
+  background: rgba(37, 99, 235, 0.08);
+  text-decoration: underline;
+}
+.grow .ops .op + .op {
+  margin-left: 4px;
+  border-left: 1px solid var(--line);
+  padding-left: 10px;
+}
+.grow .ops .op.disabled {
+  color: #b6c2d2;
+  cursor: default;
+  background: none;
+  text-decoration: none;
+}
 
 .app-footer {
   padding: 10px 16px;
