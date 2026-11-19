@@ -141,6 +141,13 @@ if ($isAdmin) {
     $base = Join-Path $env:ProgramData 'ClassShare'
     Write-SvcConfig $base $svcConfig
 
+    # 幂等：已存在服务先停再删（重复安装/升级场景）
+    $existing = Get-Service -Name 'ClassShareSvc' -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.Status -ne 'Stopped') { sc.exe stop ClassShareSvc | Out-Null; Start-Sleep -Seconds 2 }
+        sc.exe delete ClassShareSvc | Out-Null
+        Start-Sleep -Seconds 1
+    }
     sc.exe create ClassShareSvc binPath= "`"$svcExe`"" start= auto | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'sc.exe create 失败' }
     sc.exe description ClassShareSvc '课堂共享后台服务（ClassShare）' | Out-Null
@@ -170,8 +177,10 @@ if ($isAdmin) {
 } else {
     $base = Join-Path $env:LOCALAPPDATA 'ClassShare'
     Write-SvcConfig $base $svcConfig
-    reg.exe add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v ClassShareSvc `
-        /t REG_SZ /d "`"$svcExe`" --console" /f | Out-Null
+    # 注册表用原生 cmdlet（PS 5.1 下 reg.exe 带引号路径会被二次包装 → "错误: 无效语法"）
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -LiteralPath $runKey -Name 'ClassShareSvc' -Value ('"' + $svcExe + '" --console')
     $dataRoot = Join-Path $base 'data'
     $runMode = '降级（HKCU Run 登录自启前台进程 --console）'
     Write-Warning '无管理员权限：已降级为仅当前用户登录自启。局限：未登录时不接收文件；服务崩溃不自动重启。'
@@ -180,8 +189,9 @@ if ($isAdmin) {
 # GUI 登录自启（写入执行安装的用户的 HKCU；机房多用户场景需逐用户或镜像配置）
 # E12 ①：Run 值必须带 --role=<mode>，否则学员机 GUI 首连用默认 teacher 管道。
 if ($guiExe) {
-    reg.exe add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v ClassShareGUI `
-        /t REG_SZ /d "`"$guiExe`" --role=$Mode" /f | Out-Null
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -LiteralPath $runKey -Name 'ClassShareGUI' -Value ('"' + $guiExe + '" --role=' + $Mode)
 } else {
     # qa v1.2 E2：不静默跳过——显式警告（TC-11 步骤 5 依赖此注册）
     Write-Warning '未指定 -GuiExe：GUI 登录自启未注册（登录后需手动启动 GUI；验收用例依赖此注册项）'

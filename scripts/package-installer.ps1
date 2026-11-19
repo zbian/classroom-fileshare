@@ -124,7 +124,7 @@ Write-Host '=========================================='
 Write-Host ''
 Write-Host '提示：以下均可直接回车跳过。'
 $askBlock
-`$installDir = Join-Path `$env:ProgramFiles 'ClassShare'
+`$installDir = Join-Path `$env:ProgramData 'ClassShare\bin'
 New-Item -ItemType Directory -Force -Path `$installDir | Out-Null
 Copy-Item (Join-Path `$here 'classroom-svc.exe') (Join-Path `$installDir 'classroom-svc.exe') -Force
 Copy-Item (Join-Path `$here 'classroom-gui.exe') (Join-Path `$installDir 'classroom-gui.exe') -Force
@@ -140,7 +140,7 @@ Write-Host ''
 Write-Host '=== 安装完成 ==='
 Write-Host "程序目录: `$installDir"
 Write-Host 'GUI 将在下次登录时自动启动（也可手动运行 classroom-gui.exe --role=$m）。'
-Write-Host '卸载：运行 C:\Program Files\ClassShare\uninstall-$m.cmd'
+Write-Host '卸载：运行 C:\ProgramData\ClassShare\bin\uninstall-$m.cmd'
 Read-Host '按回车关闭'
 "@
     [System.IO.File]::WriteAllText((Join-Path $stage "setup-$m.ps1"), $setupPs1, $utf8bom)
@@ -162,7 +162,7 @@ if (-not `$isAdmin) {
 `$here = Split-Path -Parent `$PSCommandPath
 Write-Host '=== 课堂共享 · $label 卸载 ==='
 & (Join-Path `$here 'uninstall.ps1')
-`$installDir = Join-Path `$env:ProgramFiles 'ClassShare'
+`$installDir = Join-Path `$env:ProgramData 'ClassShare\bin'
 if (Test-Path -LiteralPath `$installDir) {
     Remove-Item -LiteralPath `$installDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "已删除程序目录: `$installDir"
@@ -203,7 +203,7 @@ if (-not `$isAdmin) {
 }
 try {
     `$here = Split-Path -Parent `$PSCommandPath
-    `$installDir = Join-Path `$env:ProgramFiles 'ClassShare'
+    `$installDir = Join-Path `$env:ProgramData 'ClassShare\bin'
     New-Item -ItemType Directory -Force -Path `$installDir | Out-Null
     Copy-Item (Join-Path `$here 'classroom-svc.exe') (Join-Path `$installDir 'classroom-svc.exe') -Force
     Copy-Item (Join-Path `$here 'classroom-gui.exe') (Join-Path `$installDir 'classroom-gui.exe') -Force
@@ -220,7 +220,7 @@ try {
     if (`$Pin) { `$params.Pin = `$Pin }
     if (`$Nickname) { `$params.Nickname = `$Nickname }
     if (`$ManualAddr) { `$params.ManualAddr = `$ManualAddr }
-    Write-SetupLog "[start] Mode=$m " + (`$params | ConvertTo-Json -Compress)
+    Write-SetupLog ("[start] Mode=$m " + (`$params | ConvertTo-Json -Compress))
     & (Join-Path `$here 'install.ps1') @params 2>&1 | ForEach-Object { Write-SetupLog ([string]`$_) }
     Write-SetupLog '[ok] 安装完成'
     exit 0
@@ -293,7 +293,7 @@ if exist "%DEST%\setup-$m.ps1" (
 1. 双击 ClassShare-$cap-Setup.exe
 2. UAC 选「是」
 3. 按提示输入$(if ($isTeacher) { '：房间码（默认 XK-204）、PIN（可空）' } else { '：昵称（可空）、教师机地址（可空=自动发现）、房间码（可空）' })
-4. 安装完成：程序在 C:\Program Files\ClassShare，服务 ClassShareSvc 自动启动
+4. 安装完成：程序在 C:\ProgramData\ClassShare\bin，服务 ClassShareSvc 自动启动
 
 二、AI / 静默安装（推荐给 AI 使用，无交互）
 1. 下载 ClassShare-$cap-Setup.zip 并解压到 %LOCALAPPDATA%\ClassShareSetup
@@ -309,7 +309,7 @@ if exist "%DEST%\setup-$m.ps1" (
 - $(if ($isTeacher) { '学生端用同一房间码（有 PIN 同 PIN）或填你的 IP:47821 直连' } else { '同局域网自动发现；跨网段在安装时填教师机地址' })
 
 四、卸载
-C:\Program Files\ClassShare\uninstall-$m.cmd
+C:\ProgramData\ClassShare\bin\uninstall-$m.cmd
 
 五、注意
 - 未签名：SmartScreen →「更多信息 → 仍要运行」
