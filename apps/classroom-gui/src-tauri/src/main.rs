@@ -1,4 +1,4 @@
-//! 课堂共享 GUI 入口。
+﻿//! 课堂共享 GUI 入口。
 //!
 //! Task 1b：Tauri 2 脚手架；Task 8：程序化创建置顶浮动图标窗（icon），
 //! 主界面（main）改为懒创建；tips 窗 T11 接入。
@@ -153,6 +153,7 @@ macro_rules! app_commands {
             read_clipboard_state,
             paste_and_share,
             open_main_paste,
+            send_dropped_files,
             svc_request,
             dev_demo_tips,
             dev_drop_preview
@@ -178,6 +179,7 @@ macro_rules! app_commands {
             read_clipboard_state,
             paste_and_share,
             open_main_paste,
+            send_dropped_files,
             svc_request
         ]
     };
@@ -396,6 +398,65 @@ fn open_main_paste(app: tauri::AppHandle, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 拖放文件名净化：只取文件名部分并替换 Windows 非法字符（防目录穿越）。
+fn safe_file_name(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("dropped");
+    base.chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ => c,
+        })
+        .collect()
+}
+
+/// 拖放文件 base64 解码（非法输入必须报错，不静默写空文件）。
+fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD
+        .decode(text.as_bytes())
+        .map_err(|e| format!("拖放文件解码失败: {e}"))
+}
+
+/// 拖放文件（HTML5 DnD）：前端把 File 读成 base64 传来，落临时文件后走 SendFiles。
+/// 说明：Windows 上 Tauri 原生 drop 只给路径、且会屏蔽 WebView 的 HTML5 DnD；
+/// 这里关闭原生 drag_drop，让 WebView 同时接收**文件**与**纯文本**拖放。
+#[derive(serde::Deserialize)]
+struct DroppedFileDto {
+    name: String,
+    data_base64: String,
+}
+
+#[tauri::command]
+async fn send_dropped_files(
+    app: tauri::AppHandle,
+    files: Vec<DroppedFileDto>,
+) -> Result<usize, String> {
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir()
+        .join("ClassShareDrop")
+        .join(format!("{stamp}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let mut paths = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        let path = dir.join(format!("{i}-{}", safe_file_name(&f.name)));
+        let bytes = decode_base64(&f.data_base64)?;
+        std::fs::write(&path, &bytes).map_err(|e| format!("写入拖放文件失败: {e}"))?;
+        paths.push(path);
+    }
+    let count = paths.len();
+    ipc_client::svc_request(app, GuiRequest::SendFiles { paths }).await?;
+    Ok(count)
+}
+
 /// 仅调试：A4 投放态预览（截图/QA 用）。release 不注册本命令（见 app_commands!）。
 #[cfg(debug_assertions)]
 #[tauri::command]
@@ -413,6 +474,19 @@ fn dev_demo_tips(app: tauri::AppHandle, n: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 拖放文件名净化：去掉路径部分，替换 Windows 非法字符。
+    #[test]
+    fn dropped_name_sanitized() {
+        assert_eq!(safe_file_name("..\\\\evil.exe"), "evil.exe");
+        assert_eq!(safe_file_name("a/b:c*.txt"), "b_c_.txt");
+    }
+
+    /// 拖放文件解码：非法 base64 必须报错而不是静默写入空文件。
+    #[test]
+    fn dropped_base64_rejects_garbage() {
+        assert!(decode_base64("!!!not-base64!!!").is_err());
+        assert_eq!(decode_base64("aGVsbG8=").unwrap(), b"hello");
+    }
 
     /// O-1 防呆判定：仅「release + dev 模式（未启用 custom-protocol）」需要提示。
     #[test]

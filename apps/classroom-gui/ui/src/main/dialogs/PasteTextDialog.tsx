@@ -1,13 +1,20 @@
 /**
- * E1 粘贴文本并共享：标题必填（同名按标题覆盖）、内容+字数、重新粘贴/清空、
- * 接收对象=全体学员（教师端固定）；上限 10000 字（PRD 5.2）。
+ * E1 粘贴文本并共享：标题可选（留空取正文前 10 个字符，同名按标题覆盖）、
+ * 内容+字数、重新粘贴/清空、接收对象=全体学员（教师端固定）；上限 10000 字（PRD 5.2）。
  */
 import { useEffect, useState } from 'react'
 import Modal from '../../shared/components/Modal'
 import { useMainStore } from '../store'
 
 const MAX_CHARS = 10_000
-const SAMPLE = '本章重点：1. 掌握共享链路的三层结构；2. 理解同名覆盖的作用域键；3. 下课前完成 P42 练习并回传。'
+const TITLE_FALLBACK_CHARS = 10
+
+/** 标题回退规则（纯函数，便于评审/单测）：留空时取正文前 10 个字符（按 Unicode 字符计）。 */
+export function effectiveTitle(title: string, body: string): string {
+  const t = title.trim()
+  if (t) return t
+  return Array.from(body.trim()).slice(0, TITLE_FALLBACK_CHARS).join('')
+}
 
 export default function PasteTextDialog() {
   const open = useMainStore((s) => s.dialog.pasteText)
@@ -19,23 +26,30 @@ export default function PasteTextDialog() {
   const [body, setBody] = useState('')
   const [err, setErr] = useState<string | null>(null)
 
-  // intent 预填：gui://paste-text 携带的剪贴板内容（T12 右键路径）
+  // intent 预填：gui://paste-text 携带的剪贴板内容（右键/拖放/粘贴路径）
   useEffect(() => {
     if (open && pasteBody) setBody(pasteBody)
   }, [open, pasteBody])
 
   if (!open) return null
 
-  const repaste = () => {
-    // T12 接剪贴板插件；dev 暂以样例文本模拟剪贴板内容
-    setBody(SAMPLE)
+  const repaste = async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const st = await invoke<{ text: string | null }>('read_clipboard_state')
+      const text = st.text ?? ''
+      if (text.trim()) {
+        setBody(text)
+        setErr(null)
+      } else {
+        setErr('剪贴板中没有可共享的文本')
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '读取剪贴板失败')
+    }
   }
 
   const submit = async () => {
-    if (!title.trim()) {
-      setErr('标题必填（同名文本按标题覆盖）')
-      return
-    }
     if (!body.trim()) {
       setErr('内容不能为空白')
       return
@@ -45,7 +59,7 @@ export default function PasteTextDialog() {
       return
     }
     setErr(null)
-    await sendText(title.trim(), body)
+    await sendText(effectiveTitle(title, body), body)
   }
 
   return (
@@ -64,7 +78,7 @@ export default function PasteTextDialog() {
       }
     >
       <div className="field">
-        <label>标题（必填，同名文本按标题覆盖）</label>
+        <label>标题（可选；留空取正文前 10 个字符，同名文本按标题覆盖）</label>
         <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：第 3 章重点" />
       </div>
       <div className="field">
@@ -79,7 +93,7 @@ export default function PasteTextDialog() {
         />
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button className="btn" onClick={repaste}>
+        <button className="btn" onClick={() => void repaste()}>
           重新粘贴
         </button>
         <button className="btn" onClick={() => setBody('')}>

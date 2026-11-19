@@ -1,4 +1,4 @@
-//! icon / main 窗口的创建、事件与几何逻辑（Task 8：FR-G-01/03/04）。
+﻿//! icon / main 窗口的创建、事件与几何逻辑（Task 8：FR-G-01/03/04）。
 //!
 //! 设计要点：
 //! - 命中区 = 可见区：icon 窗常态 72×72；拖拽悬停放大 124×124（投放态，中心不动）；
@@ -132,6 +132,7 @@ pub fn ensure_icon_window(app: &AppHandle) -> tauri::Result<()> {
 
     let win = WebviewWindowBuilder::new(app, ICON_LABEL, WebviewUrl::App("icon.html".into()))
         .title("课堂共享")
+        .disable_drag_drop_handler()
         .inner_size(ICON_SIZE, ICON_SIZE)
         .position(x, y)
         .decorations(false)
@@ -188,6 +189,7 @@ pub fn ensure_main_window(app: &AppHandle) -> tauri::Result<()> {
     }
     WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("main.html".into()))
         .title("课堂共享")
+        .disable_drag_drop_handler()
         .inner_size(1024.0, 680.0)
         .min_inner_size(960.0, 640.0)
         .visible(false)

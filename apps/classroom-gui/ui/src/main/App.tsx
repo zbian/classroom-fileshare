@@ -4,6 +4,8 @@
  * 角色来自 gui.json（Rust get_icon_state；M1 由 --role= 写入）；数据经 ipc 抽象（dev mock）。
  */
 import { useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { droppedFilesPayload } from '../shared/dnd'
 import './main.css'
 import { useMainStore, type TabKey } from './store'
 import { isItemLocked, LOCKED_HINT } from './lockedState'
@@ -359,6 +361,56 @@ export default function App() {
   useEffect(() => {
     void init()
   }, [init])
+
+  // 拖放（文件/文本）+ Ctrl+V：统一进入「分享」链路（#拖拽 #粘贴）
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      const dt = e.dataTransfer
+      if (!dt) return
+      const s = useMainStore.getState()
+      const files = dt.files
+      if (files && files.length > 0) {
+        void (async () => {
+          try {
+            const payload = await droppedFilesPayload(files)
+            const n = await invoke<number>('send_dropped_files', { files: payload })
+            s.showToast(`已共享 ${n} 个文件`)
+          } catch (err) {
+            s.showToast(err instanceof Error ? err.message : String(err))
+          }
+        })()
+        return
+      }
+      const text = dt.getData('text/plain')
+      if (text.trim()) {
+        s.setPasteBody(text)
+        s.openDialog('pasteText')
+      }
+    }
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (!text.trim()) return
+      e.preventDefault()
+      const s = useMainStore.getState()
+      s.setPasteBody(text)
+      s.openDialog('pasteText')
+    }
+    document.addEventListener('dragover', onDragOver)
+    document.addEventListener('drop', onDrop)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      document.removeEventListener('dragover', onDragOver)
+      document.removeEventListener('drop', onDrop)
+      document.removeEventListener('paste', onPaste)
+    }
+  }, [])
 
   // 主题切换（tokens.css：教师蓝 / 学员青）
   useEffect(() => {
