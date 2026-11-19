@@ -84,3 +84,14 @@
 - `未吸收提交` 用 `git cherry` 统计（`+` 行）：>0 表示补丁未进入 main；已合并分支出现 >0 是 squash 导致，不代表丢失。
 - `release/v0.1.1` 无 PR，但补丁已全部在 main（内容等价）；`v0.1.1` 标签仍保留。
 - `docs/m1-acceptance-plan`（#35 CLOSED）为唯一未合并分支：14 个提交未进入 main，内容已被后续 `M1-acceptance-plan v1.3.9` 取代。
+
+## 清理执行（2026-11-19）
+
+按审计结论删除 GitHub 远端 53 个已合并分支（`git push github --delete`，两批执行），保留：
+
+- `main`
+- `docs/m1-acceptance-plan`（唯一未合并分支）
+
+执行后校验：GitHub heads = **2**；Gitee heads = **1**（main，从未推其它分支）。
+本地 remote-tracking 已 prune；删除分支的完整 refs 备份仍保留在
+`%LOCALAPPDATA%\ClassShareDual\backup\classroom-fileshare-allrefs-20261119-081600.bundle`。
