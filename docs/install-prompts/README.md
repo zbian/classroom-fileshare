@@ -4,33 +4,49 @@
 AI 会下载、校验、**静默安装**、验证并指导连接。
 
 > 前提：Windows 10/11 x64；安装需要管理员权限（UAC 点一次「是」）；同局域网可自动发现。
-> 若 AI 执行环境禁止提权（RunAs 被拦），提示词会让它改为指导你手动运行一次管理员命令。
 
 ## 文件
 
-| 角色 | 提示词 | 安装包（ZIP 静默 / EXE 人工） |
-| --- | --- | --- |
-| 教师端 | [teacher.md](teacher.md) | `ClassShare-Teacher-Setup.zip` / `.exe` |
-| 学生端 | [student.md](student.md) | `ClassShare-Student-Setup.zip` / `.exe` |
+| 角色 | 提示词 |
+| --- | --- |
+| 教师端 | [teacher.md](teacher.md) |
+| 学生端 | [student.md](student.md) |
 
-## 版本与校验值（v0.2.0-rc.6）
+## 安装包（单文件 EXE，运行时无脚本）
+
+`ClassShare-Setup.exe` —— NSIS 原生安装程序，内置教师端/学生端二选一、服务注册、防火墙、GUI 自启、卸载器。
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `ClassShare-Teacher-Setup.exe` | `b6b5fbfc57ead712365362f25ec4a375b46e21eae3936a0f2ac1aae8f2dd30af` |
-| `ClassShare-Teacher-Setup.zip` | `6ed8aeee316864a162f976bf679fe295ec2d042b73efbf3302cbf5e170ab9c58` |
-| `ClassShare-Student-Setup.exe` | `40ec6d38ff883bbe0f40ba20869820e0fe6729417fcefa6301b6d583f17b00b6` |
-| `ClassShare-Student-Setup.zip` | `4a2609540c5e7cffd31ddd304d7be44f527c1d56c4b6da85fbc20efe31f32e09` |
+| `ClassShare-Setup.exe`（v0.2.0-rc.7） | `8fe62b539c588737ebf9e604c1ca98e9e6e3accf8911ba3977bb9cd54e8dfcca` |
 
 ## 下载地址（Gitee Release；GitHub 备用）
 
 ```
-https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Teacher-Setup.zip
-https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.6/ClassShare-Student-Setup.zip
+https://gitee.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.7/ClassShare-Setup.exe
+https://github.com/zbian/classroom-fileshare/releases/download/v0.2.0-rc.7/ClassShare-Setup.exe
 ```
 
-## 为什么 AI 用 ZIP + 静默脚本
+## 静默参数
 
-- EXE 向导是**交互式**的（需要人点选、填写），AI 无法操作
-- 静默脚本 `silent-install.ps1` 无任何交互，日志写 `%ProgramData%\ClassShareSetup.log`
-- AI 提权被环境拦截时，用 `install-as-admin.cmd` 由你手动右键「以管理员身份运行」（只需一次）
+| 参数 | 说明 |
+| --- | --- |
+| `/S` | 静默安装（无界面） |
+| `/ROLE=teacher\|student` | 角色 |
+| `/ROOM=XK-204` | 房间码（教师端默认 XK-204；学生端留空=自动发现） |
+| `/PIN=1234` | 房间 PIN（可选） |
+| `/NICK=张三` | 学生昵称（可选，支持中文） |
+| `/ADDR=192.168.1.7:47821` | 教师机地址（学生端可选；跨网段必填） |
+
+示例：
+
+```powershell
+# 教师端
+Start-Process "$env:TEMP\ClassShare-Setup.exe" -ArgumentList '/S','/ROLE=teacher','/ROOM=XK-204' -Verb RunAs -Wait
+# 学生端
+Start-Process "$env:TEMP\ClassShare-Setup.exe" -ArgumentList '/S','/ROLE=student','/NICK=张三','/ADDR=192.168.1.7:47821' -Verb RunAs -Wait
+# 静默卸载
+Start-Process "$env:ProgramData\ClassShare\bin\uninstall.exe" -ArgumentList '/S' -Verb RunAs -Wait
+```
+
+> 交互安装：直接双击 `ClassShare-Setup.exe`，在界面里选角色、填参数即可（同样不需要脚本）。

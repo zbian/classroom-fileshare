@@ -34,3 +34,6 @@ ipc.token
 .stversions/
 .syncthing.*
 sync-conflict-*
+# 安装包构建产物（二进制不入库）
+installer/bin/
+installer/ClassShare-Setup.exe
