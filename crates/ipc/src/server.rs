@@ -12,6 +12,10 @@ use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::mpsc;
 
 use classroom_protocol::Role;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{LocalFree, HLOCAL};
+use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use crate::codec::{self, IpcMessage};
 use crate::{GuiRequest, SvcNotify, SvcResult, IPC_PROTOCOL_VERSION};
@@ -68,9 +72,39 @@ pub async fn serve_named(
     tracing::info!(pipe = %name, "IPC 服务监听中");
     loop {
         // 每轮创建新实例供下一个客户端连接（当前实例交给连接任务）
-        let server = ServerOptions::new()
-            .create(&name)
-            .with_context(|| format!("创建管道实例失败: {name}"))?;
+        // 管道 ACL：服务进程（LocalSystem）默认 DACL 只放行 SYSTEM/管理员，
+        // 用户会话的 GUI 会被「对路径的访问被拒绝」挡在握手之前（真机实测）。
+        // 显式 SA：SYSTEM/管理员全权 + Authenticated Users 读写；鉴权仍靠令牌握手。
+        // SD 在 create 后立即释放，避免非 Send 指针跨越 await。
+        let created = {
+            let sddl: Vec<u16> = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)\0"
+                .encode_utf16()
+                .collect();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    PCWSTR(sddl.as_ptr()),
+                    1,
+                    &mut sd,
+                    None,
+                )
+                .context("构造 IPC 管道安全描述符失败")?;
+            }
+            let mut sa = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd.0,
+                bInheritHandle: windows::Win32::Foundation::FALSE,
+            };
+            let created = unsafe {
+                ServerOptions::new()
+                    .create_with_security_attributes_raw(&name, &mut sa as *mut _ as *mut _)
+            };
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(sd.0)));
+            }
+            created
+        };
+        let server = created.with_context(|| format!("创建管道实例失败: {name}"))?;
         server.connect().await.context("等待 IPC 客户端失败")?;
         let handler = handler.clone();
         let conns = conns.clone();
