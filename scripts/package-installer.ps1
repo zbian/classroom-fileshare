@@ -1,26 +1,21 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  教师端 / 学生端安装包打包脚本（单文件 Setup.exe + ZIP 兜底）。
+  教师端 / 学生端安装包打包脚本（交互式 Setup.exe + AI 静默安装）。
 .DESCRIPTION
   产物（<OutDir>）：
-    ClassShare-Teacher-Setup.exe / ClassShare-Teacher-Setup.zip
-    ClassShare-Student-Setup.exe / ClassShare-Student-Setup.zip
+    ClassShare-Teacher-Setup.exe / .zip
+    ClassShare-Student-Setup.exe / .zip
     README-teacher.txt / README-student.txt
-  安装流程：EXE 解压 → install-<mode>.cmd → setup-<mode>.ps1（UAC 提权）
-    → 复制程序到 %ProgramFiles%\ClassShare → install.ps1 -Mode <mode>
+  ZIP 内额外包含 silent-install.ps1：供 AI/无人值守一条命令静默安装（无交互、写日志）。
+  交互式 EXE：解压到 %LOCALAPPDATA%\ClassShareSetup 后再运行向导（避开 IExpress 临时目录被删）。
   前提：target\release\classroom-svc.exe 与 classroom-gui.exe 已构建（-Build 可代建）。
-  不使用 GitHub Actions，全部本地构建。
 .PARAMETER Mode
-  teacher 或 student（默认 both：两种都打）
+  teacher / student / both（默认 both）
 .PARAMETER OutDir
   输出目录（默认 %LOCALAPPDATA%\ClassShareDual\dist）
 .PARAMETER Build
   打包前重新构建前端与两个 release 二进制
-.EXAMPLE
-  .\scripts\package-installer.ps1 -Build
-.EXAMPLE
-  .\scripts\package-installer.ps1 -Mode teacher
 #>
 [CmdletBinding()]
 param(
@@ -51,6 +46,7 @@ foreach ($p in $svcExe, $guiExe) { if (-not (Test-Path $p)) { throw "缺少二�
 function Build-Installer([string]$m) {
     $isTeacher = ($m -eq 'teacher')
     $label = if ($isTeacher) { '教师端' } else { '学生端' }
+    $cap = $m.Substring(0, 1).ToUpper() + $m.Substring(1)
     $stage = Join-Path $env:TEMP "cs-$m-setup"
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
@@ -106,8 +102,8 @@ Write-Host '提示：同一局域网可留空自动发现；跨网段请填教�
     $setupPs1 = @"
 #Requires -Version 5.1
 <#
-  课堂共享 · $label 安装向导（由安装包调用）。
-  未取得管理员权限时 install.ps1 会降级为当前用户登录自启（--console）。
+  课堂共享 · $label 安装向导（交互式，供人工双击使用）。
+  由 install-$m.cmd 从 %LOCALAPPDATA%\ClassShareSetup 启动（避免 IExpress 临时目录被删）。
 #>
 [CmdletBinding()]
 param([switch]`$Elevated)
@@ -116,7 +112,7 @@ param([switch]`$Elevated)
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not `$isAdmin) {
     Write-Host '需要管理员权限来安装 Windows 服务，正在请求提权（UAC）...'
-    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + `$PSCommandPath + '"'), '-Elevated'
     ) | Out-Null
     exit
@@ -132,6 +128,7 @@ $askBlock
 New-Item -ItemType Directory -Force -Path `$installDir | Out-Null
 Copy-Item (Join-Path `$here 'classroom-svc.exe') (Join-Path `$installDir 'classroom-svc.exe') -Force
 Copy-Item (Join-Path `$here 'classroom-gui.exe') (Join-Path `$installDir 'classroom-gui.exe') -Force
+Copy-Item (Join-Path `$here 'install.ps1') (Join-Path `$installDir 'install.ps1') -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path `$here 'uninstall-$m.ps1') (Join-Path `$installDir 'uninstall-$m.ps1') -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path `$here 'uninstall-$m.cmd') (Join-Path `$installDir 'uninstall-$m.cmd') -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path `$here 'uninstall.ps1') (Join-Path `$installDir 'uninstall.ps1') -Force -ErrorAction SilentlyContinue
@@ -157,7 +154,7 @@ param([switch]`$Elevated)
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not `$isAdmin) {
     Write-Host '卸载需要管理员权限，正在请求提权（UAC）...'
-    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + `$PSCommandPath + '"'), '-Elevated'
     ) | Out-Null
     exit
@@ -175,53 +172,131 @@ Read-Host '按回车关闭'
 "@
     [System.IO.File]::WriteAllText((Join-Path $stage "uninstall-$m.ps1"), $uninstallPs1, $utf8bom)
 
-    $installCmd = "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0setup-$m.ps1`"`r`n"
-    [System.IO.File]::WriteAllText((Join-Path $stage "install-$m.cmd"), $installCmd, (New-Object System.Text.UTF8Encoding($false)))
+    # 静默安装：AI/无人值守用，一条命令、无交互、写日志
+    $silentDefaultRoom = if ($isTeacher) { "'XK-204'" } else { "''" }
+    $silentPs1 = @"
+#Requires -Version 5.1
+<#
+  课堂共享 · $label 静默安装（AI/无人值守）。
+  用法（以管理员运行）：
+    powershell -NoProfile -ExecutionPolicy Bypass -File silent-install.ps1 $(if ($isTeacher) { "-Room 'XK-204' [-Pin '1234']" } else { "[-Nickname 'alice'] [-ManualAddr '192.168.1.7:47821'] [-Room 'XK-204']" })
+  日志：%ProgramData%\ClassShareSetup.log
+#>
+[CmdletBinding()]
+param(
+    [string]`$Room = $silentDefaultRoom,
+    [string]`$Pin = '',
+    [string]`$Nickname = '',
+    [string]`$ManualAddr = ''
+)
+`$ErrorActionPreference = 'Stop'
+`$log = Join-Path `$env:ProgramData 'ClassShareSetup.log'
+function Write-SetupLog([string]`$Message) {
+    `$line = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), `$Message
+    `$line | Tee-Object -FilePath `$log -Append
+}
+`$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not `$isAdmin) {
+    Write-SetupLog '[FAIL] 需要管理员权限：请用管理员 PowerShell 运行本脚本'
+    exit 2
+}
+try {
+    `$here = Split-Path -Parent `$PSCommandPath
+    `$installDir = Join-Path `$env:ProgramFiles 'ClassShare'
+    New-Item -ItemType Directory -Force -Path `$installDir | Out-Null
+    Copy-Item (Join-Path `$here 'classroom-svc.exe') (Join-Path `$installDir 'classroom-svc.exe') -Force
+    Copy-Item (Join-Path `$here 'classroom-gui.exe') (Join-Path `$installDir 'classroom-gui.exe') -Force
+    Copy-Item (Join-Path `$here 'install.ps1') `$installDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path `$here 'uninstall-$m.ps1') `$installDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path `$here 'uninstall-$m.cmd') `$installDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path `$here 'uninstall.ps1') `$installDir -Force -ErrorAction SilentlyContinue
+    `$params = @{
+        Mode   = '$m'
+        SvcExe = (Join-Path `$installDir 'classroom-svc.exe')
+        GuiExe = (Join-Path `$installDir 'classroom-gui.exe')
+    }
+    if (`$Room) { `$params.Room = `$Room }
+    if (`$Pin) { `$params.Pin = `$Pin }
+    if (`$Nickname) { `$params.Nickname = `$Nickname }
+    if (`$ManualAddr) { `$params.ManualAddr = `$ManualAddr }
+    Write-SetupLog "[start] Mode=$m " + (`$params | ConvertTo-Json -Compress)
+    & (Join-Path `$here 'install.ps1') @params 2>&1 | ForEach-Object { Write-SetupLog ([string]`$_) }
+    Write-SetupLog '[ok] 安装完成'
+    exit 0
+} catch {
+    Write-SetupLog ('[FAIL] ' + `$_.Exception.Message)
+    exit 1
+}
+"@
+    [System.IO.File]::WriteAllText((Join-Path $stage 'silent-install.ps1'), $silentPs1, $utf8bom)
+
+    $installCmd = @"
+@echo off
+chcp 65001 >nul
+rem 先复制到持久目录，避免 IExpress 解压目录在提权期间被删除
+set "DEST=%LOCALAPPDATA%\ClassShareSetup"
+if not exist "%DEST%" mkdir "%DEST%" >nul 2>&1
+xcopy "%~dp0*" "%DEST%\" /E /I /Y >nul 2>&1
+if exist "%DEST%\setup-$m.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%DEST%\setup-$m.ps1" %*
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup-$m.ps1" %*
+)
+"@
+    [System.IO.File]::WriteAllText((Join-Path $stage "install-$m.cmd"), $installCmd + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
     $uninstCmd = "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0uninstall-$m.ps1`"`r`n"
     [System.IO.File]::WriteAllText((Join-Path $stage "uninstall-$m.cmd"), $uninstCmd, (New-Object System.Text.UTF8Encoding($false)))
 
     $roleDesc = if ($isTeacher) { '教师端（建课、广播文件/文本、接收学员提交）' } else { '学生端（自动发现/入班、接收共享、提交作业）' }
+    $silentExample = if ($isTeacher) {
+        'Start-Process powershell -Verb RunAs -Wait -ArgumentList ''-NoProfile'',''-ExecutionPolicy'',''Bypass'',''-File'',''"%LOCALAPPDATA%\ClassShareSetup\silent-install.ps1"'',''-Room'',''XK-204'''
+    } else {
+        'Start-Process powershell -Verb RunAs -Wait -ArgumentList ''-NoProfile'',''-ExecutionPolicy'',''Bypass'',''-File'',''"%LOCALAPPDATA%\ClassShareSetup\silent-install.ps1"'',''-ManualAddr'',''<教师IP>:47821'',''-Nickname'',''alice'''
+    }
     $readme = @"
 课堂共享 · $label 安装包
 ==========================
 
 适用：Windows 10 / 11 x64
 角色：$roleDesc
-版本：v0.2.0-rc.2（本地构建，含 classroom-svc + classroom-gui）
+版本：v0.2.0-rc.3（本地构建，含 classroom-svc + classroom-gui）
 
-一、安装
---------
-1. 双击 ClassShare-$($m.Substring(0,1).ToUpper() + $m.Substring(1))-Setup.exe
-2. UAC 弹窗选择「是」（需要管理员权限注册 Windows 服务）
-3. 按提示输入：
-$(if ($isTeacher) { '   - 房间码：默认 XK-204（学员端需填同一房间码）' + "`r`n" + '   - PIN：可选（设置后学员加入需输入）' } else { '   - 学生昵称：回车=默认' + "`r`n" + '   - 教师机地址：回车=自动发现（同一局域网）；跨网段填 192.168.1.7:47821' + "`r`n" + '   - 房间码：单教室回车；多教室填与教师一致' })
-4. 安装完成：程序复制到 C:\Program Files\ClassShare，服务 ClassShareSvc 自动启动
+一、人工安装（双击 EXE）
+1. 双击 ClassShare-$cap-Setup.exe
+2. UAC 选「是」
+3. 按提示输入$(if ($isTeacher) { '：房间码（默认 XK-204）、PIN（可空）' } else { '：昵称（可空）、教师机地址（可空=自动发现）、房间码（可空）' })
+4. 安装完成：程序在 C:\Program Files\ClassShare，服务 ClassShareSvc 自动启动
 
-二、验证
---------
-- 服务状态：services.msc 中 ClassShareSvc 应为「正在运行」
+二、AI / 静默安装（推荐给 AI 使用，无交互）
+1. 下载 ClassShare-$cap-Setup.zip 并解压到 %LOCALAPPDATA%\ClassShareSetup
+2. 以管理员运行（只需确认一次 UAC）：
+   $silentExample
+3. 日志：%ProgramData%\ClassShareSetup.log
+4. 验证：Get-Service ClassShareSvc（Running）；%ProgramData%\ClassShare\data\logs\svc.log
+
+三、验证与连接
+- 服务：services.msc → ClassShareSvc
 - 日志：%ProgramData%\ClassShare\data\logs\svc.log
-- GUI：登录后自动启动；也可手动运行 "C:\Program Files\ClassShare\classroom-gui.exe" --role=$m
+- $(if ($isTeacher) { '学生端用同一房间码（有 PIN 同 PIN）或填你的 IP:47821 直连' } else { '同局域网自动发现；跨网段在安装时填教师机地址' })
 
-三、卸载
---------
-运行 C:\Program Files\ClassShare\uninstall-$m.cmd（需要管理员权限）
+四、卸载
+C:\Program Files\ClassShare\uninstall-$m.cmd
 
-四、注意
---------
-- 未签名安装包：SmartScreen 提示「未知发布者」→「更多信息 → 仍要运行」
+五、注意
+- 未签名：SmartScreen →「更多信息 → 仍要运行」
 - 自动发现仅限同一广播域；跨网段必须填教师机地址
 "@
     [System.IO.File]::WriteAllText((Join-Path $stage "README-$m.txt"), $readme, $utf8bom)
 
     $files = @(
-        "install-$m.cmd", "setup-$m.ps1", 'install.ps1',
+        "install-$m.cmd", "setup-$m.ps1", 'install.ps1', 'silent-install.ps1',
         "uninstall-$m.ps1", "uninstall-$m.cmd", 'uninstall.ps1',
         'classroom-svc.exe', 'classroom-gui.exe', "README-$m.txt"
     )
     $fileVals = for ($i = 0; $i -lt $files.Count; $i++) { "FILE$i=`"$($files[$i])`"" }
     $fileRefs = for ($i = 0; $i -lt $files.Count; $i++) { "%FILE$i%=" }
-    $targetName = Join-Path $OutDir ("ClassShare-{0}-Setup.exe" -f ($m.Substring(0,1).ToUpper() + $m.Substring(1)))
+    $targetName = Join-Path $OutDir ("ClassShare-{0}-Setup.exe" -f $cap)
     $sed = @"
 [Version]
 Class=IEXPRESS
@@ -261,15 +336,15 @@ SourceFiles0=$stage\
 [SourceFiles0]
 $($fileRefs -join "`r`n")
 "@
-    [System.IO.File]::WriteAllText((Join-Path $stage "student-$m.sed"), $sed, [System.Text.Encoding]::GetEncoding(936))
+    [System.IO.File]::WriteAllText((Join-Path $stage "pack-$m.sed"), $sed, [System.Text.Encoding]::GetEncoding(936))
 
     Write-Host "[pack] $label IExpress 构建中 ..."
     $iexpress = Join-Path $env:WINDIR 'System32\iexpress.exe'
-    $proc = Start-Process -FilePath $iexpress -ArgumentList @('/N', '/Q', (Join-Path $stage "student-$m.sed")) -Wait -PassThru
+    $proc = Start-Process -FilePath $iexpress -ArgumentList @('/N', '/Q', (Join-Path $stage "pack-$m.sed")) -Wait -PassThru
     if ($proc.ExitCode -ne 0) { throw "iexpress($m) 退出码 $($proc.ExitCode)" }
     if (-not (Test-Path $targetName)) { throw "安装包未生成: $targetName" }
 
-    $zip = Join-Path $OutDir ("ClassShare-{0}-Setup.zip" -f ($m.Substring(0,1).ToUpper() + $m.Substring(1)))
+    $zip = Join-Path $OutDir ("ClassShare-{0}-Setup.zip" -f $cap)
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path ($files | ForEach-Object { Join-Path $stage $_ }) -DestinationPath $zip -CompressionLevel Optimal
     Copy-Item (Join-Path $stage "README-$m.txt") (Join-Path $OutDir "README-$m.txt") -Force
