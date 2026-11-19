@@ -231,6 +231,33 @@ try {
 "@
     [System.IO.File]::WriteAllText((Join-Path $stage 'silent-install.ps1'), $silentPs1, $utf8bom)
 
+    # 用户手动提权入口（AI 执行环境禁止 RunAs 时，由用户右键「以管理员身份运行」本 cmd）
+    $adminPs1 = @"
+#Requires -Version 5.1
+<#
+  以管理员身份运行同目录的 silent-install.ps1。
+  用途：AI/自动化环境禁止自行提权时，由用户手动右键「以管理员身份运行」本脚本（或 install-as-admin.cmd）。
+  参数原样透传给 silent-install.ps1（-Room/-Pin/-Nickname/-ManualAddr）。
+#>
+[CmdletBinding()]
+param([Parameter(ValueFromRemainingArguments = `$true)][string[]]`$Forward = @())
+`$ErrorActionPreference = 'Stop'
+`$script = Join-Path `$PSScriptRoot 'silent-install.ps1'
+if (-not (Test-Path `$script)) { throw '缺少 silent-install.ps1（请确认已完整解压 ZIP）' }
+`$argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$script) + `$Forward
+Write-Host ("将要执行的参数: " + (`$Forward -join ' '))
+`$proc = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList `$argList
+Write-Host ("安装进程退出码: " + `$proc.ExitCode)
+if (Test-Path (Join-Path `$env:ProgramData 'ClassShareSetup.log')) {
+    Write-Host '--- 安装日志（末 20 行） ---'
+    Get-Content (Join-Path `$env:ProgramData 'ClassShareSetup.log') -Tail 20
+}
+Read-Host '按回车关闭'
+"@
+    [System.IO.File]::WriteAllText((Join-Path $stage 'install-as-admin.ps1'), $adminPs1, $utf8bom)
+    $adminCmd = "@echo off`r`nchcp 65001 >nul`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0install-as-admin.ps1`" %*`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $stage 'install-as-admin.cmd'), $adminCmd, (New-Object System.Text.UTF8Encoding($false)))
+
     $installCmd = @"
 @echo off
 chcp 65001 >nul
@@ -272,7 +299,8 @@ if exist "%DEST%\setup-$m.ps1" (
 1. 下载 ClassShare-$cap-Setup.zip 并解压到 %LOCALAPPDATA%\ClassShareSetup
 2. 以管理员运行（只需确认一次 UAC）：
    $silentExample
-3. 日志：%ProgramData%\ClassShareSetup.log
+3. 若 AI 环境禁止提权（RunAs）：由你手动右键「以管理员身份运行」%LOCALAPPDATA%\ClassShareSetup\install-as-admin.cmd（可带参数，如 -Room XK-204）
+4. 日志：%ProgramData%\ClassShareSetup.log
 4. 验证：Get-Service ClassShareSvc（Running）；%ProgramData%\ClassShare\data\logs\svc.log
 
 三、验证与连接
@@ -291,6 +319,7 @@ C:\Program Files\ClassShare\uninstall-$m.cmd
 
     $files = @(
         "install-$m.cmd", "setup-$m.ps1", 'install.ps1', 'silent-install.ps1',
+        'install-as-admin.ps1', 'install-as-admin.cmd',
         "uninstall-$m.ps1", "uninstall-$m.cmd", 'uninstall.ps1',
         'classroom-svc.exe', 'classroom-gui.exe', "README-$m.txt"
     )
